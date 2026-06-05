@@ -1,0 +1,31 @@
+# Render Blueprint for TradeNote
+# Docs: https://render.com/docs/blueprint-spec
+#
+# How to deploy:
+#   1. Push this repo to GitHub (render.yaml must be in the repo root).
+#   2. On Render: New + -> Blueprint -> connect this repo.
+#   3. Render reads this file and creates the service.
+#   4. Fill in the secret env vars (MONGO_URI, MASTER_KEY, APP_ID) when prompted.
+#
+# Secrets use `sync: false` so they are NEVER stored in git -
+# you enter them once in the Render dashboard.
+
+services:
+  - type: web
+    name: tradenote
+    runtime: image
+    image:
+      url: docker.io/eleventrading/tradenote:latest
+    region: singapore        # closest region to Thailand
+    plan: free               # free tier sleeps after 15 min of inactivity
+    envVars:
+      - key: TRADENOTE_DATABASE
+        value: tradenote
+      - key: TRADENOTE_PORT
+        value: "10000"        # Render routes to this port (matches its default PORT)
+      - key: MONGO_URI
+        sync: false           # set in dashboard: mongodb+srv://...@trade-note.3mvpypa.mongodb.net/tradenote
+      - key: APP_ID
+        sync: false           # set in dashboard: any random string, no spaces
+      - key: MASTER_KEY
+        sync: false           # set in dashboard: any random string, no spaces
