@@ -787,6 +787,9 @@
             },
             "note": {
                 "type": "string"
+            },
+            "reason": {
+                "type": "string"
             }
         },
         "classLevelPermissions": {

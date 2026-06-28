@@ -439,25 +439,152 @@ const checkLegacy = async (param) => {
 </script>
 
 <template>
-  <main class="container" id="registerSignup">
-    <form class="text-center col-md-4 offset-md-4 mt-5" v-on:submit.prevent="pageId == 'login' ? login() : register()">
-      <img class="mb-4" src="">
-      <h1 class="h3 mb-3 fw-normal">{{ pageId == 'login' ? "Please Log in" : "Please Register" }}</h1>
-      <input type="email" id="inputEmail" class="form-control" placeholder="Email" required="" autofocus=""
-        v-model="loginForm.username" autocomplete="username">
-      <input type="password" id="inputPassword" class="mt-1 form-control" placeholder="Password" required=""
-        v-model="loginForm.password" v-bind:autocomplete="pageId == 'login' ? 'current-password' : 'new-password'">
-      <div v-if="pageId == 'register'">
-        <p class="mt-3">Choose the timezone (of the market) your trades will be located and imported from.</p>
-        <select v-model="loginForm.timeZone" class="form-select">
-          <option v-for="item in timeZones" :key="item.value" :value="item">{{ item }}</option>
-        </select>
+  <main id="registerSignup" class="authWrap">
+    <div class="authCard">
+      <div class="authBrand">
+        <i class="uil uil-sun authLogo"></i>
+        <span class="authName">TradeNote</span>
       </div>
-      <button class="mt-3 w-100 btn btn-lg btn-primary" type="submit" :disabled="signingUp">{{ pageId == 'login' ?
-      "Log&nbsp;in" : "Register" }}<span v-if="signingUp" class="ms-2 spinner-border spinner-border-sm" role="status"
-          aria-hidden="true"></span></button>
-    </form>
-    <div class="text-center mt-3" v-if="!registerOff"><a :href="pageId == 'login' ? '/register' : '/'">{{ pageId == 'login' ? "Register" :
-      "Login" }}</a> page</div>
+      <h1 class="authTitle">{{ pageId == 'login' ? "Welcome back" : "Create your account" }}</h1>
+      <p class="authSubtitle">{{ pageId == 'login' ? "Log in to your trading journal" : "Start your trading journal" }}
+      </p>
+
+      <form v-on:submit.prevent="pageId == 'login' ? login() : register()">
+        <label class="authLabel">Email</label>
+        <input type="email" id="inputEmail" class="form-control" placeholder="you@example.com" required autofocus
+          v-model="loginForm.username" autocomplete="username">
+
+        <label class="authLabel mt-3">Password</label>
+        <input type="password" id="inputPassword" class="form-control" placeholder="••••••••" required
+          v-model="loginForm.password" v-bind:autocomplete="pageId == 'login' ? 'current-password' : 'new-password'">
+
+        <div v-if="pageId == 'register'" class="mt-3">
+          <label class="authLabel">Market timezone</label>
+          <select v-model="loginForm.timeZone" class="form-select">
+            <option v-for="item in timeZones" :key="item.value" :value="item">{{ item }}</option>
+          </select>
+          <p class="authHint">Timezone of the market your trades are imported from.</p>
+        </div>
+
+        <button class="authBtn" type="submit" :disabled="signingUp">
+          <span>{{ pageId == 'login' ? "Log in" : "Create account" }}</span>
+          <span v-if="signingUp" class="ms-2 spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+        </button>
+      </form>
+
+      <div class="authFooter" v-if="!registerOff">
+        {{ pageId == 'login' ? "Don't have an account?" : "Already have an account?" }}
+        <a :href="pageId == 'login' ? '/register' : '/'">{{ pageId == 'login' ? "Register" : "Log in" }}</a>
+      </div>
+    </div>
   </main>
 </template>
+
+<style scoped>
+.authWrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.authCard {
+  width: 100%;
+  max-width: 400px;
+  background: var(--black-bg-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  padding: 2.2rem 2rem;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+
+.authBrand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1.6rem;
+}
+
+.authLogo {
+  color: var(--accent);
+  font-size: 1.6rem;
+}
+
+.authName {
+  font-weight: 700;
+  font-size: 1.15rem;
+  color: #fff;
+  letter-spacing: 0.3px;
+}
+
+.authTitle {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #fff;
+  margin: 0;
+}
+
+.authSubtitle {
+  color: var(--white-60);
+  font-size: 0.9rem;
+  margin: 0.3rem 0 1.4rem;
+}
+
+.authLabel {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--white-65);
+  margin-bottom: 0.35rem;
+}
+
+.authHint {
+  font-size: 0.75rem;
+  color: var(--white-38);
+  margin: 0.4rem 0 0;
+}
+
+.authBtn {
+  width: 100%;
+  margin-top: 1.6rem;
+  padding: 0.7rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.95rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease;
+}
+
+.authBtn:hover {
+  background: var(--blue-active-color);
+}
+
+.authBtn:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.authFooter {
+  text-align: center;
+  margin-top: 1.4rem;
+  font-size: 0.85rem;
+  color: var(--white-60);
+}
+
+.authFooter a {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.authFooter a:hover {
+  text-decoration: underline;
+}
+</style>

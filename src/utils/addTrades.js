@@ -124,9 +124,16 @@ export async function useImportTrades(param1, param2, param3, param0) {
         const importFileErrorFunction = (param) => {
             importFileError = true
             spinnerLoadingPage.value = false
-            const file = document.querySelector('#tradesInput');
-            file.value = '';
-            alert("ERROR IN UPLOAD FILE\n" + param)
+            // Guard browser-only APIs: on the server-side /api/trades path there is no
+            // `document`/`alert`, and referencing them throws an uncaught ReferenceError
+            // that crashes the whole Node process.
+            if (typeof document !== 'undefined') {
+                const file = document.querySelector('#tradesInput');
+                if (file) file.value = '';
+                alert("ERROR IN UPLOAD FILE\n" + param)
+            } else {
+                console.log("ERROR IN UPLOAD FILE: " + param)
+            }
         }
 
         let fileInput
