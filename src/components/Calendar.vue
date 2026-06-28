@@ -43,16 +43,10 @@ async function monthLastNext(param) {
     <div class="col-12">
         <div v-bind:class="[pageId === 'calendar' ? 'justify-content-center' : '', 'row']">
             <div v-bind:class="[pageId === 'calendar' ? 'col-md-9 col-xl-6' : '', 'col-12']">
-                <div class="row">
-                    <div class="col-2">
-                        <i class="uil uil-angle-left-b pointerClass" v-on:click="monthLastNext(-1)"></i>
-                    </div>
-                    <div class="col-8">
-                        <span v-if="calendarData.hasOwnProperty(0)">{{ calendarData[0][0].month }}</span>
-                    </div>
-                    <div class="col-2">
-                        <i class="uil uil-angle-right-b pointerClass" v-on:click="monthLastNext(1)"></i>
-                    </div>
+                <div class="calMonthNav">
+                    <i class="uil uil-angle-left-b calNavBtn pointerClass" v-on:click="monthLastNext(-1)"></i>
+                    <span class="calMonthLabel" v-if="calendarData.hasOwnProperty(0)">{{ calendarData[0][0].month }}</span>
+                    <i class="uil uil-angle-right-b calNavBtn pointerClass" v-on:click="monthLastNext(1)"></i>
                 </div>
             </div>
         </div>
@@ -78,7 +72,7 @@ async function monthLastNext(param) {
             </div>
         </div>
     </div>
-    <div v-show="pageId == 'calendar'" class="col-12">
+    <div v-show="pageId == 'calendar'" class="col-12 mt-4">
         <div class="row">
             <div class="col-12 col-md-4 col-xl-3 mb-3" v-for="(calData, index) in miniCalendarsData">
                 <div class="row me-2">
@@ -99,3 +93,40 @@ async function monthLastNext(param) {
         </div>
     </div>
 </template>
+
+<style scoped>
+.calMonthNav {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1.25rem;
+    margin-bottom: 0.75rem;
+}
+
+.calMonthLabel {
+    font-weight: 700;
+    font-size: 1rem;
+    color: var(--white-87);
+    min-width: 130px;
+    text-align: center;
+}
+
+.calNavBtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    color: var(--white-87);
+    background-color: var(--black-bg-7);
+    border: 1px solid var(--border-subtle);
+    font-size: 1.1rem;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.calNavBtn:hover {
+    background-color: var(--surface-hover);
+    border-color: var(--border-strong);
+}
+</style>

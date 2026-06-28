@@ -5,6 +5,7 @@ import Screenshot from '../components/Screenshot.vue'
 import { currentDate, dateScreenshotEdited, editingScreenshot, itemToEditId, screenshot, spinnerLoadingPage, timeZoneTrade, tradeTags, tagInput, selectedTagIndex, showTagsList, availableTags, tags } from '../stores/globals';
 import { useSaveScreenshot, useSetupImageUpload } from '../utils/screenshots';
 import { useDatetimeLocalFormat, useGetSelectedRange } from '../utils/utils';
+import FpDate from '../components/FpDate.vue';
 import { useFilterSuggestions, useTradeTagsChange, useFilterTags, useToggleTagsDropdown, useGetTags, useGetAvailableTags, useGetTagInfo } from '../utils/daily';
 
 /* MODULES */
@@ -63,6 +64,11 @@ let entrySide = [{
     label: "Buy"
 }
 ]
+
+// Format a unix date for the flatpickr datetime picker (matches FpDate's 'Y-m-d H:i')
+function fpDate(dateUnix) {
+    return dayjs.tz(dateUnix * 1000, timeZoneTrade.value).format('YYYY-MM-DD HH:mm')
+}
 
 function screenshotUpdateDate(event) {
     if (editingScreenshot.value) {
@@ -132,10 +138,9 @@ async function getScreenshotToEdit(param) {
                         </select>
                     </div>
                     <div class="col">
-                        <input type="datetime-local" v-bind:step="screenshot.type == 'setup' ? '' : '1'"
-                            class="form-control"
-                            v-bind:value="screenshot.hasOwnProperty('dateUnix') ? useDatetimeLocalFormat(screenshot.dateUnix) : currentDate"
-                            v-on:input="screenshotUpdateDate($event.target.value)" />
+                        <FpDate mode="datetime"
+                            :model-value="screenshot.hasOwnProperty('dateUnix') ? fpDate(screenshot.dateUnix) : currentDate"
+                            @update:model-value="screenshotUpdateDate($event)" />
                     </div>
 
                     <div class="col">

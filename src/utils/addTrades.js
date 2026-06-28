@@ -40,6 +40,20 @@ let currentTradeId
 export const testPost = async () => {
     return "test successful !!!!"
 }
+
+/**
+ * Builds in-memory executions + trades from a pre-filled `tradesData` (used by the
+ * manual "Add Order" popup). Unlike useImportTrades it does NOT call filterExisting
+ * (which drops days already in the DB) nor blotter/pAndL — the caller merges the
+ * result into the existing day document and recomputes blotter/pAndL itself.
+ * openPositionsParse is cleared so a manual order is always a standalone trade.
+ */
+export async function useBuildManualTrades() {
+    openPositionsParse.length = 0
+    await createTempExecutions()
+    await createExecutions()
+    await createTrades()
+}
 /****************************
  * TRADES
  ****************************/

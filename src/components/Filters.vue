@@ -4,6 +4,7 @@ import { useMonthFormat, useDateCalFormat, useDateCalFormatMonth, useMountCalend
 import { pageId, currentUser, timeZoneTrade, periodRange, positions, timeFrames, ratios, grossNet, plSatisfaction, selectedPositions, selectedTimeFrame, selectedRatio, selectedAccounts, selectedGrossNet, selectedPlSatisfaction, selectedDateRange, selectedMonth, selectedPeriodRange, tempSelectedPlSatisfaction, amountCase, amountCapital, hasData, selectedTags, tags, availableTags, filteredTradesTrades } from "../stores/globals"
 import { useECharts } from "../utils/charts.js";
 import { useRefreshScreenshot } from "../utils/screenshots"
+import FpDate from "./FpDate.vue"
 import dayjs from 'dayjs'
 import utc from 'dayjs/plugin/utc.js'
 dayjs.extend(utc)
@@ -293,197 +294,209 @@ const selectAllTags = () => {
 </script>
 
 <template>
-    <!-- ============ LINE 1: DATE FILTERS ============ -->
+    <!-- ============ FILTERS ============ -->
     <div id="step10" class="col-12 mb-3">
-        <div class="dailyCard">
-            <div>
-                <span v-if="!filtersOpen" v-on:click="filtersClick" class="pointerClass">Filters <i
-                        class="uil uil-angle-up"></i>
+        <div class="dailyCard filtersCard">
+
+            <!-- Header / toggle + active filter chips -->
+            <div class="filtersHeader" v-on:click="filtersClick">
+                <span class="filtersToggle">
+                    <i class="uil uil-filter me-2"></i>Filters
+                    <i :class="filtersOpen ? 'uil uil-angle-up' : 'uil uil-angle-down'" class="ms-1"></i>
                 </span>
-                <span v-if="!filtersOpen" class="dashInfoTitle ms-3">
-                    <span v-show="filters[pageId].includes('accounts')">
+
+                <span v-if="!filtersOpen" class="filtersChips">
+                    <span v-show="filters[pageId].includes('accounts')" class="filterChip">
+                        <i class="uil uil-user-circle"></i>
                         <span
                             v-if="currentUser.hasOwnProperty('accounts') && currentUser.accounts.length == selectedAccounts.length">All
-                            accounts |</span>
-                        <span v-else>Selected accounts |</span>
+                            accounts</span>
+                        <span v-else>{{ selectedAccounts.length }} account(s)</span>
                     </span>
 
-                    <span v-show="filters[pageId].includes('periodRange')">
-                        {{ selectedPeriodRange.label }} |
-                        <span v-show="selectedPeriodRange.value == 'custom'"> Range |</span>
+                    <span v-show="filters[pageId].includes('periodRange')" class="filterChip">
+                        <i class="uil uil-calendar-alt"></i>{{ selectedPeriodRange.label }}
                     </span>
 
-                    <span v-show="filters[pageId].includes('month')">
-                        {{ useMonthFormat(selectedMonth.start) }} |
+                    <span v-show="filters[pageId].includes('month')" class="filterChip">
+                        <i class="uil uil-calendar-alt"></i>{{ useMonthFormat(selectedMonth.start) }}
                     </span>
 
-                    <span v-show="filters[pageId].includes('grossNet')">{{ selectedGrossNet.charAt(0).toUpperCase() +
-                        selectedGrossNet.slice(1) }} data |
+                    <span v-show="filters[pageId].includes('grossNet')" class="filterChip">
+                        {{ selectedGrossNet.charAt(0).toUpperCase() + selectedGrossNet.slice(1) }} data
                     </span>
 
-                    <span v-show="filters[pageId].includes('positions')">
-                        <span v-if="positions.length == selectedPositions.length">All positions |</span>
+                    <span v-show="filters[pageId].includes('positions')" class="filterChip">
+                        <span v-if="positions.length == selectedPositions.length">All positions</span>
                         <span v-else>{{ selectedPositions.toString().charAt(0).toUpperCase() +
-                            selectedPositions.toString().slice(1) }} |</span>
+                            selectedPositions.toString().slice(1) }}</span>
                     </span>
 
-                    <span v-show="filters[pageId].includes('timeFrame')">
-                        {{ selectedTimeFrame.charAt(0).toUpperCase() + selectedTimeFrame.slice(1) }} timeframe |
+                    <span v-show="filters[pageId].includes('timeFrame')" class="filterChip">
+                        {{ selectedTimeFrame.charAt(0).toUpperCase() + selectedTimeFrame.slice(1) }} TF
                     </span>
 
-                    <span v-show="filters[pageId].includes('ratio')">
-                        <span v-if="selectedRatio != 'profitFactor'">{{ selectedRatio.toUpperCase() }}</span><span
-                            v-else>Profit Factor</span> |
+                    <span v-show="filters[pageId].includes('ratio')" class="filterChip">
+                        <span v-if="selectedRatio != 'profitFactor'">{{ selectedRatio.toUpperCase() }}</span>
+                        <span v-else>Profit Factor</span>
                     </span>
 
-                    <span v-show="filters[pageId].includes('tags')">
-                        <span v-if="tags.length == selectedTags.length">All
-                            tags</span>
-                        <span v-else>Selected tags</span>
+                    <span v-show="filters[pageId].includes('tags')" class="filterChip">
+                        <i class="uil uil-tag-alt"></i>
+                        <span v-if="tags.length == selectedTags.length">All tags</span>
+                        <span v-else>{{ selectedTags.length }} tag(s)</span>
                     </span>
 
-                    <span v-show="filters[pageId].includes('plSatisfaction')">
-                        {{ selectedPlSatisfaction == 'satisfaction' ? 'Satisfaction' : "P&L" }} calendar
+                    <span v-show="filters[pageId].includes('plSatisfaction')" class="filterChip">
+                        {{ selectedPlSatisfaction == 'satisfaction' ? 'Satisfaction' : "P&L" }}
                     </span>
-
-                </span>
-
-                <span v-else v-on:click="filtersClick" class="pointerClass mb-3">Filters<i
-                        class="uil uil-angle-down"></i>
                 </span>
             </div>
 
-            <div v-show="filtersOpen" class="row text-center align-items-center">
-                <!-- Date : periode -->
-                <div class="col-12 col-lg-4 mt-1 mt-lg-0 mb-lg-1" v-show="pageId == 'dashboard'">
-                    <select v-on:input="inputDateRange($event.target.value)" class="form-select">
-                        <option v-for="item in periodRange" :key="item.value" :value="item.value"
-                            :selected="item.value == selectedPeriodRange.value">{{ item.label }}</option>
-                    </select>
-                </div>
+            <!-- Filter controls -->
+            <div v-show="filtersOpen" class="filtersBody">
+                <div class="row g-3 align-items-end">
 
-                <!-- Date : calendar -->
-                <div class="col-12 col-lg-8 mt-1 mt-lg-0 mb-1" v-show="pageId == 'dashboard'">
-                    <div class="row">
-                        <div class="col-5">
-                            <input type="date" class="form-control" :value="useDateCalFormat(selectedDateRange.start)"
-                                :selected="selectedDateRange.start"
-                                v-on:input="inputDateRangeCal('start', $event.target.value)" />
+                    <!-- Date : period -->
+                    <div class="col-12 col-lg-4 filterField" v-show="pageId == 'dashboard'">
+                        <label class="filterLabel">Period</label>
+                        <select v-on:input="inputDateRange($event.target.value)" class="form-select">
+                            <option v-for="item in periodRange" :key="item.value" :value="item.value"
+                                :selected="item.value == selectedPeriodRange.value">{{ item.label }}</option>
+                        </select>
+                    </div>
+
+                    <!-- Date : range -->
+                    <div class="col-12 col-lg-8 filterField" v-show="pageId == 'dashboard'">
+                        <label class="filterLabel">Date range</label>
+                        <div class="dateRange">
+                            <FpDate mode="date" :model-value="useDateCalFormat(selectedDateRange.start)"
+                                @update:model-value="inputDateRangeCal('start', $event)" />
+                            <i class="uil uil-arrow-right dateRangeArrow"></i>
+                            <FpDate mode="date" :model-value="useDateCalFormat(selectedDateRange.end)"
+                                @update:model-value="inputDateRangeCal('end', $event)" />
                         </div>
-                        <div class="col-2">
-                            <i class="uil uil-angle-right-b"></i>
-                        </div>
-                        <div class="col-5">
-                            <input type="date" class="form-control" :value="useDateCalFormat(selectedDateRange.end)"
-                                :selected="selectedDateRange.end"
-                                v-on:input="inputDateRangeCal('end', $event.target.value)">
-                            <div class="row"></div>
-                        </div>
+                    </div>
+
+                    <!-- Month -->
+                    <div class="col-12 col-lg-4 filterField" v-show="pageId == 'daily' || pageId == 'calendar'">
+                        <label class="filterLabel">Month</label>
+                        <FpDate mode="month" :model-value="useDateCalFormatMonth(selectedMonth.start)"
+                            @update:model-value="inputMonth($event)" />
+                    </div>
+
+                    <!-- Accounts -->
+                    <div class="col-6 col-lg-3 filterField dropdown" v-show="pageId != 'screenshots' && pageId != 'calendar'">
+                        <label class="filterLabel">Accounts</label>
+                        <button class="btn btn-secondary dropdown-toggle filterDropdownBtn" type="button"
+                            data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                            {{ currentUser.hasOwnProperty('accounts') && currentUser.accounts.length == selectedAccounts.length ? 'All' : selectedAccounts.length + ' selected' }}
+                        </button>
+                        <ul class="dropdown-menu dropdownCheck">
+                            <div v-for="item in currentUser.accounts" :key="item.value" class="form-check">
+                                <input class="form-check-input" type="checkbox" :value="item.value"
+                                    v-model="selectedAccounts">
+                                {{ item.label }}
+                            </div>
+                        </ul>
+                    </div>
+
+                    <!-- Tags -->
+                    <div :class="[pageId == 'screenshots' ? 'col-12 col-lg-4' : 'col-6 col-lg-3', 'filterField dropdown']"
+                        v-show="pageId != 'calendar'">
+                        <label class="filterLabel">Tags</label>
+                        <button class="btn btn-secondary dropdown-toggle filterDropdownBtn" type="button"
+                            data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                            {{ tags.length == selectedTags.length ? 'All' : selectedTags.length + ' selected' }}
+                        </button>
+                        <ul class="dropdown-menu dropdownCheck">
+                            <div>
+                                <a class="pointerClass nav-link selectAllLink" v-on:click="selectAllTags"><span
+                                        v-if="!allTagsSelected">Select All</span><span v-else>Unselect All</span></a>
+                            </div>
+                            <hr>
+                            <label class="form-check noTagCheck">
+                                <input class="form-check-input" type="checkbox" value="t000t" v-model="selectedTags">
+                                No Tag
+                            </label>
+                            <hr>
+                            <span v-for="group in availableTags">
+                                <h6 class="p-1 mb-0 tagGroupHeader" :style="'background-color: ' + group.color + ';'">
+                                    {{ group.name }}</h6>
+                                <div v-for="item in group.tags" class="form-check">
+                                    <input class="form-check-input" type="checkbox" :value="item.id"
+                                        v-model="selectedTags">
+                                    {{ item.name }}
+                                </div>
+                            </span>
+                        </ul>
+                    </div>
+
+                    <!-- Positions -->
+                    <div class="col-6 col-lg-3 filterField dropdown" v-show="pageId != 'screenshots' && pageId != 'calendar'">
+                        <label class="filterLabel">Positions</label>
+                        <button class="btn btn-secondary dropdown-toggle filterDropdownBtn" type="button"
+                            data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                            {{ positions.length == selectedPositions.length ? 'All' : selectedPositions.length + ' selected' }}
+                        </button>
+                        <ul class="dropdown-menu dropdownCheck">
+                            <div v-for="item in positions" :key="item.value" class="form-check">
+                                <input class="form-check-input" type="checkbox" :value="item.value"
+                                    v-model="selectedPositions">
+                                {{ item.label }}
+                            </div>
+                        </ul>
+                    </div>
+
+                    <!-- Gross/Net -->
+                    <div class="col-6 col-lg-3 filterField" v-show="pageId != 'screenshots'">
+                        <label class="filterLabel">Data</label>
+                        <select v-on:input="selectedGrossNet = $event.target.value" class="form-select">
+                            <option v-for="item in grossNet" :key="item.value" :value="item.value"
+                                :selected="item.value == selectedGrossNet">{{ item.label }}</option>
+                        </select>
+                    </div>
+
+                    <!-- Timeframe -->
+                    <div class="col-6 col-lg-3 filterField" v-show="pageId == 'dashboard'">
+                        <label class="filterLabel">Timeframe</label>
+                        <select v-on:input="selectedTimeFrame = $event.target.value" class="form-select">
+                            <option v-for="item in timeFrames" :key="item.value" :value="item.value"
+                                :selected="item.value == selectedTimeFrame">{{ item.label }}</option>
+                        </select>
+                    </div>
+
+                    <!-- Ratio -->
+                    <div class="col-6 col-lg-3 filterField" v-show="pageId == 'dashboard'">
+                        <label class="filterLabel">Ratio</label>
+                        <select v-on:input="selectedRatio = $event.target.value" class="form-select">
+                            <option v-for="item in ratios" :key="item.value" :value="item.value"
+                                :selected="item.value == selectedRatio">{{ item.label }}</option>
+                        </select>
+                    </div>
+
+                    <!-- P&L / Satisfaction -->
+                    <div class="col-6 col-lg-3 filterField" v-show="pageId == 'calendar'">
+                        <label class="filterLabel">Calendar shows</label>
+                        <select v-on:input="tempSelectedPlSatisfaction = $event.target.value" class="form-select">
+                            <option v-for="item in plSatisfaction" :key="item.value" :value="item.value"
+                                :selected="item.value == selectedPlSatisfaction">{{ item.label }}</option>
+                        </select>
                     </div>
                 </div>
 
-                <!-- Accounts -->
-                <div class="col-6 dropdown" v-show="pageId != 'screenshots' && pageId != 'calendar'">
-                    <button class="btn btn-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown"
-                        aria-expanded="false">Accounts <span class="dashInfoTitle">({{ selectedAccounts.length
-                            }})</span></button>
-                    <ul class="dropdown-menu dropdownCheck">
-                        <div v-for="item in currentUser.accounts" :key="item.value" class="form-check">
-                            <input class="form-check-input" type="checkbox" :value="item.value"
-                                v-model="selectedAccounts">
-                            {{ item.label }}
-                        </div>
-                    </ul>
-                </div>
-
-                <!-- Month -->
-                <div class="col-12 col-lg-6 mt-1 mt-lg-0 mb-lg-1" v-show="pageId == 'daily' || pageId == 'calendar'">
-                    <input type="month" class="form-control" :value="useDateCalFormatMonth(selectedMonth.start)"
-                        :selected="selectedMonth.start" v-on:input="inputMonth($event.target.value)">
-                </div>
-
-                <!-- Tags -->
-                <div :class="[pageId == 'screenshots' ? 'col-12' : 'col-6', 'dropdown mt-1 mt-lg-1']"
-                    v-show="pageId != 'calendar'">
-
-                    <button class="btn btn-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown"
-                        aria-expanded="false">Tags <span class="dashInfoTitle">({{ selectedTags.length
-                            }})</span></button>
-
-                    <ul class="dropdown-menu dropdownCheck">
-                        <div>
-                            <a class="pointerClass nav-link" v-on:click="selectAllTags"><span
-                                    v-if="!allTagsSelected">Select All</span><span v-else>Unselect All</span></a>
-                        </div>
-                        <hr>
-                        <input class="form-check-input mt-1" type="checkbox" value="t000t"
-                            v-model="selectedTags">&nbsp;&nbsp;No Tag
-                        <hr>
-                        <span v-for="group in availableTags">
-                            <h6 class="p-1 mb-0" :style="'background-color: ' + group.color + ';'">
-                                {{ group.name }}</h6>
-                            <div v-for="item in group.tags" class="form-check">
-                                <input class="form-check-input" type="checkbox" :value="item.id" v-model="selectedTags">
-                                {{ item.name }}
-                            </div>
-                        </span>
-
-                    </ul>
-                </div>
-
-                <!-- Gross/Net -->
-                <div class="col-6 col-lg-3" v-show="pageId != 'screenshots'">
-                    <select v-on:input="selectedGrossNet = $event.target.value" class="form-select">
-                        <option v-for="item in grossNet" :key="item.value" :value="item.value"
-                            :selected="item.value == selectedGrossNet">{{ item.label }}</option>
-                    </select>
-                </div>
-
-                <!-- Positions -->
-                <div class="col-6 col-lg-3 dropdown" v-show="pageId != 'screenshots' && pageId != 'calendar'">
-                    <button class="btn btn-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown"
-                        aria-expanded="false">Positions <span class="dashInfoTitle">({{ selectedPositions.length
-                            }})</span></button>
-                    <ul class="dropdown-menu dropdownCheck">
-                        <div v-for="item in positions" :key="item.value" class="form-check">
-                            <input class="form-check-input" type="checkbox" :value="item.value"
-                                v-model="selectedPositions">
-                            {{ item.label }}
-                        </div>
-                    </ul>
-                </div>
-
-                <!-- Timeframe -->
-                <div class="col-6 col-lg-3 mt-1 mt-lg-1" v-show="pageId == 'dashboard'">
-                    <select v-on:input="selectedTimeFrame = $event.target.value" class="form-select">
-                        <option v-for="item in timeFrames" :key="item.value" :value="item.value"
-                            :selected="item.value == selectedTimeFrame">{{ item.label }}</option>
-                    </select>
-                </div>
-
-                <!-- Ratio -->
-                <div class="col-6 col-lg-3 mt-1 mt-lg-1" v-show="pageId == 'dashboard'">
-                    <select v-on:input="selectedRatio = $event.target.value" class="form-select">
-                        <option v-for="item in ratios" :key="item.value" :value="item.value"
-                            :selected="item.value == selectedRatio">{{ item.label }}</option>
-                    </select>
-                </div>
-
-                <!-- P&L / Satisfaction  -->
-                <div :class="[pageId == 'daily' ? 'col-4' : 'col-3']" v-show="pageId == 'calendar'">
-                    <select v-on:input="tempSelectedPlSatisfaction = $event.target.value" class="form-select">
-                        <option v-for="item in plSatisfaction" :key="item.value" :value="item.value"
-                            :selected="item.value == selectedPlSatisfaction">{{ item.label }}</option>
-                    </select>
-                </div>
-
-                <div class="col-12 text-center">
-                    <button class="btn btn-success btn-sm mt-2" v-on:click="saveFilter">Filter</button>
-                    <span v-if="pageId == 'dashboard'">
-                        <button class="btn btn-secondary btn-sm mt-2 ms-4 dropdown-toggle" type="button"
-                            data-bs-toggle="dropdown" aria-expanded="false">Export
+                <!-- Actions -->
+                <div class="filtersActions">
+                    <button class="btn blueBtn btn-sm" v-on:click="saveFilter">
+                        <i class="uil uil-check me-1"></i>Apply filters
+                    </button>
+                    <button class="btn btn-outline-secondary btn-sm" v-on:click="filtersClick">Cancel</button>
+                    <span v-if="pageId == 'dashboard'" class="dropdown ms-auto">
+                        <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button"
+                            data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="uil uil-export me-1"></i>Export
                         </button>
-                        <ul class="dropdown-menu">
+                        <ul class="dropdown-menu dropdown-menu-end">
                             <li><a class="dropdown-item"
                                     v-on:click="useExport('json', useDateCalFormat(selectedDateRange.start), useDateCalFormat(selectedDateRange.end), filteredTradesTrades)">JSON</a>
                             </li>
@@ -492,9 +505,134 @@ const selectAllTags = () => {
                             </li>
                         </ul>
                     </span>
-
                 </div>
             </div>
         </div>
     </div>
 </template>
+
+<style scoped>
+.filtersCard {
+    padding: 0.85em 1em;
+}
+
+/* Header */
+.filtersHeader {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem 0.75rem;
+    cursor: pointer;
+}
+
+.filtersToggle {
+    font-weight: 700;
+    color: var(--white-87);
+    white-space: nowrap;
+}
+
+.filtersToggle i {
+    color: var(--accent);
+}
+
+/* Active filter chips (collapsed state) */
+.filtersChips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: center;
+}
+
+.filterChip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    background-color: var(--accent-soft);
+    color: var(--white-87);
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    padding: 0.12rem 0.6rem;
+    font-size: 11px;
+    line-height: 1.6;
+    white-space: nowrap;
+}
+
+.filterChip i {
+    color: var(--accent);
+    font-size: 12px;
+}
+
+/* Body */
+.filtersBody {
+    margin-top: 0.9rem;
+    padding-top: 0.9rem;
+    border-top: 1px solid var(--border-subtle);
+}
+
+.filterField {
+    text-align: left;
+}
+
+.filterLabel {
+    display: block;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--white-60);
+    margin-bottom: 0.25rem;
+    font-weight: 600;
+}
+
+/* Make the dropdown trigger buttons match the form-select look */
+.filterDropdownBtn {
+    width: 100%;
+    text-align: left;
+}
+
+/* Date range row */
+.dateRange {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.dateRange .form-control {
+    flex: 1;
+}
+
+.dateRangeArrow {
+    color: var(--white-38);
+    flex: 0 0 auto;
+}
+
+/* Dropdown checkbox menus */
+.dropdownCheck {
+    max-height: 320px;
+    overflow-y: auto;
+}
+
+.selectAllLink {
+    color: var(--accent);
+    padding: 0.15rem 0.25rem;
+}
+
+.noTagCheck {
+    cursor: pointer;
+}
+
+.tagGroupHeader {
+    border-radius: var(--radius-sm);
+    color: #fff;
+    font-size: 11px;
+}
+
+/* Actions */
+.filtersActions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 1rem;
+    padding-top: 0.85rem;
+    border-top: 1px solid var(--border-subtle);
+}
+</style>

@@ -3,6 +3,7 @@ import SideMenu from '../components/SideMenu.vue'
 import Nav from '../components/Nav.vue'
 import Screenshot from '../components/Screenshot.vue'
 import ReturnToTopButton from '../components/ReturnToTopButton.vue'
+import AddOrderModal from '../components/AddOrderModal.vue'
 import { onBeforeMount } from 'vue'
 import { useInitParse, usePageId, useScreenType, useGetTimeZone, useGetPeriods, useInitPostHog, useCreatedDateFormat, useTimeFormat, useHourMinuteFormat } from '../utils/utils.js'
 import { screenType, sideMenuMobileOut, screenshots, pageId, screenshot, selectedScreenshot, selectedScreenshotIndex, getMore } from '../stores/globals'
@@ -39,6 +40,8 @@ useInitPostHog()
       <!--footer-->
     </div>
   </div>
+  <!-- Add Order popup (triggered from the +Add menu in Nav) -->
+  <AddOrderModal />
   <!-- Modal -->
   <div class="modal fade" id="fullScreenModal" tabindex="-1" aria-labelledby="fullScreenModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-fullscreen">

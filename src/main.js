@@ -4,6 +4,7 @@ import { createPinia } from 'pinia'
 import App from './App.vue'
 import router from './router'
 
+import 'flatpickr/dist/flatpickr.css'
 import './assets/style-dark.css'
 
 

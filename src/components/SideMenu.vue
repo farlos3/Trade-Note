@@ -5,7 +5,7 @@ import { useToggleMobileMenu } from "../utils/utils";
 </script>
 
 <template>
-    <div class="col-2 logoDiv d-flex align-items-center justify-content-center">
+    <div class="logoDiv d-flex align-items-center">
         <span v-if="screenType == 'mobile'">
             <a v-on:click="useToggleMobileMenu"><img src="../assets/sun_full_blue.png" class="logo me-2" />TradeNote</a>
         </span>
@@ -14,6 +14,7 @@ import { useToggleMobileMenu } from "../utils/utils";
     <div id="step2">
         <div class="sideMenuDiv">
             <div class="sideMenuDivContent">
+                <label class="sideMenuSection">Analytics</label>
                 <a id="step3" v-bind:class="[pageId === 'dashboard' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
                     href="/dashboard">
                     <i class="uil uil-apps me-2"></i>Dashboard</a>
@@ -28,6 +29,7 @@ import { useToggleMobileMenu } from "../utils/utils";
 
         <div class="sideMenuDiv">
             <div class="sideMenuDivContent">
+                <label class="sideMenuSection">Journal</label>
                 <a id="step6" v-bind:class="[pageId === 'diary' ? 'activeNavCss' : '', 'nav-link', 'mb-1']" href="/diary">
                     <i class="uil uil-diary me-2"></i>Diary
                 </a>
