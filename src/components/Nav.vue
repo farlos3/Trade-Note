@@ -252,14 +252,7 @@ const navAdd = async (param) => {
                             <hr class="dropdown-divider">
                         </li>
                         <li class="text-center">
-                            <span class="txt-small">v{{ version }}
-                                <!--<i v-if="latestVersion != version"
-                                    class="ps-1 uil uil-info-circle" data-bs-toggle="tooltip" data-bs-html="true"
-                                    v-bind:data-bs-title="'New version available<br>v' + latestVersion"></i>-->
-                            </span>
-
-                            <div><span class="txt-x-small">DockerHub: v{{ latestVersion.docker }}</span></div>
-                            <div><span class="txt-x-small">GitHub: v{{ latestVersion.gitHub }}</span></div>
+                            <span class="txt-x-small" style="color: var(--white-38)">v{{ version }}</span>
                         </li>
                         <!--<li class="text-center"><a class="txt-small blue-link" target="_blank"
                                 href="https://eleven.m-pages.com/tradenote">Get Updates</a></li>-->

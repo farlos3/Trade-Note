@@ -14,14 +14,13 @@ import { useToggleMobileMenu } from "../utils/utils";
     <div id="step2">
         <div class="sideMenuDiv">
             <div class="sideMenuDivContent">
-                <label class="fw-lighter">ANALYZE</label>
-                <a id="step3" v-bind:class="[pageId === 'dashboard' ? 'activeNavCss' : '', 'nav-link', 'mb-2']"
+                <a id="step3" v-bind:class="[pageId === 'dashboard' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
                     href="/dashboard">
                     <i class="uil uil-apps me-2"></i>Dashboard</a>
-                <a id="step4" v-bind:class="[pageId === 'daily' ? 'activeNavCss' : '', 'nav-link', 'mb-2']" href="/daily">
+                <a id="step4" v-bind:class="[pageId === 'daily' ? 'activeNavCss' : '', 'nav-link', 'mb-1']" href="/daily">
                     <i class="uil uil-signal-alt-3 me-2"></i>Daily
                 </a>
-                <a id="step5" v-bind:class="[pageId === 'calendar' ? 'activeNavCss' : '', 'nav-link', 'mb-2']"
+                <a id="step5" v-bind:class="[pageId === 'calendar' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
                     href="/calendar">
                     <i class="uil uil-calendar-alt me-2"></i>Calendar</a>
             </div>
@@ -29,15 +28,14 @@ import { useToggleMobileMenu } from "../utils/utils";
 
         <div class="sideMenuDiv">
             <div class="sideMenuDivContent">
-                <label class="fw-lighter mt-3">Reflect</label>
-                <a id="step6" v-bind:class="[pageId === 'diary' ? 'activeNavCss' : '', 'nav-link', 'mb-2']" href="/diary">
+                <a id="step6" v-bind:class="[pageId === 'diary' ? 'activeNavCss' : '', 'nav-link', 'mb-1']" href="/diary">
                     <i class="uil uil-diary me-2"></i>Diary
                 </a>
-                <a id="step7" v-bind:class="[pageId === 'screenshots' ? 'activeNavCss' : '', 'nav-link', 'mb-2']"
+                <a id="step7" v-bind:class="[pageId === 'screenshots' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
                     href="/screenshots">
                     <i class="uil uil-image-v me-2"></i>Screenshots
                 </a>
-                <a id="step8" v-bind:class="[pageId === 'playbook' ? 'activeNavCss' : '', 'nav-link', 'mb-2']"
+                <a id="step8" v-bind:class="[pageId === 'playbook' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
                     href="/playbook">
                     <i class="uil uil-compass me-2"></i>Playbook
                 </a>

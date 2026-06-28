@@ -4,27 +4,43 @@
 }
 
 :root {
-    --grey-color: #6c757d;
-    --blue-active-color: #2ea2d9;
-    --blue-color: #01B4FF;
+    --grey-color: #8b93a7;
+    --blue-active-color: #38bdf8;
+    --blue-color: #2f9bff;
     --ghost-grey: #f2f2f4;
     --dark-grey: #5B6270;
-    --red-color: #FF6960;
-    --red-hover-color: #fd4b42;
-    --black: #333333;
-    --black-bg-0: hsl(0, 0%, 0%);
-    --black-bg-5: hsl(0, 0%, 5%);
-    --black-bg-7: hsl(0, 0%, 7%);
-    --green: #26a69a;
-    --white-87: hsla(0, 0%, 100%, 0.87);
+    --red-color: #f87171;
+    --red-hover-color: #ef4444;
+    --black: #1c1f27;
+
+    /* Modern dark surfaces (soft, layered — not pure black) */
+    --black-bg-0: #0e1015;
+    /* app background */
+    --black-bg-5: #161922;
+    /* raised surface / cards */
+    --black-bg-7: #1b1f2a;
+    /* nav / sidebar / inputs */
+    --surface-hover: #232838;
+    /* hover background */
+
+    --green: #34d399;
+    --accent: #2f9bff;
+    --accent-soft: rgba(47, 155, 255, 0.14);
+    --border-subtle: rgba(255, 255, 255, 0.07);
+    --border-strong: rgba(255, 255, 255, 0.14);
+
+    --white-87: rgba(237, 240, 247, 0.92);
     /*High-emphasis (text)*/
-    --white-60: hsla(0, 0%, 100%, 0.6);
+    --white-60: rgba(237, 240, 247, 0.60);
     /*Medium-emphasis (text)*/
-    --white-38: hsla(0, 0%, 100%, 0.38);
+    --white-38: rgba(237, 240, 247, 0.40);
     /*Low-emphasis (text)*/
     /*for quill */
-    --white-70: hsla(0, 0%, 100%, 0.7);
-    --white-65: hsla(0, 0%, 100%, 0.65);
+    --white-70: rgba(237, 240, 247, 0.70);
+    --white-65: rgba(237, 240, 247, 0.65);
+
+    --radius: 10px;
+    --radius-sm: 8px;
 
     --font-size-main: 11px;
     /*small : 13px; x-small: 10px*/
@@ -38,9 +54,10 @@
 }
 
 body {
-    background-color: #fbfbfd;
     background-color: var(--black-bg-0);
     color: var(--white-87);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
 }
 
 .text-blue {
@@ -48,8 +65,7 @@ body {
 }
 
 main {
-    padding: 0.8rem !important;
-    /*we add padding back here because we have removed gutter (g-0) in order to have top menu without padding with side menu*/
+    padding: 1rem 1.25rem !important;
 }
 
 .greenTrade {
@@ -82,7 +98,9 @@ textarea::placeholder {
 .form-control {
     background-color: var(--black-bg-7);
     color: var(--white-87);
-    border-color: var(--white-60);
+    border-color: var(--border-strong);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.8rem;
 }
 
 .form-control:disabled,
@@ -94,9 +112,9 @@ textarea::placeholder {
 .form-control:focus {
     color: var(--white-87);
     background-color: var(--black-bg-5);
-    border-color: var(--white-87);
+    border-color: var(--accent);
     outline: 0;
-    box-shadow: 0 0 0 0;
+    box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .form-check-input:checked {
@@ -260,7 +278,7 @@ input:checked+.slider:before {
 }
 
 .nav-tabs {
-    border-bottom: 1px solid var(--white-38);
+    border-bottom: 1px solid var(--border-subtle);
 }
 
 .noDataTab {
@@ -289,20 +307,25 @@ input:checked+.slider:before {
 }
 
 .dropdown-menu {
-    background-color: #2f2f2f;
+    background-color: var(--black-bg-5);
     color: var(--white-87);
-    border: 1px solid var(--white-38);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    padding: 0.35rem;
 }
 
 
 .dropdown-item {
     color: var(--white-87);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.75rem;
 }
 
 .dropdown-item:hover,
 .dropdown-item:active {
-    background-color: var(--black-bg-7);
-    color: var(--white-87);
+    background-color: var(--surface-hover);
+    color: #ffffff;
 }
 
 .dropdownCheck {
@@ -368,21 +391,25 @@ input:checked+.slider:before {
 /*=================== NAV BAR AND SIDE MENU ===================*/
 
 .activeNavCss {
-    color: var(--blue-active-color) !important;
+    color: #ffffff !important;
+    background-color: var(--accent-soft);
+    box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.activeNavCss i {
+    color: var(--accent) !important;
 }
 
 .sideMenu {
     background-color: var(--black-bg-7);
-    border-right: 1px solid var(--white-38);
-    border-bottom: 1px solid var(--white-38);
-    /*z-index: 1;
-    position: fixed;*/
+    border-right: 1px solid var(--border-subtle);
+    border-bottom: 1px solid var(--border-subtle);
 }
 
 .sideMenuMobile {
     background-color: var(--black-bg-7);
-    border-right: 1px solid var(--white-38);
-    border-bottom: 1px solid var(--white-38);
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     z-index: 2;
     position: fixed;
     width: 230px;
@@ -400,12 +427,12 @@ input:checked+.slider:before {
 }
 
 .sideMenuDiv {
-    border-bottom: 1px solid var(--white-38);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     border-image-slice: 1;
 }
 
 .sideMenuDivContent {
-    padding: 0 1rem;
+    padding: 0.25rem 0.75rem;
 }
 
 .sideMenuMobileOut {
@@ -420,10 +447,17 @@ input:checked+.slider:before {
 }
 
 .logoDiv {
-    /* https://developer.mozilla.org/fr/docs/Web/CSS/linear-gradient() */
-    border-bottom: 1px solid var(--white-38);
+    border-bottom: 1px solid var(--border-subtle);
     width: 100%;
-    height: 63px;
+    height: 52px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    font-size: 1.05rem;
+}
+
+.logoDiv a,
+.logoDiv span {
+    color: #ffffff;
 }
 
 .logoDiv>p {
@@ -444,12 +478,17 @@ img.logo {
 }
 
 .navbar {
-    border-bottom: 1px solid var(--white-38);
-    padding-right: 1.5rem;
-    padding-left: 1.5rem;
-    background-color: var(--black-bg-7) !important;
+    border-bottom: 1px solid var(--border-subtle);
+    padding-right: 1.25rem;
+    padding-left: 1.25rem;
+    background-color: rgba(27, 31, 42, 0.85) !important;
+    backdrop-filter: blur(8px);
     color: var(--white-87);
-    height: 63px;
+    height: 52px;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    font-weight: 600;
 }
 
 #navbarDropdown {
@@ -466,6 +505,34 @@ img.logo {
 
 .nav-link:active {
     color: var(--blue-active-color);
+}
+
+/* Sidebar links as rounded, full-width nav items */
+.sideMenuDiv a.nav-link {
+    display: flex;
+    align-items: center;
+    padding: 0.55rem 0.85rem;
+    border-radius: var(--radius-sm);
+    color: var(--white-65);
+    font-weight: 600;
+    font-size: 13px;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.sideMenuDiv a.nav-link i {
+    font-size: 1.05rem;
+    width: 1.4rem;
+    color: var(--white-38);
+    transition: color 0.15s ease;
+}
+
+.sideMenuDiv a.nav-link:hover {
+    background-color: var(--surface-hover);
+    color: #ffffff !important;
+}
+
+.sideMenuDiv a.nav-link:hover i {
+    color: var(--white-87);
 }
 
 .blue-link {
@@ -737,8 +804,8 @@ ol li[data-list="bullet"] {
 
 .dailyCard {
     background-color: var(--black-bg-5);
-    border: 1px solid var(--white-38);
-    border-radius: 5px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
     padding: 1em;
     height: 100%;
     width: 100%;
@@ -836,9 +903,19 @@ ol li[data-list="bullet"] {
 }
 
 .dashInfoTitle {
-    font-size: x-small;
+    font-size: 0.68rem;
     color: var(--white-60);
-    font-weight: bold;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.dailyCard {
+    transition: border-color 0.15s ease, transform 0.1s ease;
+}
+
+.dailyCard:hover {
+    border-color: var(--border-strong);
 }
 
 .titleWithDesc {
@@ -927,12 +1004,26 @@ ul.timeline>li:before {
 
 /* BUTTONS */
 .blueBtn {
-    background: var(--blue-color);
-    color: var(--white-87);
+    background: var(--accent);
+    color: #ffffff;
+    border-radius: var(--radius-sm);
+    font-weight: 600;
+    padding: 0.4rem 0.9rem;
+    border: none;
+    transition: background 0.15s ease, transform 0.05s ease;
 }
 
 .blueBtn:hover {
     background: var(--blue-active-color);
+    color: #ffffff;
+}
+
+.blueBtn:active {
+    transform: translateY(1px);
+}
+
+.btn {
+    border-radius: var(--radius-sm);
 }
 
 /* FOOTER BOTTOM */

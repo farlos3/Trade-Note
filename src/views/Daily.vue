@@ -6,7 +6,7 @@ import SpinnerLoadingPage from '../components/SpinnerLoadingPage.vue';
 import Calendar from '../components/Calendar.vue';
 import Screenshot from '../components/Screenshot.vue'
 
-import { spinnerLoadingPage, calendarData, filteredTrades, screenshots, diaries, modalDailyTradeOpen, amountCase, markerAreaOpen, screenshot, tradeScreenshotChanged, excursion, tradeExcursionChanged, spinnerSetups, spinnerSetupsText, tradeExcursionId, tradeExcursionDateUnix, hasData, tradeId, excursions, saveButton, itemTradeIndex, tradeIndex, tradeIndexPrevious, spinnerLoadMore, endOfList, selectedGrossNet, availableTags, tradeTagsChanged, tagInput, tags, tradeTags, showTagsList, selectedTagIndex, tradeTagsId, tradeTagsDateUnix, newTradeTags, notes, tradeNote, tradeNoteChanged, tradeNoteDateUnix, tradeNoteId, availableTagsArray, timeZoneTrade, screenshotsInfos, idCurrentType, idCurrentNumber, tabGettingScreenshots, currentUser, apis, satisfactionTradeArray, satisfactionArray } from '../stores/globals';
+import { spinnerLoadingPage, calendarData, filteredTrades, screenshots, diaries, modalDailyTradeOpen, amountCase, markerAreaOpen, screenshot, tradeScreenshotChanged, excursion, tradeExcursionChanged, spinnerSetups, spinnerSetupsText, tradeExcursionId, tradeExcursionDateUnix, hasData, tradeId, excursions, saveButton, itemTradeIndex, tradeIndex, tradeIndexPrevious, spinnerLoadMore, endOfList, selectedGrossNet, availableTags, tradeTagsChanged, tagInput, tags, tradeTags, showTagsList, selectedTagIndex, tradeTagsId, tradeTagsDateUnix, newTradeTags, notes, tradeNote, tradeNoteChanged, tradeReason, tradeReasonChanged, tradeNoteDateUnix, tradeNoteId, availableTagsArray, timeZoneTrade, screenshotsInfos, idCurrentType, idCurrentNumber, tabGettingScreenshots, currentUser, apis, satisfactionTradeArray, satisfactionArray } from '../stores/globals';
 
 import { useCreatedDateFormat, useTwoDecCurrencyFormat, useTimeFormat, useTimeDuration, useMountDaily, useGetSelectedRange, useLoadMore, useCheckVisibleScreen, useDecimalsArithmetic, useInitTooltip, useDateCalFormat, useSwingDuration, useStartOfDay, useInitTab } from '../utils/utils';
 
@@ -125,7 +125,7 @@ async function clickTradesModal(param1, param2, param3) {
     } else {
         await (spinnerSetups.value = true)
 
-        if (tradeNoteChanged.value) {
+        if (tradeNoteChanged.value || tradeReasonChanged.value) {
             await useUpdateNote()
             await useGetNotes()
         }
@@ -146,6 +146,7 @@ async function clickTradesModal(param1, param2, param3) {
 
 
         tradeNoteChanged.value = false
+        tradeReasonChanged.value = false
         tradeExcursionChanged.value = false
         tradeScreenshotChanged.value = false
         tradeTagsChanged.value = false
@@ -316,8 +317,10 @@ async function clickTradesModal(param1, param2, param3) {
 
                 let noteIndex = notes.findIndex(obj => obj.tradeId == filteredTradeId)
                 tradeNote.value = null
+                tradeReason.value = null
                 if (noteIndex != -1) {
                     tradeNote.value = notes[noteIndex].note
+                    tradeReason.value = notes[noteIndex].reason
                 }
 
                 let findExcursion = excursions.filter(obj => obj.tradeId == filteredTradeId)
@@ -571,6 +574,15 @@ const tradeNoteChange = (param) => {
     tradeNoteChanged.value = true
     saveButton.value = true
 
+}
+
+const tradeReasonChange = (param) => {
+    tradeReason.value = param
+    // reason is stored on the same notes row as the note (keyed by tradeId)
+    tradeNoteDateUnix.value = filteredTrades[itemTradeIndex.value].dateUnix
+    tradeNoteId.value = filteredTrades[itemTradeIndex.value].trades[tradeIndex.value].id
+    tradeReasonChanged.value = true
+    saveButton.value = true
 }
 
 /**************
@@ -1358,8 +1370,18 @@ function getOHLC(date, symbol, type) {
                                     </div>
                                 </div>
 
+                                <!-- Reason line -->
+                                <div class="col-12 mt-2" v-show="!spinnerSetups">
+                                    <label class="dashInfoTitle mb-1"><i class="uil uil-lightbulb-alt me-1"></i>Reason
+                                        for this order</label>
+                                    <textarea class="form-control" placeholder="Why did you take this trade? (setup, signal, plan...)"
+                                        id="floatingReason" rows="2" v-bind:value="tradeReason"
+                                        @input="tradeReasonChange($event.target.value)"></textarea>
+                                </div>
+
                                 <!-- Second line -->
                                 <div class="col-12 mt-2" v-show="!spinnerSetups">
+                                    <label class="dashInfoTitle mb-1"><i class="uil uil-notes me-1"></i>Notes</label>
                                     <textarea class="form-control" placeholder="note" id="floatingTextarea"
                                         v-bind:value="tradeNote"
                                         @input="tradeNoteChange($event.target.value)"></textarea>

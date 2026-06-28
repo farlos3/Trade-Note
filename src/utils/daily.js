@@ -1,4 +1,4 @@
-import { excursions, queryLimit, satisfactionArray, satisfactionTradeArray, tags, selectedRange, availableTags, currentUser, tradeTags, tradeTagsDateUnix, tradeTagsId, newTradeTags, pageId, notes, tradeNote, tradeNoteDateUnix, tradeNoteId, spinnerSetups, spinnerSetupsText, availableTagsArray, tagInput, selectedTagIndex, showTagsList, tradeTagsChanged, filteredTrades, itemTradeIndex, tradeIndex, saveButton, screenshot, screenshotsPagination, screenshotsQueryLimit, diaryUpdate, diaryQueryLimit, diaryPagination } from "../stores/globals.js";
+import { excursions, queryLimit, satisfactionArray, satisfactionTradeArray, tags, selectedRange, availableTags, currentUser, tradeTags, tradeTagsDateUnix, tradeTagsId, newTradeTags, pageId, notes, tradeNote, tradeReason, tradeNoteDateUnix, tradeNoteId, spinnerSetups, spinnerSetupsText, availableTagsArray, tagInput, selectedTagIndex, showTagsList, tradeTagsChanged, filteredTrades, itemTradeIndex, tradeIndex, saveButton, screenshot, screenshotsPagination, screenshotsQueryLimit, diaryUpdate, diaryQueryLimit, diaryPagination } from "../stores/globals.js";
 import { daysBack } from "../stores/globals.js";
 
 /* MODULES */
@@ -706,6 +706,7 @@ export async function useGetNotes() {
                 const object = results[i];
                 temp.tradeId = object.get('tradeId')
                 temp.note = object.get('note')
+                temp.reason = object.get('reason')
                 temp.dateUnix = object.get('dateUnix')
                 notes.push(temp)
 
@@ -731,6 +732,7 @@ export const useUpdateNote = async () => {
 
             spinnerSetupsText.value = "Updating"
             results.set("note", tradeNote.value)
+            results.set("reason", tradeReason.value)
 
             results.save()
                 .then(async () => {
@@ -746,6 +748,7 @@ export const useUpdateNote = async () => {
             const object = new parseObject();
             object.set("user", Parse.User.current())
             object.set("note", tradeNote.value)
+            object.set("reason", tradeReason.value)
             object.set("dateUnix", tradeNoteDateUnix.value)
             object.set("tradeId", tradeNoteId.value)
             object.setACL(new Parse.ACL(Parse.User.current()));

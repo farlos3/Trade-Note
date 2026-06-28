@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""
+MT5 -> TradeNote auto-sync bridge.
+
+Pulls closed deals from a running MetaTrader 5 terminal, rebuilds them into the
+"Trade History Report" XLSX layout that TradeNote's MetaTrader5 importer expects,
+and pushes them to the TradeNote /api/trades endpoint.
+
+Designed to be run on a schedule (Windows Task Scheduler) on the same machine
+as the MT5 terminal. See README.md.
+"""
+
+import base64
+import configparser
+import datetime as dt
+import io
+import json
+import os
+import sys
+
+import requests
+
+try:
+    import MetaTrader5 as mt5
+except ImportError:
+    sys.exit("MetaTrader5 package missing. Run: pip install MetaTrader5 openpyxl requests")
+
+import openpyxl
+
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(HERE, "config.ini")
+STATE_PATH = os.path.join(HERE, "state.json")
+
+
+def log(msg):
+    print(f"[{dt.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
+
+
+def load_config():
+    if not os.path.exists(CONFIG_PATH):
+        sys.exit(f"Missing {CONFIG_PATH}. Copy config.example.ini -> config.ini and fill it in.")
+    cfg = configparser.ConfigParser()
+    cfg.read(CONFIG_PATH, encoding="utf-8")
+    return cfg
+
+
+def load_state():
+    if os.path.exists(STATE_PATH):
+        with open(STATE_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def save_state(state):
+    with open(STATE_PATH, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2)
+
+
+def connect(cfg):
+    """Attach to the MT5 terminal. Uses credentials if provided, otherwise the
+    already-logged-in terminal session."""
+    login = cfg.get("mt5", "login", fallback="").strip()
+    password = cfg.get("mt5", "password", fallback="").strip()
+    server = cfg.get("mt5", "server", fallback="").strip()
+    path = cfg.get("mt5", "terminal_path", fallback="").strip()
+
+    kwargs = {}
+    if path:
+        kwargs["path"] = path
+    if login and password and server:
+        kwargs.update(login=int(login), password=password, server=server)
+
+    ok = mt5.initialize(**kwargs)
+    if not ok:
+        sys.exit(f"mt5.initialize failed: {mt5.last_error()} "
+                 "(open MT5 and log in, or set login/password/server in config.ini)")
+    info = mt5.account_info()
+    log(f"Connected to MT5 account {info.login} @ {info.server} ({info.currency})")
+    return info
+
+
+def fetch_deals(frm, to):
+    deals = mt5.history_deals_get(frm, to)
+    if deals is None:
+        log(f"history_deals_get returned None: {mt5.last_error()}")
+        return []
+    # Keep only actual trade deals (buy/sell). Skip balance/credit/correction entries.
+    return [d for d in deals if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL)]
+
+
+def build_report_xlsx(account_login, deals):
+    """Recreate the minimal MT5 'Trade History Report' structure TradeNote parses.
+    Column order matters (positional): Time, Deal, Symbol, Type, Direction,
+    Volume, Price, Order, Commission, Fee, Swap, Profit, Balance, Comment."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Trade History Report"])
+    ws.append([])
+    ws.append(["Account:", f"{account_login} TradeNote USD"])
+    ws.append([])
+    ws.append(["Deals"])
+    ws.append(["Time", "Deal", "Symbol", "Type", "Direction", "Volume", "Price",
+               "Order", "Commission", "Fee", "Swap", "Profit", "Balance", "Comment"])
+
+    for d in deals:
+        ts = dt.datetime.fromtimestamp(d.time).strftime("%Y.%m.%d %H:%M:%S")
+        side = "buy" if d.type == mt5.DEAL_TYPE_BUY else "sell"
+        direction = "in" if d.entry == mt5.DEAL_ENTRY_IN else "out"
+        ws.append([ts, str(d.ticket), d.symbol, side, direction,
+                   float(d.volume), float(d.price), str(d.order),
+                   float(d.commission), float(d.fee), float(d.swap),
+                   float(d.profit), 0, d.comment or ""])
+
+    # Terminator: column A empty but column B filled so SheetJS keeps the row and
+    # TradeNote's deal loop stops cleanly (empty rows get dropped by sheet_to_json).
+    ws.append([None, "end"])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def push(cfg, xlsx_bytes):
+    url = cfg.get("tradenote", "url").rstrip("/") + "/api/trades"
+    api_key = cfg.get("tradenote", "api_key")
+    body = {
+        "selectedBroker": "metaTrader5",
+        "uploadMfePrices": False,
+        "data": base64.b64encode(xlsx_bytes).decode(),
+    }
+    r = requests.post(url, headers={"api-key": api_key, "Content-Type": "application/json"},
+                      data=json.dumps(body), timeout=120)
+    r.raise_for_status()
+    return r.text.strip()
+
+
+def main():
+    cfg = load_config()
+    state = load_state()
+
+    lookback_days = cfg.getint("sync", "lookback_days", fallback=7)
+    to = dt.datetime.now()
+    if state.get("last_sync"):
+        frm = dt.datetime.fromisoformat(state["last_sync"])
+    else:
+        frm = to - dt.timedelta(days=lookback_days)
+    log(f"Sync window: {frm:%Y-%m-%d %H:%M} -> {to:%Y-%m-%d %H:%M}")
+
+    connect(cfg)
+    try:
+        deals = fetch_deals(frm, to)
+        log(f"Fetched {len(deals)} trade deal(s)")
+        if not deals:
+            log("Nothing to sync.")
+            state["last_sync"] = to.isoformat()
+            save_state(state)
+            return
+        account = mt5.account_info().login
+        xlsx = build_report_xlsx(account, deals)
+        resp = push(cfg, xlsx)
+        log(f"TradeNote response: {resp}")
+        # Only advance the watermark once the push succeeded.
+        state["last_sync"] = to.isoformat()
+        save_state(state)
+        log("Done.")
+    finally:
+        mt5.shutdown()
+
+
+if __name__ == "__main__":
+    main()

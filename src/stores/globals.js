@@ -3145,6 +3145,8 @@ export const tradeNoteChanged = ref(false)
 export const tradeNoteDateUnixDay = ref(null)
 export const tradeNoteDateUnix = ref(null)
 export const tradeNoteId = ref(null)
+export const tradeReason = ref(null)
+export const tradeReasonChanged = ref(false)
 
 /**************************************
 * SCREENSHOTS
