@@ -582,6 +582,22 @@
                 "type": "String",
                 "required": false
             },
+            "originalUrl": {
+                "type": "String",
+                "required": false
+            },
+            "annotatedUrl": {
+                "type": "String",
+                "required": false
+            },
+            "r2KeyOriginal": {
+                "type": "String",
+                "required": false
+            },
+            "r2KeyAnnotated": {
+                "type": "String",
+                "required": false
+            },
             "markersOnly": {
                 "type": "Boolean",
                 "required": false

@@ -94,8 +94,10 @@ const props = defineProps({
     <!-- SCREENSHOTS -->
     <div :class="[pageId === 'addScreenshot' ? 'imgContainerAddScreenshot' : 'imgContainer']">
         <img :id="props.screenshotData.objectId ? 'screenshotDiv-' + props.source + '-' + props.screenshotData.objectId : 'screenshotDiv-' + props.source + '-' + props.screenshotData.dateUnix"
-            class="screenshotImg mt-3 img-fluid" v-bind:src="props.screenshotData.originalBase64" />
-        <img class="overlayImg screenshotImg mt-3 img-fluid" v-bind:src="props.screenshotData.annotatedBase64" />
+            class="screenshotImg mt-3 img-fluid"
+            v-bind:src="props.screenshotData.originalUrl || props.screenshotData.originalBase64" />
+        <img class="overlayImg screenshotImg mt-3 img-fluid"
+            v-bind:src="props.screenshotData.annotatedUrl || props.screenshotData.annotatedBase64" />
 
         <!--<img v-if="props.screenshotData.markersOnly" :id="props.screenshotData.objectId ? 'screenshotDiv-' + props.source + '-' + props.screenshotData.objectId : 'screenshotDiv-' + props.source + '-' + props.screenshotData.dateUnix" class="screenshotImg mt-3 img-fluid" v-bind:src="props.screenshotData.originalBase64" />
 

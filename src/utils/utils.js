@@ -987,13 +987,18 @@ export async function useSetValues() {
         if (!localStorage.getItem('selectedMonth')) localStorage.setItem('selectedMonth', JSON.stringify({ start: periodRange.filter(element => element.value == 'thisMonth')[0].start, end: periodRange.filter(element => element.value == 'thisMonth')[0].end }))
         selectedMonth.value = JSON.parse(localStorage.getItem('selectedMonth'))
 
-        if (Object.is(localStorage.getItem('selectedAccounts'), null) && currentUser.value && currentUser.value.hasOwnProperty("accounts") && currentUser.value.accounts.length > 0) {
-            currentUser.value.accounts.forEach(element => {
-                selectedAccounts.value.push(element.value)
-            });
-            //console.log("selected accounts " + JSON.stringify(selectedAccounts))
-            localStorage.setItem('selectedAccounts', selectedAccounts.value)
-            selectedAccounts.value = localStorage.getItem('selectedAccounts').split(",")
+        if (currentUser.value && currentUser.value.hasOwnProperty("accounts") && currentUser.value.accounts.length > 0) {
+            const accountValues = currentUser.value.accounts.map(a => a.value)
+            const storedAccounts = localStorage.getItem('selectedAccounts')
+            const storedArr = storedAccounts ? storedAccounts.split(",").filter(Boolean) : []
+            // Select all accounts when nothing valid is stored yet (null, empty, or stale
+            // values that no longer match any existing account) so new trades aren't hidden.
+            const anyValid = storedArr.some(v => accountValues.includes(v))
+            if (!anyValid) {
+                selectedAccounts.value = [...accountValues]
+                localStorage.setItem('selectedAccounts', selectedAccounts.value)
+                selectedAccounts.value = localStorage.getItem('selectedAccounts').split(",")
+            }
         }
 
         let selectedTagsNull = Object.is(localStorage.getItem('selectedTags'), null)

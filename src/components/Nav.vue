@@ -186,48 +186,42 @@ const navAdd = async (param) => {
 
 <template>
     <div class="justify-content-between navbar">
-        <div class="col-6">
+        <div class="navTitle">
             <span v-if="screenType == 'mobile'">
                 <a v-on:click="useToggleMobileMenu">
-                    <i v-bind:class="pages.filter(item => item.id == pageId)[0].icon" class="me-1"></i>{{
+                    <i v-bind:class="pages.filter(item => item.id == pageId)[0].icon" class="me-2"></i>{{
                         pages.filter(item => item.id == pageId)[0].name }}</a>
             </span>
             <span v-else>
-                <i v-bind:class="pages.filter(item => item.id == pageId)[0].icon" class="me-1"></i>{{
+                <i v-bind:class="pages.filter(item => item.id == pageId)[0].icon" class="me-2"></i>{{
                     pages.filter(item => item.id == pageId)[0].name }}</span>
         </div>
-        <div class="col-6 ms-auto text-end">
-            <div class="row">
-                <div id="step11" class="col align-self-end">
-                    <button class="btn blueBtn btn-sm" href="#" id="navbarDropdown" type="button"
-                        data-bs-toggle="dropdown" aria-expanded="false">
-                        <i class="uil uil-plus me-2"></i>Add</button>
-                    <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="navbarDropdown">
-                        <li>
-                            <a class="dropdown-item" @click="navAdd('addTrades')">Trades</a>
-                        </li>
-                        <li>
-                            <a class="dropdown-item" @click="navAdd('addDiary')">Diary Entry</a>
-                        </li>
-                        <li>
-                            <a class="dropdown-item" @click="navAdd('addScreenshot')">Screenshot</a>
-                        </li>
-                        <li>
-                            <a class="dropdown-item" @click="navAdd('addPlaybook')">Playbook</a>
-                        </li>
-                        <li>
-                            <a class="dropdown-item" @click="navAdd('addExcursions')">Excursions</a>
-                        </li>
-
-                    </ul>
-                </div>
-                <div id="step12" class="col-1 me-3" v-bind:key="renderProfile">
-                    <a id="navbarDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-                        <span v-if="currentUser.hasOwnProperty('avatar')"><img class="profileImg"
-                                v-bind:src="currentUser.avatar.url" /></span>
-                        <span v-else><img class="profileImg" src="../assets/astronaut.png" /></span>
-                    </a>
-                    <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="navbarDropdown">
+        <div class="navActions">
+            <div id="step11" class="dropdown">
+                <button class="btn blueBtn btn-sm" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                    <i class="uil uil-plus me-2"></i>Add</button>
+                <ul class="dropdown-menu dropdown-menu-end">
+                    <li>
+                        <a class="dropdown-item" data-bs-toggle="modal" data-bs-target="#addOrderModal">Order</a>
+                    </li>
+                    <li>
+                        <a class="dropdown-item" @click="navAdd('addTrades')">Import file</a>
+                    </li>
+                    <li>
+                        <a class="dropdown-item" @click="navAdd('addPlaybook')">Playbook</a>
+                    </li>
+                    <li>
+                        <a class="dropdown-item" @click="navAdd('addExcursions')">Excursions</a>
+                    </li>
+                </ul>
+            </div>
+            <div id="step12" class="dropdown" v-bind:key="renderProfile">
+                <a role="button" data-bs-toggle="dropdown" aria-expanded="false" class="profileTrigger">
+                    <span v-if="currentUser.hasOwnProperty('avatar')"><img class="profileImg"
+                            v-bind:src="currentUser.avatar.url" /></span>
+                    <span v-else><img class="profileImg" src="../assets/astronaut.png" /></span>
+                </a>
+                <ul class="dropdown-menu dropdown-menu-end">
 
                         <li>
                             <a class="dropdown-item" href="settings">
@@ -260,5 +254,4 @@ const navAdd = async (param) => {
                 </div>
             </div>
         </div>
-    </div>
 </template>

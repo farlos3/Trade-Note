@@ -1,6 +1,7 @@
 import { selectedMonth, pageId, screenshots, screenshot, tradeScreenshotChanged, dateScreenshotEdited, renderData, markerAreaOpen, spinnerLoadingPage, spinnerSetups, editingScreenshot, timeZoneTrade, endOfList, screenshotsPagination, screenshotsQueryLimit, selectedItem, saveButton, resizeCompressImg, resizeCompressMaxWidth, resizeCompressMaxHeight, resizeCompressQuality, expandedScreenshot, expandedId, expandedSource, selectedScreenshot, selectedScreenshotIndex, selectedScreenshotSource, tags, selectedTags, tradeTags, screenshotsInfos } from '../stores/globals.js'
 import { useLoadMore } from './utils.js';
 import { useUpdateTags, useUpdateAvailableTags} from './daily.js';
+import { useUploadImageToR2, useDeleteImageFromR2, useIsRemoteImage } from './r2.js';
 
 /* MODULES */
 import Parse from 'parse/dist/parse.min.js'
@@ -449,9 +450,56 @@ export async function useSaveScreenshot() {
     })
 }
 
+/* Uploads the screenshot's base64 images to Cloudflare R2 (if configured) and returns
+   the URLs/keys to store. If R2 is disabled, useR2 stays false and we keep base64. */
+async function resolveScreenshotImages() {
+    const result = { useR2: false }
+
+    // ORIGINAL
+    if (typeof screenshot.originalBase64 === 'string' && screenshot.originalBase64.startsWith('data:')) {
+        const up = await useUploadImageToR2(screenshot.originalBase64, 'orig_' + (screenshot.name || screenshot.dateUnix))
+        if (up) { result.originalUrl = up.url; result.r2KeyOriginal = up.key; result.useR2 = true }
+    } else if (useIsRemoteImage(screenshot.originalUrl)) {
+        result.originalUrl = screenshot.originalUrl; result.r2KeyOriginal = screenshot.r2KeyOriginal; result.useR2 = true
+    }
+
+    // ANNOTATED
+    if (typeof screenshot.annotatedBase64 === 'string' && screenshot.annotatedBase64.startsWith('data:')) {
+        const up = await useUploadImageToR2(screenshot.annotatedBase64, 'annot_' + (screenshot.name || screenshot.dateUnix))
+        if (up) {
+            // Replacing a previous annotation -> clean up the old object
+            if (screenshot.r2KeyAnnotated && screenshot.r2KeyAnnotated !== up.key) {
+                await useDeleteImageFromR2(screenshot.r2KeyAnnotated)
+            }
+            result.annotatedUrl = up.url; result.r2KeyAnnotated = up.key; result.useR2 = true
+        }
+    } else if (useIsRemoteImage(screenshot.annotatedUrl)) {
+        result.annotatedUrl = screenshot.annotatedUrl; result.r2KeyAnnotated = screenshot.r2KeyAnnotated; result.useR2 = true
+    }
+
+    return result
+}
+
+function applyImageFields(obj, r2) {
+    if (r2.useR2) {
+        obj.set("originalUrl", r2.originalUrl)
+        obj.set("annotatedUrl", r2.annotatedUrl)
+        obj.set("r2KeyOriginal", r2.r2KeyOriginal)
+        obj.set("r2KeyAnnotated", r2.r2KeyAnnotated)
+        obj.unset("originalBase64")
+        obj.unset("annotatedBase64")
+    } else {
+        obj.set("originalBase64", screenshot.originalBase64)
+        obj.set("annotatedBase64", screenshot.annotatedBase64)
+    }
+}
+
 export async function useUploadScreenshotToParse() {
     return new Promise(async (resolve, reject) => {
         console.log(" -> Uploading to database")
+
+        /* Push images to R2 (or keep base64 if R2 not configured) */
+        const r2 = await resolveScreenshotImages()
 
         //spinnerLoadingPageText.value = "Uploading Screenshot ..."
 
@@ -471,8 +519,7 @@ export async function useUploadScreenshotToParse() {
             results.set("name", screenshot.name)
             results.set("symbol", screenshot.symbol)
             results.set("side", screenshot.side)
-            results.set("originalBase64", screenshot.originalBase64)
-            results.set("annotatedBase64", screenshot.annotatedBase64)
+            applyImageFields(results, r2)
             results.set("markersOnly", true)
             results.set("maState", screenshot.maState)
             if (dateScreenshotEdited.value) {
@@ -511,8 +558,7 @@ export async function useUploadScreenshotToParse() {
             object.set("name", screenshot.name)
             object.set("symbol", screenshot.symbol)
             object.set("side", screenshot.side)
-            object.set("originalBase64", screenshot.originalBase64)
-            object.set("annotatedBase64", screenshot.annotatedBase64)
+            applyImageFields(object, r2)
             object.set("markersOnly", true)
             object.set("maState", screenshot.maState)
             object.set("date", new Date(dayjs.unix(screenshot.dateUnix).tz(timeZoneTrade.value).format("YYYY-MM-DDTHH:mm:ss")))
@@ -558,6 +604,9 @@ export async function useDeleteScreenshot(param1, param2) {
     const results = await query.first();
 
     if (results) {
+        // Remove the underlying images from R2 first (no-op if they were base64)
+        await useDeleteImageFromR2(results.get('r2KeyOriginal'))
+        await useDeleteImageFromR2(results.get('r2KeyAnnotated'))
         await results.destroy()
         console.log('  --> Deleted screenshot with id ' + results.id)
         //document.location.reload()

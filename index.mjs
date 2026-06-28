@@ -12,6 +12,28 @@ import { useImportTrades, useGetExistingTradesArray, useUploadTrades } from './s
 import { currentUser, uploadMfePrices } from './src/stores/globals.js';
 import { useGetTimeZone } from './src/utils/utils.js';
 import Stripe from 'stripe';
+import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { randomUUID } from 'crypto';
+
+/* CLOUDFLARE R2 (S3-compatible) image storage */
+let r2Client = null
+const r2Endpoint = process.env.R2_ENDPOINT || (process.env.R2_ACCOUNT_ID ? `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com` : null)
+const r2Bucket = process.env.R2_BUCKET
+const r2PublicUrl = (process.env.R2_PUBLIC_URL || '').replace(/\/$/, '')
+const r2Enabled = !!(r2Endpoint && r2Bucket && r2PublicUrl && process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY)
+if (r2Enabled) {
+    r2Client = new S3Client({
+        region: 'auto',
+        endpoint: r2Endpoint,
+        credentials: {
+            accessKeyId: process.env.R2_ACCESS_KEY_ID,
+            secretAccessKey: process.env.R2_SECRET_ACCESS_KEY
+        }
+    })
+    console.log("\nCLOUDFLARE R2 enabled -> " + r2PublicUrl)
+} else {
+    console.log("\nCLOUDFLARE R2 not configured -> screenshots will be stored as base64 in MongoDB")
+}
 
 
 /* STRIPE VAR */
@@ -214,6 +236,60 @@ const setupApiRoutes = (app) => {
                 // always executed
             })
     });
+
+    /**********************************************
+     * CLOUDFLARE R2 IMAGE STORAGE
+     **********************************************/
+    const bigJson = express.json({ limit: '30mb' })
+
+    // Upload a base64 data URL to R2, return its public URL + object key.
+    app.post("/api/uploadImage", bigJson, async (req, res) => {
+        if (!r2Enabled) {
+            // Let the client know R2 isn't configured so it can fall back to base64
+            return res.status(200).send({ disabled: true })
+        }
+        try {
+            const { base64, keyHint } = req.body
+            if (!base64 || typeof base64 !== 'string') {
+                return res.status(400).send({ error: 'Missing base64' })
+            }
+            const match = base64.match(/^data:(.+);base64,(.*)$/)
+            if (!match) {
+                return res.status(400).send({ error: 'Invalid base64 data URL' })
+            }
+            const contentType = match[1]
+            const buffer = Buffer.from(match[2], 'base64')
+            const ext = (contentType.split('/')[1] || 'png').split('+')[0]
+            const safeHint = (keyHint || 'img').toString().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 60)
+            const key = `screenshots/${safeHint}-${randomUUID()}.${ext}`
+
+            await r2Client.send(new PutObjectCommand({
+                Bucket: r2Bucket,
+                Key: key,
+                Body: buffer,
+                ContentType: contentType
+            }))
+
+            res.status(200).send({ url: `${r2PublicUrl}/${key}`, key })
+        } catch (error) {
+            console.error("Error uploading to R2:", error.message)
+            res.status(500).send({ error: error.message })
+        }
+    })
+
+    // Delete an object from R2 by key.
+    app.post("/api/deleteImage", express.json(), async (req, res) => {
+        if (!r2Enabled) return res.status(200).send({ disabled: true })
+        try {
+            const { key } = req.body
+            if (!key) return res.status(400).send({ error: 'Missing key' })
+            await r2Client.send(new DeleteObjectCommand({ Bucket: r2Bucket, Key: key }))
+            res.status(200).send({ ok: true })
+        } catch (error) {
+            console.error("Error deleting from R2:", error.message)
+            res.status(500).send({ error: error.message })
+        }
+    })
 
     app.post("/api/updateSchemas", async (req, res) => {
 
@@ -491,9 +567,24 @@ const startIndex = async () => {
                     proxy.web(req, res); // Proxy all other routes to Vite
                 });
     
-                // Start Vite dev server
-                const vite = await Vite.createServer({ server: { port: PROXY_PORT } });
+                // Start Vite dev server.
+                // usePolling is required for HMR to work through a Docker bind mount on
+                // Windows/WSL2, where native file-change events don't propagate.
+                const vite = await Vite.createServer({
+                    server: {
+                        port: PROXY_PORT,
+                        watch: { usePolling: true, interval: 300 }
+                    }
+                });
                 vite.listen();
+                // Proxy websocket upgrades (Vite HMR) so the browser hot-reloads on edits
+                if (server) {
+                    server.on('upgrade', (req, socket, head) => {
+                        if (!req.url.startsWith('/api/') && !req.url.startsWith('/parse')) {
+                            proxy.ws(req, socket, head);
+                        }
+                    });
+                }
                 console.log(" -> Running vite dev server");
                 resolve();
             } else {
