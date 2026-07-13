@@ -16,7 +16,9 @@ import datetime as dt
 import io
 import json
 import os
+import smtplib
 import sys
+from email.message import EmailMessage
 
 import requests
 
@@ -135,6 +137,73 @@ def push(cfg, xlsx_bytes):
     return r.text.strip()
 
 
+def notify_email(cfg, deals, resp):
+    """Send a reminder email after new deals were synced. Non-fatal: any failure
+    is logged and swallowed so it never breaks the sync itself.
+
+    Secrets come from the [notify] section of config.ini; the Gmail app password
+    can also be supplied via the GMAIL_APP_PASSWORD environment variable."""
+    if not cfg.has_section("notify"):
+        return
+    if not cfg.getboolean("notify", "enabled", fallback=False):
+        return
+
+    sender = cfg.get("notify", "sender", fallback="").strip()
+    recipient = cfg.get("notify", "recipient", fallback=sender).strip() or sender
+    host = cfg.get("notify", "smtp_host", fallback="smtp.gmail.com").strip()
+    port = cfg.getint("notify", "smtp_port", fallback=587)
+    app_password = cfg.get("notify", "app_password", fallback="").strip()
+    if not app_password:
+        app_password = os.environ.get("GMAIL_APP_PASSWORD", "")
+    # Gmail shows app passwords in 4-char groups; the spaces are cosmetic.
+    app_password = app_password.replace(" ", "")
+
+    if not sender or not app_password:
+        log("notify: sender/app_password not set, skipping email")
+        return
+
+    # Summarise the synced deals for the reminder body.
+    symbols = {}
+    total_profit = 0.0
+    for d in deals:
+        symbols[d.symbol] = symbols.get(d.symbol, 0) + 1
+        total_profit += float(d.profit)
+    sym_line = ", ".join(f"{s} ({n})" for s, n in sorted(symbols.items())) or "-"
+    count = len(deals)
+    tradenote_url = cfg.get("tradenote", "url", fallback="").rstrip("/")
+
+    subject = f"TradeNote: {count} new MT5 deal(s) synced - update your journal"
+    body = "\n".join([
+        f"{count} new deal(s) were just synced from MetaTrader 5 into TradeNote.",
+        "",
+        f"Symbols: {sym_line}",
+        f"Total profit (raw deals): {total_profit:.2f}",
+        "",
+        "Reminder - open TradeNote and finish these trades:",
+        "  - add screenshots of your setups",
+        "  - write your notes / journaling",
+        "  - tag your strategy and satisfaction",
+        "",
+        f"TradeNote: {tradenote_url}" if tradenote_url else "",
+        f"Server response: {resp}",
+    ]).strip()
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = recipient
+    msg.set_content(body)
+
+    try:
+        with smtplib.SMTP(host, port, timeout=30) as s:
+            s.starttls()
+            s.login(sender, app_password)
+            s.send_message(msg)
+        log(f"notify: reminder email sent to {recipient}")
+    except Exception as e:  # noqa: BLE001 - never let email break the sync
+        log(f"notify: failed to send email: {e}")
+
+
 def main():
     cfg = load_config()
     state = load_state()
@@ -163,6 +232,7 @@ def main():
         # Only advance the watermark once the push succeeded.
         state["last_sync"] = to.isoformat()
         save_state(state)
+        notify_email(cfg, deals, resp)
         log("Done.")
     finally:
         mt5.shutdown()

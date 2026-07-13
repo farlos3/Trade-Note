@@ -24,6 +24,9 @@ import { useToggleMobileMenu } from "../utils/utils";
                 <a id="step5" v-bind:class="[pageId === 'calendar' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
                     href="/calendar">
                     <i class="uil uil-calendar-alt me-2"></i>Calendar</a>
+                <a id="step5b" v-bind:class="[pageId === 'analysis' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
+                    href="/analysis">
+                    <i class="uil uil-brain me-2"></i>AI Analysis</a>
             </div>
         </div>
 
