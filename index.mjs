@@ -11,6 +11,8 @@ import Proxy from 'http-proxy'
 import { useImportTrades, useGetExistingTradesArray, useUploadTrades } from './src/utils/addTrades.js';
 import { currentUser, uploadMfePrices } from './src/stores/globals.js';
 import { useGetTimeZone } from './src/utils/utils.js';
+import { fetchDayDocs, fetchNotes } from './mcp-server/db.mjs';
+import { flattenTrades, computeStats, findBehaviorPatterns } from './mcp-server/analysis.mjs';
 import Stripe from 'stripe';
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { randomUUID } from 'crypto';
@@ -235,6 +237,54 @@ const setupApiRoutes = (app) => {
             .finally(function () {
                 // always executed
             })
+    });
+
+    /**********************************************
+     * TRADING-BEHAVIOR ANALYSIS (deterministic; reuses mcp-server/analysis.mjs)
+     * GET /api/analysis/behavior?from=YYYY-MM-DD&to=YYYY-MM-DD&tz=Asia/Bangkok
+     **********************************************/
+    const isoToUnix = (s) => {
+        if (!s) return undefined
+        const ms = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(s) ? s + 'T00:00:00Z' : s)
+        return Number.isNaN(ms) ? undefined : Math.floor(ms / 1000)
+    }
+
+    app.get('/api/analysis/behavior', async (req, res) => {
+        try {
+            const tz = req.query.tz || process.env.TRADENOTE_TZ || 'UTC'
+            const fromUnix = isoToUnix(req.query.from)
+            const toUnix = isoToUnix(req.query.to)
+            const days = await fetchDayDocs({ fromUnix, toUnix })
+            const trades = flattenTrades(days)
+            const stats = computeStats(trades, tz)
+            const patterns = findBehaviorPatterns(trades, { revengeWindowMinutes: 15, tz })
+
+            // Recent journal notes so the user can eyeball behavior vs. commentary
+            let notes = []
+            try {
+                const raw = await fetchNotes({ fromUnix, toUnix })
+                notes = raw
+                    .filter(n => (n.reason && n.reason.trim()) || (n.note && n.note.trim()))
+                    .slice(-15)
+                    .reverse()
+                    .map(n => ({
+                        date: n.dateUnix ? new Date(n.dateUnix * 1000).toISOString().slice(0, 10) : null,
+                        reason: n.reason || null,
+                        note: n.note || null,
+                    }))
+            } catch (e) { /* notes are optional */ }
+
+            res.status(200).json({
+                range: { from: req.query.from || null, to: req.query.to || null },
+                timezone: tz,
+                stats,
+                patterns,
+                notes,
+            })
+        } catch (error) {
+            console.error(' -> Behavior analysis error', error)
+            res.status(500).send({ error: String(error?.message || error) })
+        }
     });
 
     /**********************************************

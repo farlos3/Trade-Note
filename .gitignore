@@ -10,3 +10,4 @@ logs
 # MT5 sync local secrets/state
 mt5-sync/config.ini
 mt5-sync/state.json
+__pycache__/

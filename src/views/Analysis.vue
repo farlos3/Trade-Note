@@ -1,0 +1,320 @@
+<script setup>
+import { ref } from 'vue'
+import axios from 'axios'
+import dayjs from 'dayjs'
+import { timeZoneTrade } from '../stores/globals'
+
+const loading = ref(false)
+const error = ref(null)
+const data = ref(null)
+const period = ref('30d')
+
+const PERIODS = [
+    { id: '7d', label: '7 วัน' },
+    { id: '30d', label: '30 วัน' },
+    { id: '90d', label: '90 วัน' },
+    { id: 'all', label: 'ทั้งหมด' },
+]
+
+function rangeFor(p) {
+    if (p === 'all') return { from: null, to: null }
+    const days = p === '7d' ? 7 : p === '90d' ? 90 : 30
+    return {
+        from: dayjs().subtract(days, 'day').format('YYYY-MM-DD'),
+        to: dayjs().add(1, 'day').format('YYYY-MM-DD'), // exclusive upper bound = include today
+    }
+}
+
+async function run() {
+    loading.value = true
+    error.value = null
+    try {
+        const { from, to } = rangeFor(period.value)
+        const params = { tz: timeZoneTrade.value || 'UTC' }
+        if (from) params.from = from
+        if (to) params.to = to
+        const res = await axios.get('/api/analysis/behavior', { params })
+        data.value = res.data
+    } catch (e) {
+        error.value = e?.response?.data?.error || e.message
+        data.value = null
+    } finally {
+        loading.value = false
+    }
+}
+
+/* ---- formatting helpers ---- */
+const fmt = (n, d = 2) => (n == null ? '—' : Number(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }))
+const pct = (n) => (n == null ? '—' : (n * 100).toFixed(1) + '%')
+const pnlClass = (n) => (n == null ? '' : n > 0 ? 'greenTrade' : n < 0 ? 'redTrade' : '')
+
+/* Turn the behavior report into a list of flag cards with a status. */
+function flagCards(p) {
+    if (!p) return []
+    return [
+        {
+            key: 'revenge',
+            title: 'Revenge trading',
+            desc: `เข้าเทรดใหม่ภายใน ${p.revengeTrading.windowMinutes} นาที หลังเพิ่งขาดทุน`,
+            bad: p.revengeTrading.count > 0,
+            metric: `${p.revengeTrading.count} ครั้ง`,
+            sub: p.revengeTrading.count ? `net ${fmt(p.revengeTrading.netPnL)} · win ${pct(p.revengeTrading.winRate)}` : 'ไม่พบ',
+        },
+        {
+            key: 'overtrading',
+            title: 'Overtrading',
+            desc: `วันที่เทรดเยอะผิดปกติ (มัธยฐาน ${p.overtrading.medianTradesPerDay} ไม้/วัน, ธง ≥ ${p.overtrading.flagThreshold})`,
+            bad: p.overtrading.flaggedDays > 0,
+            metric: `${p.overtrading.flaggedDays} วัน`,
+            sub: p.overtrading.flaggedDays ? `net ${fmt(p.overtrading.netOnFlaggedDays)} ในวันที่ธง` : 'ไม่พบ',
+        },
+        {
+            key: 'sizing',
+            title: 'เพิ่ม lot หลังขาดทุน',
+            desc: 'เปรียบเทียบขนาดไม้หลังแพ้ vs หลังชนะ (tilt/martingale)',
+            bad: p.positionSizingTilt.flag != null,
+            metric: p.positionSizingTilt.ratio != null ? `${fmt(p.positionSizingTilt.ratio)}×` : '—',
+            sub: `หลังแพ้ ${fmt(p.positionSizingTilt.avgSizeAfterLoss, 3)} · หลังชนะ ${fmt(p.positionSizingTilt.avgSizeAfterWin, 3)}`,
+        },
+        {
+            key: 'holding',
+            title: 'ถือไม้ขาดทุนนานกว่าไม้กำไร',
+            desc: 'ตัดกำไรเร็ว ปล่อยขาดทุนยาว',
+            bad: p.holdingTimeBias.flag != null,
+            metric: p.holdingTimeBias.ratio != null ? `${fmt(p.holdingTimeBias.ratio)}×` : '—',
+            sub: `แพ้ ${fmt(p.holdingTimeBias.avgLoserHoldMinutes, 1)} นาที · ชนะ ${fmt(p.holdingTimeBias.avgWinnerHoldMinutes, 1)} นาที`,
+        },
+    ]
+}
+
+const topEntries = (obj, n = 6) => (obj ? Object.entries(obj).slice(0, n) : [])
+</script>
+
+<template>
+    <div class="analysisPage p-3">
+        <!-- Controls -->
+        <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+            <div class="btn-group" role="group">
+                <button v-for="p in PERIODS" :key="p.id" type="button"
+                    v-bind:class="['btn', 'btn-sm', period === p.id ? 'btn-primary' : 'btn-outline-secondary']"
+                    v-on:click="period = p.id">{{ p.label }}</button>
+            </div>
+            <button type="button" class="btn btn-success btn-sm ms-auto" v-on:click="run" :disabled="loading">
+                <span v-if="loading" class="spinner-border spinner-border-sm me-2" role="status"></span>
+                <i v-else class="uil uil-brain me-1"></i>วิเคราะห์พฤติกรรม
+            </button>
+        </div>
+
+        <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
+
+        <!-- Empty state -->
+        <div v-if="!data && !loading && !error" class="emptyState text-center p-5">
+            <i class="uil uil-chart-pie-alt d-block mb-2" style="font-size: 2.5rem; opacity: 0.5;"></i>
+            เลือกช่วงเวลาแล้วกด <strong>วิเคราะห์พฤติกรรม</strong> เพื่อดูสถิติและธงพฤติกรรมการเทรด
+        </div>
+
+        <template v-if="data">
+            <!-- Headline stats -->
+            <div class="statGrid mb-3">
+                <div class="statTile">
+                    <div class="statLabel">เทรดทั้งหมด</div>
+                    <div class="statValue">{{ data.stats.trades }}</div>
+                    <div class="statSub">ชนะ {{ data.stats.wins }} · แพ้ {{ data.stats.losses }}</div>
+                </div>
+                <div class="statTile">
+                    <div class="statLabel">Win rate</div>
+                    <div class="statValue">{{ pct(data.stats.winRate) }}</div>
+                </div>
+                <div class="statTile">
+                    <div class="statLabel">Net P&amp;L</div>
+                    <div class="statValue" v-bind:class="pnlClass(data.stats.netPnL)">{{ fmt(data.stats.netPnL) }}</div>
+                </div>
+                <div class="statTile">
+                    <div class="statLabel">Profit factor</div>
+                    <div class="statValue" v-bind:class="data.stats.profitFactor >= 1 ? 'greenTrade' : 'redTrade'">{{
+                        fmt(data.stats.profitFactor) }}</div>
+                </div>
+                <div class="statTile">
+                    <div class="statLabel">Expectancy / เทรด</div>
+                    <div class="statValue" v-bind:class="pnlClass(data.stats.expectancy)">{{ fmt(data.stats.expectancy) }}
+                    </div>
+                </div>
+                <div class="statTile">
+                    <div class="statLabel">Avg win / loss</div>
+                    <div class="statValue"><span class="greenTrade">{{ fmt(data.stats.avgWin) }}</span> /
+                        <span class="redTrade">{{ fmt(data.stats.avgLoss) }}</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Behavior flags -->
+            <h6 class="sectionTitle">ธงพฤติกรรม</h6>
+            <div v-if="data.stats.trades === 0" class="text-muted mb-3">ยังไม่มีเทรดในช่วงนี้</div>
+            <div v-else class="flagGrid mb-4">
+                <div v-for="c in flagCards(data.patterns)" :key="c.key" v-bind:class="['flagCard', c.bad ? 'flagBad' : 'flagOk']">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <span class="flagTitle">{{ c.title }}</span>
+                        <span v-bind:class="['badge', c.bad ? 'bg-danger' : 'bg-success']">{{ c.bad ? 'พบ' : 'OK' }}</span>
+                    </div>
+                    <div class="flagMetric">{{ c.metric }}</div>
+                    <div class="flagSub">{{ c.sub }}</div>
+                    <div class="flagDesc">{{ c.desc }}</div>
+                </div>
+            </div>
+
+            <!-- Breakdowns -->
+            <div class="row g-3 mb-4" v-if="data.stats.trades > 0">
+                <div class="col-md-6">
+                    <h6 class="sectionTitle">ตาม Symbol</h6>
+                    <table class="table table-sm breakTable">
+                        <thead><tr><th>Symbol</th><th class="text-end">ไม้</th><th class="text-end">Win</th><th class="text-end">Net</th></tr></thead>
+                        <tbody>
+                            <tr v-for="[k, v] in topEntries(data.stats.bySymbol)" :key="k">
+                                <td>{{ k }}</td>
+                                <td class="text-end">{{ v.count }}</td>
+                                <td class="text-end">{{ pct(v.winRate) }}</td>
+                                <td class="text-end" v-bind:class="pnlClass(v.net)">{{ fmt(v.net) }}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="col-md-6">
+                    <h6 class="sectionTitle">ตามวัน</h6>
+                    <table class="table table-sm breakTable">
+                        <thead><tr><th>วัน</th><th class="text-end">ไม้</th><th class="text-end">Win</th><th class="text-end">Net</th></tr></thead>
+                        <tbody>
+                            <tr v-for="[k, v] in topEntries(data.stats.byWeekday)" :key="k">
+                                <td>{{ k }}</td>
+                                <td class="text-end">{{ v.count }}</td>
+                                <td class="text-end">{{ pct(v.winRate) }}</td>
+                                <td class="text-end" v-bind:class="pnlClass(v.net)">{{ fmt(v.net) }}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Journal notes -->
+            <div v-if="data.notes && data.notes.length">
+                <h6 class="sectionTitle">บันทึก/เหตุผลล่าสุดที่คุณเขียน</h6>
+                <div v-for="(n, i) in data.notes" :key="i" class="noteRow">
+                    <span class="noteDate">{{ n.date }}</span>
+                    <span v-if="n.reason" class="noteReason">เหตุผล: {{ n.reason }}</span>
+                    <span v-if="n.note" class="noteText">{{ n.note }}</span>
+                </div>
+                <p class="txt-small text-muted mt-2">
+                    <i class="uil uil-robot me-1"></i>อยากให้ AI ตีความเหตุผลเหล่านี้โยงกับพฤติกรรม? ถามผ่าน Claude Desktop (MCP: <code>get_journal_notes</code>)
+                </p>
+            </div>
+        </template>
+    </div>
+</template>
+
+<style scoped>
+.statGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 0.75rem;
+}
+
+.statTile {
+    background-color: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 0.6rem;
+    padding: 0.75rem 0.9rem;
+}
+
+.statLabel {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.6;
+}
+
+.statValue {
+    font-size: 1.35rem;
+    font-weight: 700;
+    margin-top: 0.15rem;
+}
+
+.statSub {
+    font-size: 0.72rem;
+    opacity: 0.6;
+}
+
+.sectionTitle {
+    font-weight: 700;
+    margin-bottom: 0.6rem;
+}
+
+.flagGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 0.75rem;
+}
+
+.flagCard {
+    border-radius: 0.6rem;
+    padding: 0.8rem 0.9rem;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    background-color: rgba(255, 255, 255, 0.03);
+}
+
+.flagCard.flagBad {
+    border-color: rgba(220, 53, 69, 0.45);
+    background-color: rgba(220, 53, 69, 0.08);
+}
+
+.flagTitle {
+    font-weight: 600;
+}
+
+.flagMetric {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-top: 0.35rem;
+}
+
+.flagSub {
+    font-size: 0.78rem;
+    opacity: 0.75;
+}
+
+.flagDesc {
+    font-size: 0.72rem;
+    opacity: 0.55;
+    margin-top: 0.35rem;
+}
+
+.breakTable {
+    font-size: 0.85rem;
+}
+
+.emptyState {
+    opacity: 0.7;
+    border: 1px dashed rgba(255, 255, 255, 0.12);
+    border-radius: 0.6rem;
+}
+
+.noteRow {
+    padding: 0.4rem 0.1rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    font-size: 0.85rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.noteDate {
+    opacity: 0.55;
+    min-width: 5.5rem;
+}
+
+.noteReason {
+    font-weight: 600;
+}
+
+.noteText {
+    opacity: 0.85;
+}
+</style>

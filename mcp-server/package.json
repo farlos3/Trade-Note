@@ -1,0 +1,19 @@
+{
+  "name": "tradenote-mcp",
+  "version": "0.1.0",
+  "description": "MCP server exposing TradeNote trades from MongoDB Atlas for AI trading-behavior analysis",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "tradenote-mcp": "server.mjs"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "inspect-schema": "node inspect-schema.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "mongodb": "^6.8.0",
+    "zod": "^3.23.8"
+  }
+}

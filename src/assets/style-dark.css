@@ -710,7 +710,7 @@ input:checked+.slider:before {
 
 .sideMenuSection {
     display: block;
-    font-size: 10px !important;
+    font-size: 11px !important;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--white-38);
@@ -768,7 +768,7 @@ img.logo {
     /* Same surface as the sidebar so the whole top strip reads as one bar */
     background-color: var(--black-bg-7) !important;
     color: var(--white-87);
-    height: 52px;
+    height: 60px;
     position: sticky;
     top: 0;
     z-index: 50;
@@ -780,13 +780,13 @@ img.logo {
     display: flex;
     align-items: center;
     font-weight: 700;
-    font-size: 0.95rem;
+    font-size: 1.15rem;
     color: var(--white-87);
 }
 
 .navTitle i {
     color: var(--accent);
-    font-size: 1.05rem;
+    font-size: 1.3rem;
 }
 
 .navTitle a {
@@ -836,17 +836,17 @@ img.logo {
 .sideMenuDiv a.nav-link {
     display: flex;
     align-items: center;
-    padding: 0.55rem 0.85rem;
+    padding: 0.65rem 0.9rem;
     border-radius: var(--radius-sm);
     color: var(--white-65);
     font-weight: 600;
-    font-size: 13px;
+    font-size: 15px;
     transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .sideMenuDiv a.nav-link i {
-    font-size: 1.05rem;
-    width: 1.4rem;
+    font-size: 1.2rem;
+    width: 1.65rem;
     color: var(--white-38);
     transition: color 0.15s ease;
 }

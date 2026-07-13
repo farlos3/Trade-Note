@@ -30,6 +30,11 @@ const pages = [{
     icon: "uil uil-calendar-alt"
 },
 {
+    id: "analysis",
+    name: "AI Analysis",
+    icon: "uil uil-brain"
+},
+{
     id: "screenshots",
     name: "Screenshots",
     icon: "uil uil-image-v"
