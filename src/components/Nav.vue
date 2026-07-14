@@ -35,6 +35,16 @@ const pages = [{
     icon: "uil uil-brain"
 },
 {
+    id: "plan",
+    name: "Trading Plan",
+    icon: "uil uil-calculator-alt"
+},
+{
+    id: "planVsActual",
+    name: "Plan vs Actual",
+    icon: "uil uil-balance-scale"
+},
+{
     id: "screenshots",
     name: "Screenshots",
     icon: "uil uil-image-v"

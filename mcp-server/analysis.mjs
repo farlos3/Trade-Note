@@ -117,6 +117,26 @@ export function computeStats(trades, tz = 'UTC') {
   }
 }
 
+/**
+ * Per-day P&L aggregates, oldest first. Lets a plan target ("1% per day") be
+ * compared against what actually happened on the days you traded.
+ */
+export function computeDailyBreakdown(trades) {
+  const byDay = {}
+  for (const t of trades) {
+    const g = (byDay[t.dateUnix] ??= { net: 0, trades: 0 })
+    g.net += t.pnl
+    g.trades++
+  }
+  return Object.entries(byDay)
+    .map(([dateUnix, g]) => ({
+      date: new Date(Number(dateUnix) * 1000).toISOString().slice(0, 10),
+      net: round(g.net),
+      trades: g.trades,
+    }))
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+}
+
 const median = (xs) => {
   if (!xs.length) return 0
   const s = [...xs].sort((a, b) => a - b)

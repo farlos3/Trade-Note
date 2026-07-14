@@ -12,7 +12,7 @@ import { useImportTrades, useGetExistingTradesArray, useUploadTrades } from './s
 import { currentUser, uploadMfePrices } from './src/stores/globals.js';
 import { useGetTimeZone } from './src/utils/utils.js';
 import { fetchDayDocs, fetchNotes } from './mcp-server/db.mjs';
-import { flattenTrades, computeStats, findBehaviorPatterns } from './mcp-server/analysis.mjs';
+import { flattenTrades, computeStats, findBehaviorPatterns, computeDailyBreakdown } from './mcp-server/analysis.mjs';
 import Stripe from 'stripe';
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { randomUUID } from 'crypto';
@@ -279,6 +279,7 @@ const setupApiRoutes = (app) => {
                 timezone: tz,
                 stats,
                 patterns,
+                daily: computeDailyBreakdown(trades), // per-day P&L: plan target vs reality
                 notes,
             })
         } catch (error) {

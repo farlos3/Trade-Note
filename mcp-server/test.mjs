@@ -3,7 +3,7 @@
  * Self-test for the pure analysis logic. Uses synthetic day documents — no DB.
  * Run: node test.mjs
  */
-import { flattenTrades, computeStats, findBehaviorPatterns } from './analysis.mjs'
+import { flattenTrades, computeStats, findBehaviorPatterns, computeDailyBreakdown } from './analysis.mjs'
 
 let failures = 0
 const approx = (a, b, eps = 0.02) => Math.abs(a - b) <= eps
@@ -68,6 +68,20 @@ const b2 = findBehaviorPatterns(multi, { tz: 'UTC' })
 check('overtrading median 1', b2.overtrading.medianTradesPerDay === 1)
 check('overtrading flags 1 day (the 5-trade day)', b2.overtrading.flaggedDays === 1)
 check('overtrading flagged day has 5 trades', b2.overtrading.days[0]?.trades === 5)
+
+// --- Daily breakdown (plan vs actual) ---
+const daily1 = computeDailyBreakdown(trades)
+check('daily: one row for the single day', daily1.length === 1)
+check('daily: net = -70 (sum of the day)', approx(daily1[0].net, -70))
+check('daily: 5 trades on that day', daily1[0].trades === 5)
+check('daily: date is the day of the doc', daily1[0].date === D1)
+
+const daily2 = computeDailyBreakdown(multi)
+check('daily: three rows for three days', daily2.length === 3)
+check('daily: sorted oldest first', daily2[0].date === '2026-02-02' && daily2[2].date === '2026-02-04')
+check('daily: trades per day 5/1/1', daily2.map(d => d.trades).join(',') === '5,1,1')
+check('daily: net per day 25/5/5', daily2.map(d => d.net).join(',') === '25,5,5')
+check('daily: empty input -> []', computeDailyBreakdown([]).length === 0)
 
 // --- Empty input is safe ---
 const empty = computeStats(flattenTrades([]), 'UTC')
