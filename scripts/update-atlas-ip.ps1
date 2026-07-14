@@ -101,7 +101,7 @@ if ([string]::IsNullOrWhiteSpace($PublicKey) -or
     [string]::IsNullOrWhiteSpace($PrivateKey) -or
     [string]::IsNullOrWhiteSpace($ProjectId)) {
     Write-Warning "Atlas API not configured. Set ATLAS_PUBLIC_KEY / ATLAS_PRIVATE_KEY / ATLAS_PROJECT_ID in $EnvFile"
-    Write-Warning "Skipping IP update. (Create a key in Atlas: Access Manager -> API Keys, role 'Project IP Access List Admin'.)"
+    Write-Warning "Skipping IP update. (Create a key in Atlas: Access Manager -> API Keys, role 'Project Network Access Manager'.)"
     exit 2
 }
 
@@ -119,6 +119,33 @@ Write-Host "Current public IP: $ip"
 
 $get = Invoke-Atlas -Method GET -Url "$base/groups/$ProjectId/accessList?itemsPerPage=500"
 if ($get.Code -notmatch '^2') {
+    # Chicken-and-egg: the API KEY has its own access list, separate from the
+    # database Network Access list this script manages. If the key is pinned to
+    # an old IP, it can't be used to whitelist the new one.
+    if ($get.Code -eq '403' -and $get.Body -match 'IP_ADDRESS_NOT_ON_ACCESS_LIST') {
+        $o = $ip.Split('.')
+        $ip16 = "$($o[0]).$($o[1]).0.0/16"
+        $ip24 = "$($o[0]).$($o[1]).$($o[2]).0/24"
+        Write-Host ""
+        Write-Host "ERROR: Atlas rejected the API key itself from this IP ($ip)." -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  This is the API KEY's own access list - NOT the database Network Access"
+        Write-Host "  list that this script manages. They are two different lists."
+        Write-Host ""
+        Write-Host "  Fix it in Atlas: Access Manager -> API Keys -> (your key) -> Edit"
+        Write-Host "                   -> step 2 'Private Key & Access List' -> Add Access List Entry"
+        Write-Host "    * Click 'USE CURRENT IP ADDRESS' to unblock right now, then"
+        Write-Host "    * add your ISP's range as CIDR so the key survives IP rotation:"
+        Write-Host "        try  $ip16   (broader, fewer surprises)"
+        Write-Host "        or   $ip24   (tighter, may break when the ISP moves you)"
+        Write-Host "    Atlas refuses 0.0.0.0/0 on API key access lists by design - a range is"
+        Write-Host "    the only way to cover a dynamic IP."
+        Write-Host ""
+        Write-Host "  Don't want to maintain this at all? Set the DATABASE Network Access to"
+        Write-Host "  0.0.0.0/0 (allowed there, and what Render deployments need anyway), then"
+        Write-Host "  run start.ps1 -SkipIp. The database stays protected by user/password + TLS."
+        exit 3
+    }
     Write-Warning "Atlas GET accessList failed (HTTP $($get.Code)): $($get.Body)"
     exit 1
 }

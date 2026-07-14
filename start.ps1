@@ -5,10 +5,13 @@
 
 .DESCRIPTION
     One command to bring the project up:
-      1. Whitelist this machine's public IP in MongoDB Atlas (Admin API).
-      2. Start the TradeNote app in Docker (dev / local / prod compose file).
-      3. Wait until the web app answers on its port.
-      4. Run the MT5 -> TradeNote sync once (emails a reminder if new deals).
+      1. Start the TradeNote app in Docker (dev / local / prod compose file).
+      2. Wait until the web app answers on its port.
+      3. Run the MT5 -> TradeNote sync once (emails a reminder if new deals).
+
+    Atlas IP whitelisting is OPT-IN (-UpdateIp). The recommended setup is to set
+    Atlas Network Access to 0.0.0.0/0 once, which never needs updating again (the
+    database is still protected by its user/password + TLS, and Render needs it).
 
     Any step that is not applicable (Atlas keys missing, MT5 terminal closed,
     Python absent) is turned into a warning instead of aborting the whole run.
@@ -16,7 +19,11 @@
 .PARAMETER Mode
     dev (default, hot-reload) | local (build, no hot-reload) | prod (published image).
 
-.PARAMETER SkipIp / SkipDocker / SkipSync
+.PARAMETER UpdateIp
+    Whitelist this machine's public IP in Atlas before starting. Only needed if
+    the Atlas Network Access list is NOT 0.0.0.0/0.
+
+.PARAMETER SkipDocker / SkipSync
     Skip individual steps.
 
 .PARAMETER IpOnly
@@ -33,7 +40,8 @@
 param(
     [ValidateSet("dev", "local", "prod")]
     [string]$Mode = "dev",
-    [switch]$SkipIp,
+    [switch]$UpdateIp,
+    [switch]$SkipIp,   # kept for compatibility (skipping is now the default)
     [switch]$SkipDocker,
     [switch]$SkipSync,
     [switch]$IpOnly
@@ -65,15 +73,19 @@ if (-not (Test-Path $envFile)) {
 }
 $envMap = Read-DotEnv -Path $envFile
 
-# 1. --- Atlas IP whitelist ---------------------------------------------------
-if (-not $SkipIp) {
+# 1. --- Atlas IP whitelist (opt-in) ------------------------------------------
+# Off by default: the recommended setup is Atlas Network Access = 0.0.0.0/0,
+# which never needs updating. Pass -UpdateIp if you keep a tight whitelist.
+if (($UpdateIp -or $IpOnly) -and -not $SkipIp) {
     Section "Updating MongoDB Atlas IP access list"
     try {
         & "$root\scripts\update-atlas-ip.ps1" -EnvFile $envFile
         if ($LASTEXITCODE -eq 2) {
             Write-Warning "Atlas IP step skipped (API keys not configured)."
+        } elseif ($LASTEXITCODE -eq 3) {
+            Write-Warning "Atlas IP step blocked by the API key's own access list - see the fix above."
         } elseif ($LASTEXITCODE -ne 0) {
-            Write-Warning "Atlas IP update failed (exit $LASTEXITCODE). If the app can't reach MongoDB, fix ATLAS_* in .env."
+            Write-Warning "Atlas IP update failed (exit $LASTEXITCODE) - see the message above."
         }
     } catch {
         Write-Warning "Atlas IP update error: $($_.Exception.Message)"
@@ -145,4 +157,4 @@ if (-not $SkipSync) {
 Section "Done"
 Write-Host "App:   $appUrl"
 Write-Host "Logs:  docker compose -f $composeFile logs -f tradenote" -ForegroundColor DarkGray
-Write-Host "IP:    .\scripts\update-atlas-ip.ps1   (re-run when your IP changes)" -ForegroundColor DarkGray
+Write-Host "IP:    only needed if Atlas Network Access is not 0.0.0.0/0  ->  .\start.ps1 -UpdateIp" -ForegroundColor DarkGray

@@ -25,8 +25,10 @@ All tools are **read-only** — the server never writes to the database.
 
 - **Node.js 18+**
 - The project's `MONGO_URI` (the server reads the repo-root `.env` automatically)
-- Your machine's public IP whitelisted in Atlas. This project already automates
-  that: run `./start.sh --ip-only` (or `.\scripts\update-atlas-ip.ps1`).
+- Atlas must accept connections from this machine. Simplest and permanent: set
+  **Network Access → 0.0.0.0/0** once (the database is still protected by its
+  user/password + TLS). If you keep a tight whitelist instead, refresh it with
+  `./start.sh --ip-only` whenever your public IP changes.
 
 ## Install
 
