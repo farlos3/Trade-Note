@@ -83,6 +83,26 @@ const router = createRouter({
             import('../views/Analysis.vue')
     },
     {
+        path: '/plan',
+        name: 'plan',
+        meta: {
+            title: "Trading Plan",
+            layout: DashboardLayout
+        },
+        component: () =>
+            import('../views/Plan.vue')
+    },
+    {
+        path: '/plan-vs-actual',
+        name: 'planVsActual',
+        meta: {
+            title: "Plan vs Actual",
+            layout: DashboardLayout
+        },
+        component: () =>
+            import('../views/PlanVsActual.vue')
+    },
+    {
         path: '/daily',
         name: 'daily',
         meta: {

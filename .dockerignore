@@ -1,0 +1,10 @@
+# Docker reads .dockerignore from the BUILD CONTEXT ROOT (this file), not from
+# next to the Dockerfile — so this must live here to take effect.
+# Keeping node_modules out matters: the image installs its own (Linux) deps, and
+# copying the host's over them would shadow the image's install.
+node_modules
+package-lock.json
+dist
+.git
+.vscode
+logs

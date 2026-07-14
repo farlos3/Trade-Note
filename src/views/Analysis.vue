@@ -1,12 +1,10 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import axios from 'axios'
 import dayjs from 'dayjs'
 import { timeZoneTrade } from '../stores/globals'
 
-/* ============================================================
-   SECTION 1 — Behavior analysis (from real trades via backend)
-   ============================================================ */
+/* Behavior analysis from real trades, via the backend. */
 const loading = ref(false)
 const error = ref(null)
 const data = ref(null)
@@ -90,59 +88,10 @@ function flagCards(p) {
 }
 
 const topEntries = (obj, n = 6) => (obj ? Object.entries(obj).slice(0, n) : [])
-
-/* ============================================================
-   SECTION 2 — Trading-plan projection (compound %/day, weekdays only)
-   ============================================================ */
-const startBalance = ref(1000)
-const dailyPct = ref(1)
-const horizonMonths = ref(3)
-
-const projection = computed(() => {
-    const start = Number(startBalance.value)
-    const r = Number(dailyPct.value) / 100
-    const months = Math.max(1, Math.min(120, Math.floor(Number(horizonMonths.value) || 0)))
-    if (!Number.isFinite(start) || start <= 0 || !Number.isFinite(r)) return null
-
-    const startDay = dayjs().startOf('day')
-    const end = startDay.add(months, 'month')
-    let bal = start
-    let tradingDays = 0
-    const monthly = []
-
-    let cur = startDay.add(1, 'day') // project from tomorrow
-    while (!cur.isAfter(end, 'day')) {
-        const dow = cur.day() // 0 = Sun, 6 = Sat → skip weekends (market closed)
-        if (dow !== 0 && dow !== 6) { bal *= 1 + r; tradingDays++ }
-        const isMonthEnd = cur.date() === cur.daysInMonth()
-        const isEnd = cur.isSame(end, 'day')
-        if (isMonthEnd || isEnd) {
-            monthly.push({
-                date: cur.format('YYYY-MM-DD'),
-                balance: bal,
-                tradingDays,
-                returnPct: (bal / start - 1) * 100,
-            })
-        }
-        cur = cur.add(1, 'day')
-    }
-    // de-dupe if the horizon end coincides with a month end
-    const seen = new Set()
-    const rows = monthly.filter((m) => (seen.has(m.date) ? false : (seen.add(m.date), true)))
-
-    return {
-        tradingDays,
-        finalBalance: bal,
-        totalReturnPct: (bal / start - 1) * 100,
-        profit: bal - start,
-        monthly: rows,
-    }
-})
 </script>
 
 <template>
     <div class="analysisPage p-3">
-        <!-- ===================== SECTION 1: BEHAVIOR ===================== -->
         <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
             <div class="btn-group" role="group">
                 <button v-for="p in PERIODS" :key="p.id" type="button"
@@ -253,66 +202,6 @@ const projection = computed(() => {
                 </p>
             </div>
         </template>
-
-        <!-- ===================== SECTION 2: PLAN PROJECTION ===================== -->
-        <hr class="my-4" style="opacity: 0.1;" />
-        <h6 class="sectionTitle"><i class="uil uil-calculator-alt me-1"></i>Trading plan projection</h6>
-        <p class="txt-small text-muted mb-3">
-            Compounds a fixed daily target on trading days only — weekends (market closed) are skipped.
-        </p>
-
-        <div class="planInputs mb-3">
-            <div>
-                <label class="planLabel">Starting balance</label>
-                <input type="number" min="0" step="100" class="form-control form-control-sm" v-model="startBalance" />
-            </div>
-            <div>
-                <label class="planLabel">Target % per day</label>
-                <input type="number" step="0.1" class="form-control form-control-sm" v-model="dailyPct" />
-            </div>
-            <div>
-                <label class="planLabel">Horizon (months)</label>
-                <input type="number" min="1" max="120" step="1" class="form-control form-control-sm" v-model="horizonMonths" />
-            </div>
-        </div>
-
-        <template v-if="projection">
-            <div class="statGrid mb-3">
-                <div class="statTile">
-                    <div class="statLabel">Trading days</div>
-                    <div class="statValue">{{ projection.tradingDays }}</div>
-                    <div class="statSub">Mon–Fri only</div>
-                </div>
-                <div class="statTile">
-                    <div class="statLabel">Projected balance</div>
-                    <div class="statValue greenTrade">{{ fmt(projection.finalBalance) }}</div>
-                </div>
-                <div class="statTile">
-                    <div class="statLabel">Total profit</div>
-                    <div class="statValue" v-bind:class="pnlClass(projection.profit)">{{ fmt(projection.profit) }}</div>
-                </div>
-                <div class="statTile">
-                    <div class="statLabel">Total return</div>
-                    <div class="statValue greenTrade">{{ fmt(projection.totalReturnPct) }}%</div>
-                </div>
-            </div>
-
-            <table class="table table-sm breakTable">
-                <thead><tr><th>Month end</th><th class="text-end">Trading days</th><th class="text-end">Balance</th><th class="text-end">Return</th></tr></thead>
-                <tbody>
-                    <tr v-for="m in projection.monthly" :key="m.date">
-                        <td>{{ m.date }}</td>
-                        <td class="text-end">{{ m.tradingDays }}</td>
-                        <td class="text-end">{{ fmt(m.balance) }}</td>
-                        <td class="text-end greenTrade">{{ fmt(m.returnPct) }}%</td>
-                    </tr>
-                </tbody>
-            </table>
-            <p class="txt-small text-muted">
-                <i class="uil uil-info-circle me-1"></i>Hypothetical: assumes a constant daily return with full compounding. Real results vary — use it to set targets, not as a guarantee.
-            </p>
-        </template>
-        <div v-else class="text-muted txt-small">Enter a positive balance and a numeric daily %.</div>
     </div>
 </template>
 
@@ -422,21 +311,5 @@ const projection = computed(() => {
 
 .noteText {
     opacity: 0.85;
-}
-
-.planInputs {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-    gap: 0.75rem;
-    max-width: 640px;
-}
-
-.planLabel {
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    opacity: 0.6;
-    margin-bottom: 0.2rem;
-    display: block;
 }
 </style>

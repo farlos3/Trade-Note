@@ -27,6 +27,12 @@ import { useToggleMobileMenu } from "../utils/utils";
                 <a id="step5b" v-bind:class="[pageId === 'analysis' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
                     href="/analysis">
                     <i class="uil uil-brain me-2"></i>AI Analysis</a>
+                <a id="step5c" v-bind:class="[pageId === 'plan' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
+                    href="/plan">
+                    <i class="uil uil-calculator-alt me-2"></i>Trading Plan</a>
+                <a id="step5d" v-bind:class="[pageId === 'planVsActual' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
+                    href="/plan-vs-actual">
+                    <i class="uil uil-balance-scale me-2"></i>Plan vs Actual</a>
             </div>
         </div>
 
