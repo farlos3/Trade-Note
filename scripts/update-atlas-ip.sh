@@ -54,7 +54,7 @@ read_env() {
 
 if [[ -z "$PUBLIC_KEY" || -z "$PRIVATE_KEY" || -z "$PROJECT_ID" ]]; then
   echo "WARNING: Atlas API not configured. Set ATLAS_PUBLIC_KEY / ATLAS_PRIVATE_KEY / ATLAS_PROJECT_ID in $ENV_FILE" >&2
-  echo "Skipping IP update. (Atlas -> Access Manager -> API Keys, role 'Project IP Access List Admin'.)" >&2
+  echo "Skipping IP update. (Atlas -> Access Manager -> API Keys, role 'Project Network Access Manager'.)" >&2
   exit 2
 fi
 
@@ -96,6 +96,34 @@ code="$(printf '%s' "$resp" | tail -n1)"
 list_body="$(printf '%s' "$resp" | sed '$d')"
 
 if [[ ! "$code" =~ ^2 ]]; then
+  # Chicken-and-egg: the API KEY has its own access list, separate from the
+  # database Network Access list this script manages. If the key is pinned to an
+  # old IP, it can't be used to whitelist the new one.
+  if [[ "$code" == "403" && "$list_body" == *"IP_ADDRESS_NOT_ON_ACCESS_LIST"* ]]; then
+    ip16="$(printf '%s' "$IP" | cut -d. -f1-2).0.0/16"
+    ip24="$(printf '%s' "$IP" | cut -d. -f1-3).0/24"
+    cat >&2 <<EOF
+
+ERROR: Atlas rejected the API key itself from this IP ($IP).
+
+  This is the API KEY's own access list — NOT the database Network Access list
+  that this script manages. They are two different lists.
+
+  Fix it in Atlas: Access Manager -> API Keys -> (your key) -> Edit
+                   -> step 2 "Private Key & Access List" -> Add Access List Entry
+    * Click "USE CURRENT IP ADDRESS" to unblock right now, then
+    * add your ISP's range as CIDR so the key survives IP rotation:
+        try  $ip16   (broader, fewer surprises)
+        or   $ip24   (tighter, may break when the ISP moves you)
+    Atlas refuses 0.0.0.0/0 on API key access lists by design — a range is the
+    only way to cover a dynamic IP.
+
+  Don't want to maintain this at all? Set the DATABASE Network Access to
+  0.0.0.0/0 (allowed there, and what Render deployments need anyway), then run
+  start.sh --skip-ip. The database stays protected by its user/password + TLS.
+EOF
+    exit 3
+  fi
   echo "WARNING: Atlas GET accessList failed (HTTP $code): $list_body" >&2
   exit 1
 fi

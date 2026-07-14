@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 #
 # Start the whole TradeNote project.
-#   1. Whitelist this machine's public IP in MongoDB Atlas (Admin API).
-#   2. Start the TradeNote app in Docker (dev / local / prod compose file).
-#   3. Wait until the web app answers on its port.
-#   4. Run the MT5 -> TradeNote sync once (emails a reminder if new deals).
+#   1. Start the TradeNote app in Docker (dev / local / prod compose file).
+#   2. Wait until the web app answers on its port.
+#   3. Run the MT5 -> TradeNote sync once (emails a reminder if new deals).
+#
+# Atlas IP whitelisting is OPT-IN (--update-ip). The recommended setup is to set
+# Atlas Network Access to 0.0.0.0/0 once, which never needs updating again (the
+# database is still protected by its user/password + TLS, and Render needs it).
 #
 # Any step that is not applicable (Atlas keys missing, MT5 terminal closed,
 # Python absent) becomes a warning instead of aborting the whole run.
@@ -20,16 +23,17 @@
 set -o pipefail
 
 MODE="dev"
-SKIP_IP=0; SKIP_DOCKER=0; SKIP_SYNC=0; IP_ONLY=0
+UPDATE_IP=0; SKIP_DOCKER=0; SKIP_SYNC=0; IP_ONLY=0
 
 usage() {
   cat <<'EOF'
 Usage: ./start.sh [options]
   --mode dev|local|prod   compose file to use (default: dev)
-  --skip-ip               skip the Atlas IP whitelist step
+  --update-ip             whitelist this machine's public IP in Atlas before starting.
+                          Only needed if the Atlas Network Access list is NOT 0.0.0.0/0.
+  --ip-only               only refresh the Atlas IP whitelist, then exit
   --skip-docker           skip starting Docker
   --skip-sync             skip the MT5 -> TradeNote sync
-  --ip-only               only refresh the Atlas IP whitelist, then exit
   -h, --help              show this help
 EOF
 }
@@ -37,10 +41,11 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --mode)        MODE="${2:-}"; shift 2;;
-    --skip-ip)     SKIP_IP=1; shift;;
+    --update-ip)   UPDATE_IP=1; shift;;
+    --ip-only)     IP_ONLY=1; UPDATE_IP=1; shift;;
+    --skip-ip)     UPDATE_IP=0; shift;;   # kept for compatibility (now the default)
     --skip-docker) SKIP_DOCKER=1; shift;;
     --skip-sync)   SKIP_SYNC=1; shift;;
-    --ip-only)     IP_ONLY=1; shift;;
     -h|--help)     usage; exit 0;;
     *) echo "Unknown arg: $1" >&2; usage; exit 64;;
   esac
@@ -73,15 +78,19 @@ esac
 PORT="$(read_env TRADENOTE_PORT)"; [[ -n "$PORT" ]] || PORT="8080"
 APP_URL="http://localhost:$PORT"
 
-# 1. --- Atlas IP whitelist ---------------------------------------------------
-if [[ "$SKIP_IP" -eq 0 ]]; then
+# 1. --- Atlas IP whitelist (opt-in) ------------------------------------------
+# Off by default: the recommended setup is Atlas Network Access = 0.0.0.0/0,
+# which never needs updating. Pass --update-ip if you keep a tight whitelist.
+if [[ "$UPDATE_IP" -eq 1 ]]; then
   section "Updating MongoDB Atlas IP access list"
   rc=0
   bash "$ROOT_DIR/scripts/update-atlas-ip.sh" --env-file "$ENV_FILE" || rc=$?
   if [[ $rc -eq 2 ]]; then
     warn "Atlas IP step skipped (API keys not configured)."
+  elif [[ $rc -eq 3 ]]; then
+    warn "Atlas IP step blocked by the API key's own access list — see the fix above."
   elif [[ $rc -ne 0 ]]; then
-    warn "Atlas IP update failed (exit $rc). If the app can't reach MongoDB, fix ATLAS_* in .env."
+    warn "Atlas IP update failed (exit $rc) — see the message above."
   fi
 fi
 
@@ -141,4 +150,4 @@ fi
 section "Done"
 echo "App:   $APP_URL"
 printf '\033[90mLogs:  docker compose -f %s logs -f tradenote\033[0m\n' "$COMPOSE_FILE"
-printf '\033[90mIP:    ./scripts/update-atlas-ip.sh   (re-run when your IP changes)\033[0m\n'
+printf '\033[90mIP:    only needed if Atlas Network Access is not 0.0.0.0/0  ->  ./start.sh --update-ip\033[0m\n'
