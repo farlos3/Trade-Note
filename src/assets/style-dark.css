@@ -252,10 +252,17 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
     font-weight: 700;
 }
 
+/* flatpickr's own default CSS (loaded before this file) sets the resting day
+   cell to `background: none; border: 1px solid transparent` — so without an
+   explicit fill/border here, every day renders as bare text with no visible
+   button shape. Give it one, so cells read as pressable, not just labels. */
 .flatpickr-day {
     color: var(--white-87);
     font-weight: 500;
+    background-color: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
 .flatpickr-day:hover,
@@ -282,10 +289,17 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
     color: #fff !important;
 }
 
+/* Adjacent-month / disabled days: no resting fill (they read as "not really
+   this month", matching the un-fixed look above), but the text itself must
+   still be legible. rgba(...,0.5) measures 4.63:1 on this calendar's #1b1f2a
+   background — the previous --white-38 (rgba(...,0.4)) measured only 3.23:1,
+   below the 4.5:1 WCAG minimum. */
 .flatpickr-day.flatpickr-disabled,
 .flatpickr-day.prevMonthDay,
 .flatpickr-day.nextMonthDay {
-    color: var(--white-38);
+    color: rgba(237, 240, 247, 0.5);
+    background-color: transparent;
+    border-color: transparent;
 }
 
 /* Time picker */
@@ -411,6 +425,13 @@ input[type="file"]::file-selector-button:active {
 
 .txt-small {
     font-size: small;
+}
+
+/* Bootstrap's .text-muted (#6c757d) was built for a light theme — on these dark
+   surfaces it lands at 3.5:1, below the 4.5:1 WCAG minimum for body text.
+   Retint it to the theme's secondary ink, which measures ~6:1. */
+.text-muted {
+    color: var(--white-60) !important;
 }
 
 .txt-x-small {

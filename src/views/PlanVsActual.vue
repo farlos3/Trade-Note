@@ -1,19 +1,25 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
+import * as echarts from 'echarts'
 import axios from 'axios'
 import dayjs from 'dayjs'
 import { timeZoneTrade } from '../stores/globals'
-import { startBalance, horizonMonths, dailyPct } from '../utils/planSettings'
+import PlanSelector from '../components/PlanSelector.vue'
+import PlanDepositsEditor from '../components/PlanDepositsEditor.vue'
+import FpDate from '../components/FpDate.vue'
+import { activePlan } from '../utils/planStore'
 import { numOrNull, buildProjection, fmt, pnlClass } from '../utils/planMath'
 
-/* Your plan's inputs are shared with the Trading Plan page (and remembered),
-   so editing them here updates both. */
-const start = computed(() => numOrNull(startBalance.value))
+/* Everything here reads from the active plan (see PlanSelector) — the same
+   plan you edit on the Trading Plan page, including its deposits. */
+const start = computed(() => numOrNull(activePlan.value.startBalance))
 const months = computed(() => {
-    const n = numOrNull(horizonMonths.value)
+    const n = numOrNull(activePlan.value.horizonMonths)
     return n != null && n >= 1 && n <= 120 ? Math.floor(n) : null
 })
-const target = computed(() => numOrNull(dailyPct.value))
+const target = computed(() => numOrNull(activePlan.value.dailyPct))
+const startDate = computed(() => activePlan.value.startDate)
+const deposits = computed(() => activePlan.value.deposits)
 
 /* ---- Real per-day P&L from the journal ---- */
 const PERIODS = [
@@ -67,42 +73,169 @@ const actual = computed(() => {
 /** Same horizon, but compounding at the rate you actually achieved. */
 const actualProjection = computed(() =>
     actual.value?.pctPerDay != null && start.value > 0 && months.value
-        ? buildProjection(start.value, actual.value.pctPerDay, months.value)
+        ? buildProjection(start.value, actual.value.pctPerDay, months.value, deposits.value, startDate.value)
         : null,
 )
 
 /** The plan's own projection, for a side-by-side comparison. */
 const targetProjection = computed(() =>
     start.value > 0 && months.value && target.value != null
-        ? buildProjection(start.value, target.value, months.value)
+        ? buildProjection(start.value, target.value, months.value, deposits.value, startDate.value)
         : null,
 )
+
+/* ---- Compounding curves: plan vs actual pace ----
+   Two series, so a legend is always shown. Colours are fixed per series
+   (identity, not rank) and validated for colour-blind separation against this
+   dark surface. Deliberately NOT green/red — those mean profit/loss here. */
+const PLAN_COLOR = '#2f9bff'   // app accent, same hue the Trading Plan chart uses
+const ACTUAL_COLOR = '#f59e0b' // amber: CVD-separated from the blue on every channel
+const SURFACE = '#1b1f2a'
+const INK_MUTED = 'rgba(237, 240, 247, 0.60)'
+
+const chartEl = ref(null)
+let chart = null
+
+const hasChart = computed(() => !!(actualProjection.value || targetProjection.value))
+
+function renderChart() {
+    if (!chartEl.value || !hasChart.value) return
+    if (!chart) chart = echarts.init(chartEl.value)
+
+    // Both projections run the same horizon and deposits, so either supplies
+    // the axis (and the deposit landing days, identical on both series).
+    const axisSource = actualProjection.value || targetProjection.value
+    const dates = axisSource.days.map((d) => d.date)
+
+    const series = []
+    if (targetProjection.value) {
+        series.push({
+            name: `Plan (${fmt(target.value, 2)}%/day)`,
+            type: 'line',
+            data: targetProjection.value.days.map((d) => d.closing),
+            showSymbol: false,
+            symbolSize: 8,
+            lineStyle: { color: PLAN_COLOR, width: 2 },
+            itemStyle: { color: PLAN_COLOR, borderColor: SURFACE, borderWidth: 2 },
+        })
+    }
+    if (actualProjection.value) {
+        series.push({
+            name: `Actual (${fmt(actual.value.pctPerDay, 3)}%/day)`,
+            type: 'line',
+            data: actualProjection.value.days.map((d) => d.closing),
+            showSymbol: false,
+            symbolSize: 8,
+            lineStyle: { color: ACTUAL_COLOR, width: 2 },
+            itemStyle: { color: ACTUAL_COLOR, borderColor: SURFACE, borderWidth: 2 },
+        })
+    }
+
+    chart.setOption({
+        backgroundColor: 'transparent',
+        legend: {
+            top: 0,
+            textStyle: { color: INK_MUTED, fontSize: 11 },
+            itemWidth: 14,
+            itemHeight: 8,
+        },
+        grid: { left: 4, right: 12, top: 34, bottom: 4, containLabel: true },
+        tooltip: {
+            trigger: 'axis',
+            axisPointer: { type: 'line', lineStyle: { color: 'rgba(255,255,255,0.25)', width: 1 } },
+            backgroundColor: SURFACE,
+            borderColor: 'rgba(255,255,255,0.12)',
+            textStyle: { color: 'rgba(237,240,247,0.92)', fontSize: 12 },
+            formatter: (params) => {
+                const i = params[0].dataIndex
+                const dep = axisSource.days[i]?.deposit
+                const head = `<div style="font-weight:700;margin-bottom:4px">Day ${i + 1} · ${dates[i]}</div>` +
+                    (dep ? `Deposit: +${fmt(dep)}<br/>` : '')
+                const lines = params.map(
+                    (p) => `${p.marker} ${p.seriesName}: <b>${fmt(p.value)}</b>`,
+                )
+                // Gap between the two curves is the number the page is about.
+                if (params.length === 2) {
+                    const diff = params[1].value - params[0].value
+                    lines.push(`<span style="opacity:.7">Gap: ${diff >= 0 ? '+' : ''}${fmt(diff)}</span>`)
+                }
+                return head + lines.join('<br/>')
+            },
+        },
+        xAxis: {
+            type: 'category',
+            data: dates,
+            boundaryGap: false,
+            axisLine: { lineStyle: { color: 'rgba(255,255,255,0.12)' } },
+            axisTick: { show: false },
+            axisLabel: { color: INK_MUTED, fontSize: 10, hideOverlap: true },
+        },
+        yAxis: {
+            type: 'value',
+            scale: true,
+            axisLine: { show: false },
+            axisTick: { show: false },
+            splitLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
+            axisLabel: { color: INK_MUTED, fontSize: 10, formatter: (v) => Number(v).toLocaleString() },
+        },
+        series,
+    }, true)
+    chart.resize()
+}
+
+const onResize = () => chart && chart.resize()
+window.addEventListener('resize', onResize)
+
+onBeforeUnmount(() => {
+    window.removeEventListener('resize', onResize)
+    if (chart) { chart.dispose(); chart = null }
+})
+
+// The canvas only exists once there is something to draw.
+watch([actualProjection, targetProjection], async () => {
+    if (!hasChart.value) {
+        if (chart) { chart.dispose(); chart = null }
+        return
+    }
+    await nextTick()
+    renderChart()
+}, { immediate: true })
 </script>
 
 <template>
     <div class="planPage p-3">
+        <PlanSelector />
+
         <p class="txt-small text-muted mb-3">
             Compares what you actually traded against the plan you set on
-            <a href="/plan">Trading Plan</a>. These inputs are shared with that page.
+            <a href="/plan">Trading Plan</a>. This is the same plan — editing it here updates that page too.
         </p>
 
         <!-- Plan inputs (shared with /plan) -->
-        <div class="planInputs mb-4">
+        <div class="planInputs mb-3">
+            <div>
+                <label class="planLabel">Start date</label>
+                <FpDate mode="date" v-model="activePlan.startDate" />
+            </div>
             <div>
                 <label class="planLabel">Starting balance</label>
                 <input type="number" min="0" step="100" placeholder="e.g. 1000" class="form-control form-control-sm"
-                    v-model="startBalance" />
+                    v-model="activePlan.startBalance" />
             </div>
             <div>
                 <label class="planLabel">Horizon (months)</label>
                 <input type="number" min="1" max="120" step="1" placeholder="e.g. 3" class="form-control form-control-sm"
-                    v-model="horizonMonths" />
+                    v-model="activePlan.horizonMonths" />
             </div>
             <div>
                 <label class="planLabel">Target % per day</label>
                 <input type="number" step="0.1" placeholder="e.g. 1" class="form-control form-control-sm"
-                    v-model="dailyPct" />
+                    v-model="activePlan.dailyPct" />
             </div>
+        </div>
+
+        <div class="planCard mb-3">
+            <PlanDepositsEditor :plan="activePlan" />
         </div>
 
         <div class="planCard">
@@ -130,6 +263,11 @@ const targetProjection = computed(() =>
             <template v-else>
                 <div class="statGrid my-3">
                     <div class="statTile">
+                        <div class="statLabel">Principal</div>
+                        <div class="statValue">{{ fmt(start, 0) }}</div>
+                        <div class="statSub">starting balance</div>
+                    </div>
+                    <div class="statTile">
                         <div class="statLabel">Days traded</div>
                         <div class="statValue">{{ actual.tradedDays }}</div>
                         <div class="statSub">{{ actual.winDays }} green · {{ actual.tradedDays - actual.winDays }} red</div>
@@ -151,6 +289,11 @@ const targetProjection = computed(() =>
                         </div>
                         <div class="statSub">target {{ fmt(target, 2) }}% / day</div>
                     </div>
+                </div>
+
+                <div v-if="hasChart" class="chartWrap mb-3">
+                    <div class="chartTitle">Compounding forward — plan vs your actual pace</div>
+                    <div ref="chartEl" class="chartBox"></div>
                 </div>
 
                 <p v-if="actualProjection" class="goalLine mb-0">
@@ -208,7 +351,7 @@ const targetProjection = computed(() =>
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
     gap: 0.75rem;
-    max-width: 640px;
+    max-width: 720px;
 }
 
 .planLabel {
@@ -243,9 +386,29 @@ const targetProjection = computed(() =>
     font-size: 0.92rem;
 }
 
+.chartWrap {
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 0.5rem;
+    padding: 0.6rem 0.4rem 0.4rem;
+}
+
+.chartTitle {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--white-60);
+    padding-left: 0.5rem;
+}
+
+.chartBox {
+    width: 100%;
+    height: 280px;
+}
+
+/* Explicit colour, not opacity: opacity would multiply with the inherited
+   alpha and drop this below the readable threshold. */
 .hintLine {
     font-size: 0.85rem;
-    opacity: 0.6;
+    color: var(--white-60);
     margin-top: 0.75rem;
 }
 </style>

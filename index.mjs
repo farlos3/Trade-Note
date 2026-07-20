@@ -240,6 +240,27 @@ const setupApiRoutes = (app) => {
     });
 
     /**********************************************
+     * AUTO-LOGIN
+     * Single-user convenience. Logs in server-side with the seeded credentials
+     * and hands the browser only a session token — the password never leaves
+     * the server. Disabled unless TRADENOTE_AUTO_LOGIN is true.
+     **********************************************/
+    app.get('/api/autoLogin', async (req, res) => {
+        const enabled = String(process.env.TRADENOTE_AUTO_LOGIN || '').toLowerCase() === 'true'
+        const username = (process.env.TRADENOTE_USER || '').trim()
+        const password = process.env.TRADENOTE_PASSWORD || ''
+        if (!enabled || !username || !password) return res.status(200).json({ enabled: false })
+
+        try {
+            const user = await ParseNode.User.logIn(username, password)
+            res.status(200).json({ enabled: true, sessionToken: user.getSessionToken() })
+        } catch (error) {
+            console.log(' -> Auto-login failed: ' + error.message)
+            res.status(200).json({ enabled: false, error: error.message })
+        }
+    });
+
+    /**********************************************
      * TRADING-BEHAVIOR ANALYSIS (deterministic; reuses mcp-server/analysis.mjs)
      * GET /api/analysis/behavior?from=YYYY-MM-DD&to=YYYY-MM-DD&tz=Asia/Bangkok
      **********************************************/
@@ -713,9 +734,16 @@ const startIndex = async () => {
 
 /**
  * Single-user convenience: keep one login in sync with TRADENOTE_USER /
- * TRADENOTE_PASSWORD from the environment. Creates the account on first boot and
- * resets the password on later boots, so the .env values are always the ones
- * that work. Skipped entirely when either variable is unset.
+ * TRADENOTE_PASSWORD from the environment. Creates the account on first boot;
+ * on later boots, only resets the password if it actually changed in .env.
+ * Skipped entirely when either variable is unset.
+ *
+ * Parse Server's revokeSessionOnPasswordReset defaults to true — resetting the
+ * password revokes every existing session for that user. Doing that on every
+ * boot (even when the password hadn't changed) logged out any already-open
+ * browser tab out from under itself on each restart, which showed up as every
+ * page hanging on "Invalid session token". Logging in first to check whether
+ * the current password still works avoids the needless reset.
  *
  * Never throws: a seeding problem must not stop the server from starting.
  */
@@ -730,17 +758,23 @@ async function seedLoginUser() {
         query.equalTo("username", username)
         const existing = await query.first({ useMasterKey: true })
 
-        if (existing) {
-            existing.set("password", password)
-            await existing.save(null, { useMasterKey: true })
-            console.log(` -> Password reset for existing user ${username}`)
-        } else {
+        if (!existing) {
             const user = new ParseNode.User()
             user.set("username", username)
             user.set("email", username)
             user.set("password", password)
             await user.signUp(null, { useMasterKey: true })
             console.log(` -> Created user ${username}`)
+            return
+        }
+
+        try {
+            await ParseNode.User.logIn(username, password)
+            console.log(` -> Password for ${username} unchanged, leaving existing sessions intact`)
+        } catch (loginError) {
+            existing.set("password", password)
+            await existing.save(null, { useMasterKey: true })
+            console.log(` -> Password for ${username} changed in .env, reset (existing sessions revoked)`)
         }
     } catch (e) {
         console.log(` -> Could not seed login user: ${e.message}`)

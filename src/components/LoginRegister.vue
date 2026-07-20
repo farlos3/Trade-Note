@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { pageId, timeZones, availableTags, tradeTags, legacy, registerOff } from '../stores/globals';
 import { useGetCurrentUser, useGetPeriods, useGetTimeZone, useSetValues, useUpdateLegacy, useGetLegacy } from '../utils/utils';
 import { useGetAvailableTags, useUpdateAvailableTags, useUpdateTags, useFindHighestIdNumber, useFindHighestIdNumberTradeTags } from '../utils/daily';
@@ -10,8 +10,49 @@ import axios from 'axios'
 
 const loginForm = reactive({ username: null, password: null, timeZone: "America/New_York" })
 const signingUp = ref(false)
+const autoLoggingIn = ref(false)
 let existingSchema = []
 
+
+/* Single-user convenience: when TRADENOTE_AUTO_LOGIN is on, the server logs in
+   with the seeded credentials and returns a session token, which we adopt with
+   Parse.User.become. Same post-login setup as login() — only the credential
+   step differs, so the password never reaches the browser. */
+async function tryAutoLogin() {
+  let data
+  try {
+    data = (await axios.get('/api/autoLogin')).data
+  } catch {
+    return false // endpoint missing or server error — fall back to the form
+  }
+  if (!data || !data.enabled || !data.sessionToken) return false
+
+  console.log("\nAUTO LOGIN")
+  autoLoggingIn.value = true
+  try {
+    const updateSchemaFunction = await updateSchema()
+    if (updateSchemaFunction.status != 200) throw new Error("schema update failed")
+
+    await Parse.User.become(data.sessionToken)
+    useGetCurrentUser()
+    useGetTimeZone()
+    await useGetPeriods()
+    await useSetValues()
+    await checkLegacy()
+
+    window.location.replace("/dashboard")
+    return true
+  } catch (error) {
+    console.log(" -> Auto-login failed, showing form: " + error.message)
+    autoLoggingIn.value = false
+    return false
+  }
+}
+
+onMounted(() => {
+  // Only on the login page — never hijack /register.
+  if (window.location.pathname === "/") tryAutoLogin()
+})
 
 async function login() {
   console.log("\nLOGIN")
@@ -445,11 +486,15 @@ const checkLegacy = async (param) => {
         <i class="uil uil-sun authLogo"></i>
         <span class="authName">TradeNote</span>
       </div>
-      <h1 class="authTitle">{{ pageId == 'login' ? "Welcome back" : "Create your account" }}</h1>
-      <p class="authSubtitle">{{ pageId == 'login' ? "Log in to your trading journal" : "Start your trading journal" }}
+      <h1 class="authTitle">{{ autoLoggingIn ? "Signing you in" : (pageId == 'login' ? "Welcome back" : "Create your account") }}</h1>
+      <p class="authSubtitle">{{ autoLoggingIn ? "Auto-login is enabled" : (pageId == 'login' ? "Log in to your trading journal" : "Start your trading journal") }}
       </p>
 
-      <form v-on:submit.prevent="pageId == 'login' ? login() : register()">
+      <div v-if="autoLoggingIn" class="text-center py-4">
+        <div class="spinner-border" role="status"></div>
+      </div>
+
+      <form v-else v-on:submit.prevent="pageId == 'login' ? login() : register()">
         <label class="authLabel">Email</label>
         <input type="email" id="inputEmail" class="form-control" placeholder="you@example.com" required autofocus
           v-model="loginForm.username" autocomplete="username">

@@ -781,6 +781,53 @@ export async function useInitPostHog() {
 /**************************************
 * MOUNT 
 **************************************/
+/**
+ * Shared recovery for a page-mount data fetch that fails. Handles two distinct
+ * failure shapes:
+ *
+ * 1. A rejection that actually reaches here (e.g. an expired/invalid Parse
+ *    session, code 209) -- aborts the mount function before its own "turn the
+ *    spinner off" line, so the page hangs on the loading overlay forever.
+ * 2. A rejection that DOESN'T reach here at all. Many of this codebase's data
+ *    helpers (useGetFilteredTrades, useGetSelectedRange, ...) are written as
+ *    `new Promise(async (resolve, reject) => { ... })`. If the async executor
+ *    throws, JS does NOT route that into the outer promise's `reject` -- the
+ *    outer promise simply never settles. `await`ing it then hangs forever, no
+ *    matter how the call site is wrapped, because `finally` only runs once
+ *    the awaited expression actually settles. That's the shape behind
+ *    "dashboard/daily/calendar hang on Loading" independent of whether there
+ *    was any trade data. See useMountWithTimeout, which is the actual fix for
+ *    that case -- this function only handles rejections that do arrive.
+ *
+ * Always resolves the spinner (call from a `finally`), and for a dead
+ * session, bounces home so login runs again -- silently, if
+ * TRADENOTE_AUTO_LOGIN is on.
+ */
+function useHandleMountError(error) {
+    console.error("Error mounting page:", error)
+    if (error && (error.code === Parse.Error.INVALID_SESSION_TOKEN || error.mountTimeout)) {
+        window.location.replace("/")
+    }
+}
+
+/**
+ * Races `work()` against a hard timeout so a mount function's spinner always
+ * resolves, even if something inside `work` never settles (see the anti-
+ * pattern note on useHandleMountError above). This does not fix the
+ * underlying hang -- it bounds its user-visible impact to `timeoutMs`.
+ */
+function useMountWithTimeout(work, timeoutMs = 15000) {
+    let timer
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+            const err = new Error(`Mount timed out after ${timeoutMs}ms -- a data fetch never resolved or rejected`)
+            err.mountTimeout = true
+            reject(err)
+        }, timeoutMs)
+    })
+    return Promise.race([work(), timeout]).finally(() => clearTimeout(timer))
+}
+
 export async function useMountDashboard() {
     console.log("\MOUNTING DASHBOARD")
     await console.time("  --> Duration mount dashboard");
@@ -788,13 +835,21 @@ export async function useMountDashboard() {
     dashboardChartsMounted.value = false
     dashboardIdMounted.value = false
     barChartNegativeTagGroups.value = []
-    await useGetSelectedRange()
-    await Promise.all([useGetExcursions(), useGetSatisfactions(), useGetTags(), useGetAvailableTags()])
-    await Promise.all([useGetFilteredTrades()])
-    await useTotalTrades()
-    await useGroupTrades()
-    await useCalculateProfitAnalysis()
-    await (spinnerLoadingPage.value = false)
+    try {
+        await useMountWithTimeout(async () => {
+            await useGetSelectedRange()
+            await Promise.all([useGetExcursions(), useGetSatisfactions(), useGetTags(), useGetAvailableTags()])
+            await Promise.all([useGetFilteredTrades()])
+            await useTotalTrades()
+            await useGroupTrades()
+            await useCalculateProfitAnalysis()
+        })
+    } catch (error) {
+        useHandleMountError(error)
+        return
+    } finally {
+        spinnerLoadingPage.value = false
+    }
     await (dashboardIdMounted.value = true)
     useInitTab("dashboard")
     useInitTooltip()
@@ -823,10 +878,18 @@ export async function useMountDaily() {
     dailyQueryLimit.value = 3
     endOfList.value = false
     spinnerLoadingPage.value = true
-    await useGetSelectedRange()
-    await Promise.all([useGetExcursions(), useGetSatisfactions(), useGetTags(), useGetAvailableTags(), useGetNotes(), useGetAPIS()])
-    await useGetFilteredTrades()
-    spinnerLoadingPage.value = false
+    try {
+        await useMountWithTimeout(async () => {
+            await useGetSelectedRange()
+            await Promise.all([useGetExcursions(), useGetSatisfactions(), useGetTags(), useGetAvailableTags(), useGetNotes(), useGetAPIS()])
+            await useGetFilteredTrades()
+        })
+    } catch (error) {
+        useHandleMountError(error)
+        return
+    } finally {
+        spinnerLoadingPage.value = false
+    }
     await console.timeEnd("  --> Duration mount daily")
     useInitTab("daily")
     useRenderDoubleLineChart()
@@ -845,11 +908,19 @@ export async function useMountDaily() {
 export async function useMountCalendar(param) {
     console.log("\MOUNTING CALENDAR")
     await console.time("  --> Duration mount calendar");
-    await (spinnerLoadingPage.value = true)
-    await useGetSelectedRange()
-    await useGetFilteredTrades()
-    await useLoadCalendar() // if param (true), then its coming from next or filter so we need to get filteredTrades (again)
-    await (spinnerLoadingPage.value = false)
+    spinnerLoadingPage.value = true
+    try {
+        await useMountWithTimeout(async () => {
+            await useGetSelectedRange()
+            await useGetFilteredTrades()
+            await useLoadCalendar() // if param (true), then its coming from next or filter so we need to get filteredTrades (again)
+        })
+    } catch (error) {
+        useHandleMountError(error)
+        return
+    } finally {
+        spinnerLoadingPage.value = false
+    }
     await console.timeEnd("  --> Duration mount calendar")
 }
 
