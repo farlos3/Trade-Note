@@ -708,5 +708,43 @@ const startIndex = async () => {
     ParseNode.serverURL = "http://localhost:" + port + "/parse"
     ParseNode.masterKey = process.env.MASTER_KEY
 
+    await seedLoginUser()
 }
+
+/**
+ * Single-user convenience: keep one login in sync with TRADENOTE_USER /
+ * TRADENOTE_PASSWORD from the environment. Creates the account on first boot and
+ * resets the password on later boots, so the .env values are always the ones
+ * that work. Skipped entirely when either variable is unset.
+ *
+ * Never throws: a seeding problem must not stop the server from starting.
+ */
+async function seedLoginUser() {
+    const username = (process.env.TRADENOTE_USER || '').trim()
+    const password = process.env.TRADENOTE_PASSWORD || ''
+    if (!username || !password) return
+
+    console.log("\nSEEDING LOGIN USER")
+    try {
+        const query = new ParseNode.Query(ParseNode.User)
+        query.equalTo("username", username)
+        const existing = await query.first({ useMasterKey: true })
+
+        if (existing) {
+            existing.set("password", password)
+            await existing.save(null, { useMasterKey: true })
+            console.log(` -> Password reset for existing user ${username}`)
+        } else {
+            const user = new ParseNode.User()
+            user.set("username", username)
+            user.set("email", username)
+            user.set("password", password)
+            await user.signUp(null, { useMasterKey: true })
+            console.log(` -> Created user ${username}`)
+        }
+    } catch (e) {
+        console.log(` -> Could not seed login user: ${e.message}`)
+    }
+}
+
 startIndex()

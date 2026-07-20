@@ -11,3 +11,15 @@ logs
 mt5-sync/config.ini
 mt5-sync/state.json
 __pycache__/
+
+# Caveman agent skills (installed per-machine via the upstream install.sh).
+# Vendored copies of JuliusBrussee/caveman — the installer drops the same skill
+# set once per agent flavour. skills-lock.json pins them, so they can always be
+# reinstalled; keep them out of this repo's history.
+.agents/
+agent/
+skills-lock.json
+
+# Claude Code project dir: ignore the vendored skills, but keep shared config
+# (settings.json, commands) trackable so it can be committed deliberately.
+.claude/skills/
