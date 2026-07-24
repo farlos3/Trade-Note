@@ -91,7 +91,7 @@ def fetch_deals(frm, to):
     return [d for d in deals if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL)]
 
 
-def build_report_xlsx(account_login, deals):
+def build_report_xlsx(account_login, server, deals):
     """Recreate the minimal MT5 'Trade History Report' structure TradeNote parses.
     Column order matters (positional): Time, Deal, Symbol, Type, Direction,
     Volume, Price, Order, Commission, Fee, Swap, Profit, Balance, Comment."""
@@ -99,14 +99,23 @@ def build_report_xlsx(account_login, deals):
     ws = wb.active
     ws.append(["Trade History Report"])
     ws.append([])
-    ws.append(["Account:", f"{account_login} TradeNote USD"])
+    # TradeNote parses the account as the FIRST space-delimited token of this cell
+    # (brokers.js: split(" ")[0]). Joining login + server with '@' (no spaces) makes
+    # the whole "135174823@HFMarketsGlobal-Live8" survive as one account label, so
+    # TradeNote's account filter shows both the MT5 number and the broker.
+    ws.append(["Account:", f"{account_login}@{server}"])
     ws.append([])
     ws.append(["Deals"])
     ws.append(["Time", "Deal", "Symbol", "Type", "Direction", "Volume", "Price",
                "Order", "Commission", "Fee", "Swap", "Profit", "Balance", "Comment"])
 
     for d in deals:
-        ts = dt.datetime.fromtimestamp(d.time).strftime("%Y.%m.%d %H:%M:%S")
+        # d.time is broker-server time expressed as a UTC-based unix timestamp.
+        # Reading it back in UTC (not the host's local tz) recovers the exact
+        # broker wall-clock the MT5 terminal shows — e.g. 2026.07.24 21:37:28,
+        # not 07.25 04:37 as datetime.fromtimestamp() would render on a UTC+7 box.
+        # This keeps TradeNote's dates/times matching the terminal.
+        ts = dt.datetime.fromtimestamp(d.time, dt.timezone.utc).strftime("%Y.%m.%d %H:%M:%S")
         side = "buy" if d.type == mt5.DEAL_TYPE_BUY else "sell"
         direction = "in" if d.entry == mt5.DEAL_ENTRY_IN else "out"
         ws.append([ts, str(d.ticket), d.symbol, side, direction,
@@ -137,7 +146,117 @@ def push(cfg, xlsx_bytes):
     return r.text.strip()
 
 
-def notify_email(cfg, deals, resp):
+def account_financials():
+    """Total deposits & withdrawals from the account's balance-type deals.
+    Deposits are positive balance operations, withdrawals negative."""
+    frm = dt.datetime(2000, 1, 1)
+    to = dt.datetime.now() + dt.timedelta(days=2)
+    deals = mt5.history_deals_get(frm, to) or []
+    deposit = sum(float(d.profit) for d in deals
+                  if d.type == mt5.DEAL_TYPE_BALANCE and d.profit > 0)
+    withdrawal = sum(-float(d.profit) for d in deals
+                     if d.type == mt5.DEAL_TYPE_BALANCE and d.profit < 0)
+    return deposit, withdrawal
+
+
+def push_account(cfg, ai, deposit, withdrawal):
+    """Send the live account snapshot (balance/deposit/withdrawal/broker) to
+    TradeNote so the Dashboard can show it. Non-fatal: logged and swallowed."""
+    try:
+        url = cfg.get("tradenote", "url").rstrip("/") + "/api/account"
+        api_key = cfg.get("tradenote", "api_key")
+        body = {
+            "login": ai.login,
+            "server": ai.server,
+            "currency": ai.currency,
+            "balance": float(ai.balance),
+            "deposit": deposit,
+            "withdrawal": withdrawal,
+        }
+        r = requests.post(url, headers={"api-key": api_key, "Content-Type": "application/json"},
+                          data=json.dumps(body), timeout=30)
+        r.raise_for_status()
+        log(f"Account snapshot pushed: balance={ai.balance} deposit={deposit:.2f} withdrawal={withdrawal:.2f}")
+    except Exception as e:  # noqa: BLE001
+        log(f"account snapshot push failed: {e}")
+
+
+def _build_email_html(deals, total_profit, account_line, tradenote_url):
+    """Render the reminder as a self-contained HTML email (inline styles only, so
+    it renders the same in Gmail/Outlook which strip <style> blocks)."""
+    rows = []
+    for d in sorted(deals, key=lambda x: x.time):
+        # UTC read = broker wall-clock, matching the terminal and TradeNote.
+        when = dt.datetime.fromtimestamp(d.time, dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        side = "BUY" if d.type == mt5.DEAL_TYPE_BUY else "SELL"
+        side_color = "#16a34a" if d.type == mt5.DEAL_TYPE_BUY else "#dc2626"
+        leg = "in" if d.entry == mt5.DEAL_ENTRY_IN else ("out" if d.entry == mt5.DEAL_ENTRY_OUT else "—")
+        p = float(d.profit)
+        p_color = "#16a34a" if p > 0 else ("#dc2626" if p < 0 else "#6b7280")
+        rows.append(f"""
+          <tr>
+            <td style="padding:8px 12px;border-bottom:1px solid #eef0f3;color:#6b7280;font-variant-numeric:tabular-nums;white-space:nowrap;">{when}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #eef0f3;font-weight:600;color:#111827;">{d.symbol}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #eef0f3;"><span style="color:{side_color};font-weight:700;">{side}</span> <span style="color:#9ca3af;font-size:12px;">{leg}</span></td>
+            <td style="padding:8px 12px;border-bottom:1px solid #eef0f3;text-align:right;color:#111827;font-variant-numeric:tabular-nums;">{float(d.volume):g}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #eef0f3;text-align:right;color:#111827;font-variant-numeric:tabular-nums;">{float(d.price):.2f}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #eef0f3;text-align:right;font-weight:600;color:{p_color};font-variant-numeric:tabular-nums;">{p:+.2f}</td>
+          </tr>""")
+
+    total_color = "#16a34a" if total_profit > 0 else ("#dc2626" if total_profit < 0 else "#6b7280")
+    cta = (f'<a href="{tradenote_url}" style="display:inline-block;background:#4f46e5;color:#ffffff;'
+           f'text-decoration:none;font-weight:600;padding:11px 20px;border-radius:8px;font-size:14px;">'
+           f'Open TradeNote →</a>') if tradenote_url else ""
+
+    return f"""\
+<!doctype html>
+<html>
+<body style="margin:0;padding:0;background:#f4f5f7;">
+  <div style="display:none;max-height:0;overflow:hidden;">{len(deals)} new MT5 deal(s) synced — total {total_profit:+.2f}</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;padding:24px 0;">
+    <tr><td align="center">
+      <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:14px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+        <tr><td style="background:linear-gradient(135deg,#4f46e5,#7c3aed);padding:22px 28px;">
+          <div style="color:#e0e7ff;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;">TradeNote · MT5 Sync</div>
+          <div style="color:#ffffff;font-size:20px;font-weight:700;margin-top:4px;">{len(deals)} new deal(s) synced</div>
+          <div style="color:#c7d2fe;font-size:13px;margin-top:6px;">{account_line}</div>
+        </td></tr>
+        <tr><td style="padding:20px 28px 8px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #eef0f3;border-radius:10px;border-collapse:separate;overflow:hidden;">
+            <thead><tr style="background:#fafbfc;">
+              <th style="padding:9px 12px;text-align:left;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:#9ca3af;">Time</th>
+              <th style="padding:9px 12px;text-align:left;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:#9ca3af;">Symbol</th>
+              <th style="padding:9px 12px;text-align:left;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:#9ca3af;">Side</th>
+              <th style="padding:9px 12px;text-align:right;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:#9ca3af;">Vol</th>
+              <th style="padding:9px 12px;text-align:right;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:#9ca3af;">Price</th>
+              <th style="padding:9px 12px;text-align:right;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:#9ca3af;">Profit</th>
+            </tr></thead>
+            <tbody>{''.join(rows)}
+              <tr><td colspan="5" style="padding:10px 12px;text-align:right;font-weight:600;color:#374151;">Total (raw deals)</td>
+                  <td style="padding:10px 12px;text-align:right;font-weight:700;color:{total_color};font-variant-numeric:tabular-nums;">{total_profit:+.2f}</td></tr>
+            </tbody>
+          </table>
+        </td></tr>
+        <tr><td style="padding:8px 28px 4px;">
+          <div style="font-size:13px;font-weight:700;color:#111827;margin-bottom:6px;">Finish your journal</div>
+          <div style="font-size:13px;color:#4b5563;line-height:1.7;">
+            📸 Add screenshots of your setups<br>
+            📝 Write your notes / journaling<br>
+            🏷️ Tag your strategy &amp; satisfaction
+          </div>
+        </td></tr>
+        <tr><td style="padding:18px 28px 26px;">{cta}</td></tr>
+        <tr><td style="padding:14px 28px;background:#fafbfc;border-top:1px solid #eef0f3;">
+          <div style="font-size:11px;color:#9ca3af;">Automated by the MT5 → TradeNote sync. You receive this only when new deals close.</div>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+
+
+def notify_email(cfg, deals, resp, account_info=None):
     """Send a reminder email after new deals were synced. Non-fatal: any failure
     is logged and swallowed so it never breaks the sync itself.
 
@@ -162,7 +281,7 @@ def notify_email(cfg, deals, resp):
         log("notify: sender/app_password not set, skipping email")
         return
 
-    # Summarise the synced deals for the reminder body.
+    # Summarise the synced deals for the reminder.
     symbols = {}
     total_profit = 0.0
     for d in deals:
@@ -172,12 +291,21 @@ def notify_email(cfg, deals, resp):
     count = len(deals)
     tradenote_url = cfg.get("tradenote", "url", fallback="").rstrip("/")
 
-    subject = f"TradeNote: {count} new MT5 deal(s) synced - update your journal"
-    body = "\n".join([
+    if account_info is not None:
+        account_line = (f"Account {account_info.login} @ {account_info.server} "
+                        f"({account_info.currency})")
+    else:
+        account_line = "MetaTrader 5"
+
+    subject = f"TradeNote: {count} new MT5 deal(s) synced ({total_profit:+.2f})"
+
+    # Plain-text fallback for clients that don't render HTML.
+    text_body = "\n".join([
         f"{count} new deal(s) were just synced from MetaTrader 5 into TradeNote.",
+        account_line,
         "",
         f"Symbols: {sym_line}",
-        f"Total profit (raw deals): {total_profit:.2f}",
+        f"Total profit (raw deals): {total_profit:+.2f}",
         "",
         "Reminder - open TradeNote and finish these trades:",
         "  - add screenshots of your setups",
@@ -185,14 +313,17 @@ def notify_email(cfg, deals, resp):
         "  - tag your strategy and satisfaction",
         "",
         f"TradeNote: {tradenote_url}" if tradenote_url else "",
-        f"Server response: {resp}",
     ]).strip()
 
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = sender
     msg["To"] = recipient
-    msg.set_content(body)
+    msg.set_content(text_body)
+    msg.add_alternative(
+        _build_email_html(deals, total_profit, account_line, tradenote_url),
+        subtype="html",
+    )
 
     try:
         with smtplib.SMTP(host, port, timeout=30) as s:
@@ -208,31 +339,57 @@ def main():
     cfg = load_config()
     state = load_state()
 
-    lookback_days = cfg.getint("sync", "lookback_days", fallback=7)
-    to = dt.datetime.now()
-    if state.get("last_sync"):
-        frm = dt.datetime.fromisoformat(state["last_sync"])
-    else:
-        frm = to - dt.timedelta(days=lookback_days)
-    log(f"Sync window: {frm:%Y-%m-%d %H:%M} -> {to:%Y-%m-%d %H:%M}")
+    # --- Sliding window, not a moving watermark --------------------------------
+    # Two facts drive this design:
+    #
+    # 1. MT5 returns deal times in *broker-server* time, which the API hands back
+    #    ahead of the host clock (HFMarkets is UTC+3, so a trade the terminal shows
+    #    at 21:37 comes back as ~04:37 next day on a UTC+7 host). If we cap the
+    #    query at the host's "now", the newest deals sit just beyond it and are
+    #    never pulled -- which is exactly why nothing showed up. So the upper bound
+    #    is padded two days into the future; the lower bound is a fixed lookback.
+    #
+    # 2. TradeNote dedups imports by dateUnix (see useImportTrades), so re-sending
+    #    the same window every run never creates duplicates, and always re-pairs a
+    #    trade's open+close deals even when they landed in different runs. That
+    #    makes a fixed sliding window both correct and self-healing -- a failed run
+    #    is simply recovered by the next one, with no watermark to corrupt.
+    #
+    # We still keep a watermark ("last_deal_unix", the newest deal time pushed) but
+    # use it ONLY to detect whether anything new arrived -- so a 1-minute schedule
+    # doesn't push (or email) on every tick when nothing has changed.
+    lookback_days = cfg.getint("sync", "lookback_days", fallback=2)
+    now = dt.datetime.now()
+    frm = now - dt.timedelta(days=lookback_days)
+    to = now + dt.timedelta(days=2)
+    last_deal_unix = int(state.get("last_deal_unix", 0))
+    log(f"Sync window (sliding): {frm:%Y-%m-%d %H:%M} -> {to:%Y-%m-%d %H:%M}")
 
     connect(cfg)
     try:
+        # Always refresh the account snapshot (balance/deposit/withdrawal) so the
+        # Dashboard stays current even on ticks with no new trades.
+        ai = mt5.account_info()
+        deposit, withdrawal = account_financials()
+        push_account(cfg, ai, deposit, withdrawal)
+
         deals = fetch_deals(frm, to)
-        log(f"Fetched {len(deals)} trade deal(s)")
-        if not deals:
-            log("Nothing to sync.")
-            state["last_sync"] = to.isoformat()
-            save_state(state)
+        new_deals = [d for d in deals if d.time > last_deal_unix]
+        log(f"Fetched {len(deals)} trade deal(s) in window, {len(new_deals)} new")
+        if not new_deals:
+            log("Nothing new to sync.")
             return
-        account = mt5.account_info().login
-        xlsx = build_report_xlsx(account, deals)
+        # Push the FULL window (not just the new deals) so TradeNote always sees
+        # both legs of every trade and can pair them; its dateUnix dedup drops the
+        # ones already stored.
+        xlsx = build_report_xlsx(ai.login, ai.server, deals)
         resp = push(cfg, xlsx)
         log(f"TradeNote response: {resp}")
-        # Only advance the watermark once the push succeeded.
-        state["last_sync"] = to.isoformat()
+        # Advance the watermark to the newest deal we've now pushed.
+        state["last_deal_unix"] = max(d.time for d in deals)
         save_state(state)
-        notify_email(cfg, deals, resp)
+        # Email summarises only the genuinely new deals, not the whole window.
+        notify_email(cfg, new_deals, resp, ai)
         log("Done.")
     finally:
         mt5.shutdown()

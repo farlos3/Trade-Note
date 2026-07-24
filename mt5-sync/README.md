@@ -14,8 +14,17 @@ MT5 terminal ──► mt5_sync.py ──► POST /api/trades ──► TradeNot
                   base64)                               round-trips)
 ```
 
-The script keeps a watermark in `state.json` and only sends deals newer than the
-last successful sync.
+Each run re-sends a **sliding window** of recent deals (default: the last 2 days)
+and lets TradeNote drop the ones it already has — TradeNote dedups imports by
+trade date, so re-sending never creates duplicates and always re-pairs a trade's
+open + close legs even if they arrived in different runs. `state.json` keeps a
+small watermark (the newest deal already pushed) used only to skip the push/email
+when nothing new has closed, so a 1-minute schedule stays quiet between trades.
+
+> **Broker time:** MT5 reports deal times in *broker-server* time, which the API
+> returns ahead of your PC clock (HFMarkets is UTC+3). The sync pads its query
+> window into the future to account for this — don't be surprised if `state.json`
+> holds a timestamp that looks a few hours ahead.
 
 ## One-time setup
 
@@ -47,17 +56,29 @@ Check your TradeNote dashboard — the trades should appear.
 
 ## Run it automatically (Task Scheduler)
 
-Run every 30 minutes (adjust as you like). From an **admin PowerShell** in the
-project folder:
+Runs **every minute** for near-real-time syncing (Task Scheduler's shortest
+interval). It only pushes when a new trade has closed, so a 1-minute cadence is
+cheap. From a PowerShell in the project folder:
 
 ```powershell
-$py = (Get-Command python).Source
-$script = "D:\Trader\TradeNote\mt5-sync\mt5_sync.py"
-$action = New-ScheduledTaskAction -Execute $py -Argument "`"$script`"" -WorkingDirectory "D:\Trader\TradeNote\mt5-sync"
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
-    -RepetitionInterval (New-TimeSpan -Minutes 30)
+# Resolve the python that actually has the MT5 packages, and the sync folder,
+# without hardcoding machine-specific paths. Run this from the mt5-sync folder.
+$py = & python -c "import sys; print(sys.executable)"
+$wd = (Get-Location).Path
+$script = Join-Path $wd "mt5_sync.py"
+
+$action = New-ScheduledTaskAction -Execute $py -Argument "`"$script`"" -WorkingDirectory $wd
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date)
+$rep = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1)
+$trigger.Repetition = $rep.Repetition
+$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -StartWhenAvailable `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+# Interactive: runs in your logged-on session so it can reach the open MT5 terminal.
+$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName "TradeNote MT5 Sync" -Action $action -Trigger $trigger `
-    -Description "Sync MetaTrader 5 deals into TradeNote"
+    -Settings $settings -Principal $principal -Force `
+    -Description "Sync MetaTrader 5 deals into TradeNote every minute (near real-time)"
 ```
 
 Manage it:
@@ -71,10 +92,13 @@ Unregister-ScheduledTask -TaskName "TradeNote MT5 Sync" -Confirm:$false   # remo
 
 ## Notes & caveats
 
-- **Dedup**: the script advances its watermark only after a successful push, so
-  deals aren't re-sent. If you ever need to re-import, delete `state.json` and set
-  `lookback_days`, but be aware TradeNote may duplicate trades for a date that was
-  already imported — manage that from TradeNote → Imports.
+- **Dedup**: TradeNote drops any imported trade whose date already exists, so the
+  sliding window is safe to re-send every run. To force a clean re-pull, reset
+  `state.json` to `{}` (or delete it) and widen `lookback_days` — already-imported
+  dates simply won't duplicate.
+- **Dedup limit**: TradeNote only compares against the 50 most recent existing
+  trades. Keep `lookback_days` small enough that the window holds fewer than 50
+  trades, or heavy days could slip past the filter.
 - **Cloud (Render) target**: point `url` at your Render URL and the same key
   must exist on that instance's user. The machine running this script still needs
   the local MT5 terminal.

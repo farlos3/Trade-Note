@@ -1,8 +1,9 @@
 <script setup>
-import { selectedItem, modalDailyTradeOpen, pageId, tags } from '../stores/globals';
+import { ref, onMounted } from 'vue';
+import { selectedItem, modalDailyTradeOpen, pageId, tags, notes } from '../stores/globals';
 import { useSetupMarkerArea, useSelectedScreenshotFunction } from '../utils/screenshots';
 import { useHourMinuteFormat, useTimeFormat, useEditItem, useCreatedDateFormat } from '../utils/utils';
-import { useGetTagInfo } from '../utils/daily';
+import { useGetTagInfo, useSaveTradeNote } from '../utils/daily';
 
 
 const props = defineProps({
@@ -12,9 +13,33 @@ const props = defineProps({
     index: Number
 })
 
-//console.log(" -> Source " + props.source)
-//console.log(" props "+JSON.stringify(props))
+// Inline per-trade principle/note (Screenshots page). Keyed by the screenshot's
+// trade id (screenshotData.name), saved to the shared `notes` collection.
+const principle = ref('')
+const principleSaved = ref(false)
+const principleSaving = ref(false)
 
+onMounted(() => {
+    if (props.source == 'screenshots') {
+        const n = notes.find(x => x.tradeId == props.screenshotData.name)
+        principle.value = n ? (n.note || '') : ''
+    }
+})
+
+async function savePrinciple() {
+    if (principleSaving.value) return
+    principleSaving.value = true
+    try {
+        await useSaveTradeNote(props.screenshotData.name, props.screenshotData.dateUnix, principle.value)
+        const n = notes.find(x => x.tradeId == props.screenshotData.name)
+        if (n) n.note = principle.value
+        else notes.push({ tradeId: props.screenshotData.name, note: principle.value, dateUnix: props.screenshotData.dateUnix })
+        principleSaved.value = true
+        setTimeout(() => (principleSaved.value = false), 1500)
+    } finally {
+        principleSaving.value = false
+    }
+}
 </script>
 
 <template>
@@ -98,6 +123,17 @@ const props = defineProps({
             v-bind:src="props.screenshotData.originalUrl || props.screenshotData.originalBase64" />
         <img class="overlayImg screenshotImg mt-3 img-fluid"
             v-bind:src="props.screenshotData.annotatedUrl || props.screenshotData.annotatedBase64" />
+    </div>
+
+    <!-- INLINE TRADE PRINCIPLE (Screenshots page) -->
+    <div v-if="props.source == 'screenshots'" class="mt-3">
+        <div class="tradePrincipleHead">
+            <span>Trade principle / หลักการเทรด</span>
+            <span v-show="principleSaved" class="tradePrincipleSaved">Saved</span>
+        </div>
+        <textarea class="form-control tradePrincipleInput" rows="3"
+            v-model="principle" @blur="savePrinciple"
+            placeholder="เขียนหลักการ/เหตุผลของการเข้าเทรดนี้ แล้วคลิกออกเพื่อบันทึก"></textarea>
 
         <!--<img v-if="props.screenshotData.markersOnly" :id="props.screenshotData.objectId ? 'screenshotDiv-' + props.source + '-' + props.screenshotData.objectId : 'screenshotDiv-' + props.source + '-' + props.screenshotData.dateUnix" class="screenshotImg mt-3 img-fluid" v-bind:src="props.screenshotData.originalBase64" />
 
@@ -111,3 +147,37 @@ const props = defineProps({
             v-bind:src="props.screenshotData.annotatedBase64" />-->
     </div>
 </template>
+
+<style scoped>
+.tradePrincipleHead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--white-70, rgba(255, 255, 255, 0.7));
+    margin-bottom: 0.4rem;
+}
+
+.tradePrincipleSaved {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #16a34a;
+}
+
+.tradePrincipleInput {
+    background-color: var(--black-bg-7, rgba(255, 255, 255, 0.04));
+    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
+    color: var(--white-87, rgba(255, 255, 255, 0.87));
+    border-radius: 8px;
+    font-size: 0.85rem;
+    resize: vertical;
+}
+
+.tradePrincipleInput:focus {
+    background-color: var(--black-bg-7, rgba(255, 255, 255, 0.04));
+    border-color: var(--border-strong, rgba(255, 255, 255, 0.24));
+    color: var(--white-87, rgba(255, 255, 255, 0.87));
+    box-shadow: none;
+}
+</style>

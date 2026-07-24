@@ -986,8 +986,8 @@ function getOHLC(date, symbol, type) {
 
                                                             <td>{{ trade.symbol }}</td>
 
-                                                            <!--Vol-->
-                                                            <td>{{ trade.buyQuantity + trade.sellQuantity }}</td>
+                                                            <!--Vol (position/lot size, not buy+sell round-turn)-->
+                                                            <td>{{ Math.max(trade.buyQuantity, trade.sellQuantity) }}</td>
 
                                                             <!--Position-->
                                                             <td>
@@ -1204,8 +1204,8 @@ function getOHLC(date, symbol, type) {
                                 <!-- the page loads faster than the video blob => check if blob, that is after slash, is not null, and then load -->
                                 <tr>
                                     <td>{{ filteredTrades[itemTradeIndex].trades[tradeIndex].symbol }}</td>
-                                    <td>{{ filteredTrades[itemTradeIndex].trades[tradeIndex].buyQuantity +
-                                        filteredTrades[itemTradeIndex].trades[tradeIndex].sellQuantity }}
+                                    <td>{{ Math.max(filteredTrades[itemTradeIndex].trades[tradeIndex].buyQuantity,
+                                        filteredTrades[itemTradeIndex].trades[tradeIndex].sellQuantity) }}
                                     </td>
                                     <td>{{ filteredTrades[itemTradeIndex].trades[tradeIndex].side == 'B' ? 'Long' :
                                         'Short'

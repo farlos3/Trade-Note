@@ -718,6 +718,33 @@ export async function useGetNotes() {
     })
 }
 
+/**
+ * Upsert a per-trade note by tradeId with explicit arguments (unlike
+ * useUpdateNote which reads shared refs). Used by the inline "trade principle"
+ * editors on the Screenshots/Diary pages so several trades can be edited on one
+ * screen without a modal. Writes to the same `notes` collection.
+ */
+export const useSaveTradeNote = async (tradeId, dateUnix, note) => {
+    const parseObject = Parse.Object.extend("notes");
+    const query = new Parse.Query(parseObject);
+    query.equalTo("user", Parse.User.current())
+    query.equalTo("tradeId", tradeId)
+    const existing = await query.first();
+    if (existing) {
+        existing.set("note", note)
+        await existing.save()
+    } else {
+        const object = new parseObject();
+        object.set("user", Parse.User.current())
+        object.set("note", note)
+        object.set("reason", "")
+        object.set("dateUnix", dateUnix)
+        object.set("tradeId", tradeId)
+        object.setACL(new Parse.ACL(Parse.User.current()));
+        await object.save()
+    }
+}
+
 export const useUpdateNote = async () => {
     console.log("\nUPDATING OR SAVING NOTE IN PARSE DB")
     return new Promise(async (resolve, reject) => {
