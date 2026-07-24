@@ -797,7 +797,7 @@ async function seedLoginUser() {
         if (!existing) {
             const user = new ParseNode.User()
             user.set("username", username)
-            user.set("email", username)
+            user.set("email", username.includes('@') ? username : `${username}@tradenote.local`)
             user.set("password", password)
             await user.signUp(null, { useMasterKey: true })
             console.log(` -> Created user ${username}`)
