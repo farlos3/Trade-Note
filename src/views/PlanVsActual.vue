@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import axios from 'axios'
 import dayjs from 'dayjs'
@@ -56,6 +56,11 @@ async function load() {
         loading.value = false
     }
 }
+
+// Pull the real account's traded P&L automatically — on open and whenever the
+// period changes — so "actual" always reflects the live journal without a click.
+onMounted(load)
+watch(period, load)
 
 const actual = computed(() => {
     if (!daily.value || !daily.value.length) return null

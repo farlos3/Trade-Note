@@ -170,6 +170,9 @@ export function useInitParse() {
 
         if ((parse_app_id == "") && path != "/" && path != "/register") window.location.replace("/")
         if (parse_app_id != "") await useCheckCurrentUser()
+        // Heal a stale account filter on every load (not just at login), so a
+        // changed account label can't leave the dashboard silently empty.
+        if (parse_app_id != "") await useReconcileSelectedAccounts()
         resolve()
     })
 }
@@ -802,10 +805,21 @@ export async function useInitPostHog() {
  * Always resolves the spinner (call from a `finally`), and for a dead
  * session, bounces home so login runs again -- silently, if
  * TRADENOTE_AUTO_LOGIN is on.
+ *
+ * Also clears the locally cached Parse user before navigating. Parse.User.current()
+ * reads from localStorage without ever asking the server if that session is
+ * still valid, and the login layout trusts it blindly (see useCheckCurrentUser):
+ * if it's truthy on "/" it bounces straight back to "/dashboard" with no login
+ * check at all. Without clearing it first, a dead cached session turns this
+ * redirect into an infinite dashboard <-> login loop that never reaches
+ * tryAutoLogin. Parse.User.logOut() clears the local cache before it attempts
+ * the (already-doomed) server-side revoke, so the try/catch here is just to
+ * ignore that expected second failure -- the local clear already happened.
  */
-function useHandleMountError(error) {
+async function useHandleMountError(error) {
     console.error("Error mounting page:", error)
     if (error && (error.code === Parse.Error.INVALID_SESSION_TOKEN || error.mountTimeout)) {
+        try { await Parse.User.logOut() } catch (e) { /* expected: session already dead server-side */ }
         window.location.replace("/")
     }
 }
@@ -930,7 +944,7 @@ export async function useMountScreenshots() {
     await console.time("  --> Duration mount screenshots");
     useGetScreenshotsPagination()
     await useGetSelectedRange()
-    await Promise.all([useGetTags(), useGetAvailableTags()])
+    await Promise.all([useGetTags(), useGetAvailableTags(), useGetNotes()])
     await useGetScreenshots(false)
     await console.timeEnd("  --> Duration mount screenshots")
     useInitPopover()
@@ -989,6 +1003,11 @@ export function usePageId() {
 
 export function useGetSelectedRange() {
     return new Promise(async (resolve, reject) => {
+        // Runs first in every page mount (before trades are filtered), so stale
+        // filters are healed before they can hide anything -- covers page reloads,
+        // where useSetValues (login-only) never runs.
+        await useReconcileSelectedAccounts()
+        useReconcileSelectedMonth()
         if (pageId.value == "dashboard") {
             selectedRange.value = selectedDateRange.value
         } else if (pageId.value == "calendar") {
@@ -1008,6 +1027,70 @@ export function useGetSelectedRange() {
 export function useScreenType() {
     let screenWidth = (window.innerWidth > 0) ? window.innerWidth : screen.width
     screenType.value = (screenWidth >= 992) ? 'computer' : 'mobile'
+}
+
+/**
+ * Keep the account filter (`selectedAccounts`) in sync with the accounts that
+ * actually exist on the user. Selects all of them whenever what's stored is
+ * null, empty, or stale -- i.e. references an account value that no longer
+ * exists (e.g. after an account label changes). Without this, a stale stored
+ * value silently filters out every trade while the UI still reads "All accounts"
+ * (the length matches, so it looks selected). Safe to call on every page load;
+ * it only writes when the stored selection is invalid.
+ */
+export async function useReconcileSelectedAccounts() {
+    // Parse caches the current user in localStorage, so `Parse.User.current()`
+    // can hold accounts from an earlier login even after they changed server-side
+    // (e.g. a new trade added an account, or an account label was corrected). A
+    // page reload does NOT refetch it. Pull a fresh copy first so the reconcile
+    // below compares against reality; on a dead/offline session just fall back to
+    // the cached user (the mount's own 209 handling takes over).
+    try {
+        const u = Parse.User.current()
+        if (u) {
+            await u.fetch()
+            useGetCurrentUser()
+        }
+    } catch (e) {
+        // stale/invalid session or offline -- keep the cached user
+    }
+
+    if (currentUser.value && currentUser.value.hasOwnProperty("accounts") && currentUser.value.accounts.length > 0) {
+        const accountValues = currentUser.value.accounts.map(a => a.value)
+        const storedAccounts = localStorage.getItem('selectedAccounts')
+        const storedArr = storedAccounts ? storedAccounts.split(",").filter(Boolean) : []
+        const anyValid = storedArr.some(v => accountValues.includes(v))
+        if (!anyValid) {
+            selectedAccounts.value = [...accountValues]
+            localStorage.setItem('selectedAccounts', selectedAccounts.value)
+            selectedAccounts.value = localStorage.getItem('selectedAccounts').split(",")
+        }
+    }
+}
+
+/**
+ * Advance the month filter (used by Daily & Calendar) to the current month when
+ * what's stored is a *past* month. Unlike the dashboard's rolling period,
+ * `selectedMonth` is an absolute range persisted in localStorage, so it never
+ * moves forward on its own after the month rolls over -- leaving those two pages
+ * stuck on an old, empty month until the next login. Snapping a stale past month
+ * to "now" on every load fixes that; a current or future selection is left alone
+ * so navigating to a specific month still holds within a session.
+ */
+export function useReconcileSelectedMonth() {
+    const curStart = Number(dayjs().tz(timeZoneTrade.value).startOf('month').unix())
+    const curEnd = Number(dayjs().tz(timeZoneTrade.value).endOf('month').unix())
+    let sm = null
+    try {
+        const stored = localStorage.getItem('selectedMonth')
+        sm = stored ? JSON.parse(stored) : null
+    } catch (e) {
+        sm = null
+    }
+    if (!sm || !sm.start || sm.start < curStart) {
+        selectedMonth.value = { start: curStart, end: curEnd }
+        localStorage.setItem('selectedMonth', JSON.stringify(selectedMonth.value))
+    }
 }
 
 export async function useSetValues() {
@@ -1058,19 +1141,7 @@ export async function useSetValues() {
         if (!localStorage.getItem('selectedMonth')) localStorage.setItem('selectedMonth', JSON.stringify({ start: periodRange.filter(element => element.value == 'thisMonth')[0].start, end: periodRange.filter(element => element.value == 'thisMonth')[0].end }))
         selectedMonth.value = JSON.parse(localStorage.getItem('selectedMonth'))
 
-        if (currentUser.value && currentUser.value.hasOwnProperty("accounts") && currentUser.value.accounts.length > 0) {
-            const accountValues = currentUser.value.accounts.map(a => a.value)
-            const storedAccounts = localStorage.getItem('selectedAccounts')
-            const storedArr = storedAccounts ? storedAccounts.split(",").filter(Boolean) : []
-            // Select all accounts when nothing valid is stored yet (null, empty, or stale
-            // values that no longer match any existing account) so new trades aren't hidden.
-            const anyValid = storedArr.some(v => accountValues.includes(v))
-            if (!anyValid) {
-                selectedAccounts.value = [...accountValues]
-                localStorage.setItem('selectedAccounts', selectedAccounts.value)
-                selectedAccounts.value = localStorage.getItem('selectedAccounts').split(",")
-            }
-        }
+        useReconcileSelectedAccounts()
 
         let selectedTagsNull = Object.is(localStorage.getItem('selectedTags'), null)
         console.log("selectedTagsNull " + selectedTagsNull)
@@ -1404,7 +1475,7 @@ export function useThousandFormat(param) {
 }
 
 export function useTwoDecCurrencyFormat(param) {
-    return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2, style: 'currency', currency: 'USD' }).format(param)
+    return new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2, style: 'currency', currency: 'USD' }).format(param)
 }
 
 export function useThreeDecCurrencyFormat(param) {

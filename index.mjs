@@ -558,6 +558,42 @@ const setupApiRoutes = (app) => {
         }
     });
 
+    /**********************************************
+     * ACCOUNT SNAPSHOT (MT5 balance / deposit / withdrawal)
+     * The sync posts the live account figures here each run; stored on the user
+     * as `mt5Accounts` (array, upserted by login) so the Dashboard can show
+     * broker, account number, balance, deposits and withdrawals.
+     **********************************************/
+    app.post('/api/account', validateApiKey, async (req, res) => {
+        try {
+            const b = req.body || {}
+            const query = new ParseNode.Query(ParseNode.User)
+            query.equalTo('objectId', currentUser.value.objectId)
+            const user = await query.first({ useMasterKey: true })
+            if (!user) return res.status(404).send({ error: 'user not found' })
+
+            let arr = user.get('mt5Accounts')
+            if (!Array.isArray(arr)) arr = []
+            const rec = {
+                login: b.login,
+                server: b.server,
+                currency: b.currency,
+                balance: Number(b.balance) || 0,
+                deposit: Number(b.deposit) || 0,
+                withdrawal: Number(b.withdrawal) || 0,
+                updatedAt: Date.now(),
+            }
+            const idx = arr.findIndex(a => String(a.login) === String(b.login))
+            if (idx >= 0) arr[idx] = rec; else arr.push(rec)
+            user.set('mt5Accounts', arr)
+            await user.save(null, { useMasterKey: true })
+            res.status(200).send({ ok: true })
+        } catch (error) {
+            console.error('account update error', error.message);
+            res.status(500).send({ error: error.message });
+        }
+    });
+
     app.post('/api/databento', async (req, res) => {
         //console.log(" calling databento")
         const data = req.body;

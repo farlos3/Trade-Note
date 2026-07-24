@@ -1,6 +1,7 @@
 <script setup>
-import { pageId, selectedMonth, selectedPlSatisfaction, amountCase, calendarData, miniCalendarsData, timeZoneTrade, spinnerLoadingPage } from '../stores/globals';
-import { useThousandCurrencyFormat, useMountCalendar, useMountDaily } from '../utils/utils';
+import { computed } from 'vue'
+import { pageId, selectedMonth, selectedPlSatisfaction, amountCase, calendarData, miniCalendarsData, timeZoneTrade, spinnerLoadingPage, filteredTrades } from '../stores/globals';
+import { useThousandCurrencyFormat, useTwoDecCurrencyFormat, useMountCalendar, useMountDaily } from '../utils/utils';
 import dayjs from 'dayjs'
 import utc from 'dayjs/plugin/utc.js'
 dayjs.extend(utc)
@@ -19,6 +20,27 @@ dayjs.extend(customParseFormat)
 
 
 const days = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
+
+// Year-at-a-glance summary. On the Calendar page filteredTrades already spans
+// Jan 1 -> end of the selected month (see useGetSelectedRange), so aggregate it
+// per month for the selected year plus a year total.
+const yearSummary = computed(() => {
+    const year = dayjs(selectedMonth.value.start * 1000).tz(timeZoneTrade.value).year()
+    const key = amountCase.value + 'Proceeds'
+    const months = Array.from({ length: 12 }, (_, m) => ({
+        m, label: dayjs().month(m).format('MMM'), total: 0, trades: 0, has: false
+    }))
+    for (const t of filteredTrades) {
+        if (Number(t.year) !== year) continue
+        const mi = Number(t.month)
+        if (mi < 0 || mi > 11 || !t.pAndL) continue
+        months[mi].total += Number(t.pAndL[key] || 0)
+        months[mi].trades += Number(t.pAndL.trades || 0)
+        months[mi].has = true
+    }
+    const yearTotal = months.reduce((s, x) => s + x.total, 0)
+    return { year, months, yearTotal }
+})
 
 //console.log("perdio range "+JSON.stringify(periodRange))
 
@@ -42,7 +64,7 @@ async function monthLastNext(param) {
 <template>
     <div class="col-12">
         <div v-bind:class="[pageId === 'calendar' ? 'justify-content-center' : '', 'row']">
-            <div v-bind:class="[pageId === 'calendar' ? 'col-md-9 col-xl-6' : '', 'col-12']">
+            <div class="col-12">
                 <div class="calMonthNav">
                     <i class="uil uil-angle-left-b calNavBtn pointerClass" v-on:click="monthLastNext(-1)"></i>
                     <span class="calMonthLabel" v-if="calendarData.hasOwnProperty(0)">{{ calendarData[0][0].month }}</span>
@@ -51,7 +73,7 @@ async function monthLastNext(param) {
             </div>
         </div>
     </div>
-    <div v-bind:class="[pageId === 'calendar' ? 'col-md-10 col-xl-9 col-xxl-6 mb-5' : '', 'col-12']">
+    <div v-bind:class="[pageId === 'calendar' ? 'mb-4' : '', 'col-12']">
         <div class="row">
             <div class="col" v-for="(day, index) in days">
                 <div>{{ day }}</div>
@@ -60,11 +82,11 @@ async function monthLastNext(param) {
                         <div v-show="line[index] != 0"
                             v-bind:class="[{ 'greenTradeDiv': selectedPlSatisfaction == 'pl' ? line[index].pAndL[amountCase + 'Proceeds'] >= 0 : line[index].satisfaction == true, 'redTradeDiv': selectedPlSatisfaction == 'pl' ? line[index].pAndL[amountCase + 'Proceeds'] < 0 : line[index].satisfaction == false, 'calDivDay': pageId == 'daily', 'calDivDash': pageId == 'calendar' }, 'col']">
                             <p class="mb-1 dayNumber" v-show="line[index].day != 0">{{ line[index].day }}</p>
-                            <div v-if="pageId == 'calendar'" class="d-none d-md-block">
-                                <p v-show="line[index].pAndL.trades">{{ line[index].pAndL.trades }} trades</p>
-                                <p v-show="line[index].pAndL[amountCase + 'Proceeds']">
-                                    {{ useThousandCurrencyFormat(parseInt(line[index].pAndL[amountCase + 'Proceeds'])) }}
+                            <div v-if="pageId == 'calendar'" class="d-none d-md-block text-center calCellBody">
+                                <p class="calAmount mb-1" v-show="line[index].pAndL[amountCase + 'Proceeds']">
+                                    {{ (line[index].pAndL[amountCase + 'Proceeds'] >= 0 ? '+' : '') + useTwoDecCurrencyFormat(line[index].pAndL[amountCase + 'Proceeds']) }}
                                 </p>
+                                <p class="calTrades mb-0" v-show="line[index].pAndL.trades">{{ line[index].pAndL.trades }} trades</p>
                             </div>
                         </div>
                     </div>
@@ -72,23 +94,23 @@ async function monthLastNext(param) {
             </div>
         </div>
     </div>
-    <div v-show="pageId == 'calendar'" class="col-12 mt-4">
-        <div class="row">
-            <div class="col-12 col-md-4 col-xl-3 mb-3" v-for="(calData, index) in miniCalendarsData">
-                <div class="row me-2">
-                    <div>{{ calData[0][0].month }}</div>
-                    <div class="col miniCalBox" v-for="(day, index) in days">
-                        <div>{{ day }}</div>
-                        <div v-for="line in calData">
-                            <div class="row">
-                                <div v-show="line[index] != 0"
-                                    v-bind:class="[{ 'greenTradeDiv': selectedPlSatisfaction == 'pl' ? line[index].pAndL[amountCase + 'Proceeds'] >= 0 : line[index].satisfaction == true, 'redTradeDiv': selectedPlSatisfaction == 'pl' ? line[index].pAndL[amountCase + 'Proceeds'] < 0 : line[index].satisfaction == false }, 'calDivMini', 'col']">
-                                    <p class="mb-1 dayNumber" v-show="line[index].day != 0">{{ line[index].day }}</p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+
+    <!-- YEAR-AT-A-GLANCE SUMMARY -->
+    <div v-if="pageId == 'calendar'" class="col-12 mt-2 mb-4">
+        <div class="yearSummaryHead">
+            <span class="yearSummaryTitle">{{ yearSummary.year }} summary</span>
+            <span class="yearSummaryTotal" :class="yearSummary.yearTotal >= 0 ? 'ySumPos' : 'ySumNeg'">
+                {{ (yearSummary.yearTotal >= 0 ? '+' : '') + useTwoDecCurrencyFormat(yearSummary.yearTotal) }}
+            </span>
+        </div>
+        <div class="yearGrid">
+            <div v-for="mo in yearSummary.months" :key="mo.m"
+                v-bind:class="['yearCell', mo.has ? (mo.total >= 0 ? 'yearWin' : 'yearLoss') : 'yearEmpty']">
+                <div class="yearMonth">{{ mo.label }}</div>
+                <div class="yearAmount" v-show="mo.has">
+                    {{ (mo.total >= 0 ? '+' : '') + useTwoDecCurrencyFormat(mo.total) }}
                 </div>
+                <div class="yearTrades" v-show="mo.has">{{ mo.trades }} trades</div>
             </div>
         </div>
     </div>
@@ -128,5 +150,141 @@ async function monthLastNext(param) {
 .calNavBtn:hover {
     background-color: var(--surface-hover);
     border-color: var(--border-strong);
+}
+
+/* Calendar-page day cells: heavier text, centered + larger P/L amount */
+.calDivDash {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+.calDivDash .calCellBody {
+    width: 100%;
+}
+
+.dayNumber {
+    font-weight: 700;
+    color: #ffffff;
+}
+
+.calCellBody {
+    font-weight: 600;
+    color: #ffffff;
+}
+
+.calTrades {
+    font-weight: 600;
+    font-size: 0.82rem;
+    color: #ffffff;
+}
+
+.calAmount {
+    text-align: center;
+    font-weight: 800;
+    font-size: 1.1rem;
+    line-height: 1.2;
+    color: #ffffff;
+}
+
+/* Bright-green win cells: white text is low-contrast, use dark text instead.
+   Red loss cells keep white (good contrast). */
+.greenTradeDiv .dayNumber,
+.greenTradeDiv .calTrades,
+.greenTradeDiv .calAmount {
+    color: #06281a;
+}
+
+/* ===== Year-at-a-glance summary ===== */
+.yearSummaryHead {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 0.6rem;
+    padding: 0 0.25rem;
+}
+
+.yearSummaryTitle {
+    font-weight: 700;
+    font-size: 1rem;
+    color: var(--white-87, rgba(255, 255, 255, 0.87));
+}
+
+.yearSummaryTotal {
+    font-weight: 800;
+    font-size: 1.15rem;
+}
+
+.ySumPos {
+    color: #16a34a;
+}
+
+.ySumNeg {
+    color: #dc2626;
+}
+
+.yearGrid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 0.6rem;
+}
+
+@media (max-width: 992px) {
+    .yearGrid {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
+
+@media (max-width: 576px) {
+    .yearGrid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+.yearCell {
+    border-radius: 10px;
+    padding: 0.7rem 0.5rem;
+    text-align: center;
+    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+    min-height: 76px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.15rem;
+}
+
+.yearEmpty {
+    background-color: var(--black-bg-7, rgba(255, 255, 255, 0.02));
+    color: var(--white-50, rgba(255, 255, 255, 0.4));
+}
+
+.yearWin {
+    background-color: #22c55e;
+    border-color: #22c55e;
+    color: #06281a;
+}
+
+.yearLoss {
+    background-color: #ef4444;
+    border-color: #ef4444;
+    color: #ffffff;
+}
+
+.yearMonth {
+    font-weight: 700;
+    font-size: 0.9rem;
+}
+
+.yearAmount {
+    font-weight: 800;
+    font-size: 1.05rem;
+}
+
+.yearTrades {
+    font-weight: 600;
+    font-size: 0.72rem;
+    opacity: 0.85;
 }
 </style>

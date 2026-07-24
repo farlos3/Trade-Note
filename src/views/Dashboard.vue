@@ -2,7 +2,7 @@
 import { computed, onBeforeMount, ref } from 'vue'
 import SpinnerLoadingPage from '../components/SpinnerLoadingPage.vue';
 import Filters from '../components/Filters.vue'
-import { selectedDashTab, spinnerLoadingPage, dashboardIdMounted, totals, amountCase, amountCapital, profitAnalysis, renderData, selectedRatio, dashboardChartsMounted, hasData, satisfactionArray, availableTags, groups, barChartNegativeTagGroups } from '../stores/globals';
+import { selectedDashTab, spinnerLoadingPage, dashboardIdMounted, totals, amountCase, amountCapital, profitAnalysis, renderData, selectedRatio, dashboardChartsMounted, hasData, satisfactionArray, availableTags, groups, barChartNegativeTagGroups, currentUser } from '../stores/globals';
 import { useThousandCurrencyFormat, useTwoDecCurrencyFormat, useXDecCurrencyFormat, useMountDashboard, useThousandFormat, useXDecFormat } from '../utils/utils';
 import NoData from '../components/NoData.vue';
 
@@ -33,6 +33,30 @@ const dashTabs = [{
 }
 ]
 amountCapital.value = amountCase.value ? amountCase.value.charAt(0).toUpperCase() + amountCase.value.slice(1) : ''
+
+// MT5 account snapshots (broker / login / balance / deposit / withdrawal),
+// pushed by the sync and stored on the user. Refetched on load via useInitParse.
+const mt5Accounts = computed(() =>
+    (currentUser.value && Array.isArray(currentUser.value.mt5Accounts)) ? currentUser.value.mt5Accounts : []
+)
+
+// Headline performance stats derived from the already-computed `totals`
+// (gross/net per the amount toggle). Fills the dashboard with the numbers a
+// trader scans first: win rate, counts, averages, profit factor.
+const keyStats = computed(() => {
+    const ac = amountCase.value
+    const cap = amountCapital.value
+    const trades = Number(totals.trades) || 0
+    const wins = Number(totals[ac + 'WinsCount']) || 0
+    const losses = Number(totals[ac + 'LossCount']) || 0
+    const winRate = trades ? Number(totals['prob' + cap + 'Wins']) * 100 : 0
+    const avgWin = Number(totals['avg' + cap + 'Wins'])
+    const avgLoss = Number(totals['avg' + cap + 'Loss'])
+    const sumWin = Number(totals[ac + 'Wins']) || 0
+    const sumLoss = Math.abs(Number(totals[ac + 'Loss']) || 0)
+    const profitFactor = sumLoss > 0 ? sumWin / sumLoss : null
+    return { trades, wins, losses, winRate, avgWin, avgLoss, profitFactor }
+})
 
 const ratioCompute = computed(() => {
     let ratio = {}
@@ -85,6 +109,85 @@ onBeforeMount(async () => {
 
         <div v-show="!spinnerLoadingPage">
             <Filters />
+
+            <!-- MT5 ACCOUNT SNAPSHOT -->
+            <div v-if="mt5Accounts.length" class="row g-3 mb-3">
+                <div v-for="acc in mt5Accounts" :key="acc.login" class="col-12">
+                    <div class="dailyCard acctCard">
+                        <div class="acctHead">
+                            <span class="acctBroker"><i class="uil uil-university me-1"></i>{{ acc.server }}</span>
+                            <span class="acctLogin">MT5 #{{ acc.login }}</span>
+                        </div>
+                        <div class="acctStats">
+                            <div class="acctStat">
+                                <span class="acctStatLabel">Balance</span>
+                                <span class="acctStatVal">{{ useTwoDecCurrencyFormat(acc.balance) }}</span>
+                            </div>
+                            <div class="acctStat">
+                                <span class="acctStatLabel">Deposit</span>
+                                <span class="acctStatVal acctPos">{{ useTwoDecCurrencyFormat(acc.deposit) }}</span>
+                            </div>
+                            <div class="acctStat">
+                                <span class="acctStatLabel">Withdraw</span>
+                                <span class="acctStatVal acctNeg">{{ useTwoDecCurrencyFormat(acc.withdrawal) }}</span>
+                            </div>
+                            <div class="acctStat">
+                                <span class="acctStatLabel">Currency</span>
+                                <span class="acctStatVal">{{ acc.currency }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- KEY PERFORMANCE STATS -->
+            <div v-if="hasData" class="row g-2 mb-3 text-center">
+                <div class="col-6 col-md-4 col-xl">
+                    <div class="dailyCard statCard">
+                        <h5 class="titleWithDesc">{{ useThousandFormat(keyStats.trades) }}</h5>
+                        <span class="dashInfoTitle">Total Trades</span>
+                    </div>
+                </div>
+                <div class="col-6 col-md-4 col-xl">
+                    <div class="dailyCard statCard">
+                        <h5 class="titleWithDesc">{{ keyStats.winRate.toFixed(1) }}%</h5>
+                        <span class="dashInfoTitle">Win Rate</span>
+                    </div>
+                </div>
+                <div class="col-6 col-md-4 col-xl">
+                    <div class="dailyCard statCard">
+                        <h5 class="titleWithDesc acctPos">{{ keyStats.wins }}</h5>
+                        <span class="dashInfoTitle">Wins</span>
+                    </div>
+                </div>
+                <div class="col-6 col-md-4 col-xl">
+                    <div class="dailyCard statCard">
+                        <h5 class="titleWithDesc acctNeg">{{ keyStats.losses }}</h5>
+                        <span class="dashInfoTitle">Losses</span>
+                    </div>
+                </div>
+                <div class="col-6 col-md-4 col-xl">
+                    <div class="dailyCard statCard">
+                        <h5 class="titleWithDesc">
+                            {{ keyStats.profitFactor === null ? (keyStats.wins ? '∞' : '-') : keyStats.profitFactor.toFixed(2) }}
+                        </h5>
+                        <span class="dashInfoTitle">Profit Factor</span>
+                    </div>
+                </div>
+                <div class="col-6 col-md-4 col-xl">
+                    <div class="dailyCard statCard">
+                        <h5 class="titleWithDesc acctPos">{{ isNaN(keyStats.avgWin) ? '-' : useTwoDecCurrencyFormat(keyStats.avgWin) }}</h5>
+                        <span class="dashInfoTitle">Avg Win</span>
+                    </div>
+                </div>
+                <div class="col-6 col-md-4 col-xl">
+                    <div class="dailyCard statCard">
+                        <h5 class="titleWithDesc acctNeg">{{ isNaN(keyStats.avgLoss) ? '-' : useTwoDecCurrencyFormat(keyStats.avgLoss) }}</h5>
+                        <span class="dashInfoTitle">Avg Loss</span>
+                    </div>
+                </div>
+            </div>
+
             <div v-if="!hasData">
                 <NoData />
             </div>
@@ -115,7 +218,7 @@ onBeforeMount(async () => {
                                                 <div class="dailyCard">
                                                     <h4 class="titleWithDesc">
                                                         {{
-            useThousandCurrencyFormat(totals[amountCase
+            useTwoDecCurrencyFormat(totals[amountCase
                 +
                 'Proceeds']) }}
                                                     </h4>
@@ -517,3 +620,84 @@ onBeforeMount(async () => {
         </div>
     </div>
 </template>
+
+<style scoped>
+.acctCard {
+    padding: 1rem 1.25rem;
+}
+
+.acctHead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.85rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+}
+
+.acctBroker {
+    font-weight: 700;
+    font-size: 1rem;
+    color: var(--white-87, rgba(255, 255, 255, 0.87));
+}
+
+.acctLogin {
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--white-70, rgba(255, 255, 255, 0.6));
+    font-variant-numeric: tabular-nums;
+}
+
+.acctStats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.75rem;
+}
+
+@media (max-width: 576px) {
+    .acctStats {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+.acctStat {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}
+
+.acctStatLabel {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--white-50, rgba(255, 255, 255, 0.45));
+}
+
+.acctStatVal {
+    font-weight: 800;
+    font-size: 1.2rem;
+    color: var(--white-87, rgba(255, 255, 255, 0.87));
+    font-variant-numeric: tabular-nums;
+}
+
+.acctPos {
+    color: #16a34a;
+}
+
+.acctNeg {
+    color: #dc2626;
+}
+
+/* Equal-height, vertically-centered stat cards so rows line up (no jagged
+   bottoms when a card's value/label wraps to a different height). Account
+   snapshot card keeps its own layout. */
+.dailyCard:not(.acctCard) {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+</style>
