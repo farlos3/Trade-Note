@@ -75,6 +75,27 @@ const actual = computed(() => {
     }
 })
 
+/** Real equity curve: your actual balance day by day, stepping by each traded
+   day's real net P&L (real ups/downs — NOT a smoothed average). The Plan line is
+   the target rate compounded over the same trading days, for a like-for-like
+   "where I am vs where the plan said" comparison. Deposits aren't added here —
+   this tracks trading P&L, not cash movements. */
+const equity = computed(() => {
+    if (!daily.value || !daily.value.length || !(start.value > 0)) return null
+    const rows = [...daily.value].sort((a, b) => (a.date < b.date ? -1 : 1))
+    const s = start.value
+    const t = target.value
+    let bal = s
+    const dates = [], actual = [], plan = []
+    rows.forEach((d, i) => {
+        bal += Number(d.net) || 0
+        dates.push(d.date)
+        actual.push(Number(bal.toFixed(2)))
+        plan.push(t != null ? Number((s * Math.pow(1 + t / 100, i + 1)).toFixed(2)) : null)
+    })
+    return { dates, actual, plan }
+})
+
 /** Same horizon, but compounding at the rate you actually achieved. */
 const actualProjection = computed(() =>
     actual.value?.pctPerDay != null && start.value > 0 && months.value
@@ -101,40 +122,36 @@ const INK_MUTED = 'rgba(237, 240, 247, 0.60)'
 const chartEl = ref(null)
 let chart = null
 
-const hasChart = computed(() => !!(actualProjection.value || targetProjection.value))
+const hasChart = computed(() => !!equity.value)
 
 function renderChart() {
     if (!chartEl.value || !hasChart.value) return
     if (!chart) chart = echarts.init(chartEl.value)
 
-    // Both projections run the same horizon and deposits, so either supplies
-    // the axis (and the deposit landing days, identical on both series).
-    const axisSource = actualProjection.value || targetProjection.value
-    const dates = axisSource.days.map((d) => d.date)
+    const eq = equity.value
+    const dates = eq.dates
 
     const series = []
-    if (targetProjection.value) {
+    if (eq.plan.some((v) => v != null)) {
         series.push({
             name: `Plan (${fmt(target.value, 2)}%/day)`,
             type: 'line',
-            data: targetProjection.value.days.map((d) => d.closing),
+            data: eq.plan,
             showSymbol: false,
-            symbolSize: 8,
-            lineStyle: { color: PLAN_COLOR, width: 2 },
+            lineStyle: { color: PLAN_COLOR, width: 2, type: 'dashed' },
             itemStyle: { color: PLAN_COLOR, borderColor: SURFACE, borderWidth: 2 },
         })
     }
-    if (actualProjection.value) {
-        series.push({
-            name: `Actual (${fmt(actual.value.pctPerDay, 3)}%/day)`,
-            type: 'line',
-            data: actualProjection.value.days.map((d) => d.closing),
-            showSymbol: false,
-            symbolSize: 8,
-            lineStyle: { color: ACTUAL_COLOR, width: 2 },
-            itemStyle: { color: ACTUAL_COLOR, borderColor: SURFACE, borderWidth: 2 },
-        })
-    }
+    series.push({
+        name: 'Actual (real trades)',
+        type: 'line',
+        data: eq.actual,
+        showSymbol: true,
+        symbolSize: 6,
+        lineStyle: { color: ACTUAL_COLOR, width: 2 },
+        itemStyle: { color: ACTUAL_COLOR, borderColor: SURFACE, borderWidth: 2 },
+        areaStyle: { color: 'rgba(245, 158, 11, 0.08)' },
+    })
 
     chart.setOption({
         backgroundColor: 'transparent',
@@ -153,13 +170,10 @@ function renderChart() {
             textStyle: { color: 'rgba(237,240,247,0.92)', fontSize: 12 },
             formatter: (params) => {
                 const i = params[0].dataIndex
-                const dep = axisSource.days[i]?.deposit
-                const head = `<div style="font-weight:700;margin-bottom:4px">Day ${i + 1} · ${dates[i]}</div>` +
-                    (dep ? `Deposit: +${fmt(dep)}<br/>` : '')
+                const head = `<div style="font-weight:700;margin-bottom:4px">${dates[i]}</div>`
                 const lines = params.map(
                     (p) => `${p.marker} ${p.seriesName}: <b>${fmt(p.value)}</b>`,
                 )
-                // Gap between the two curves is the number the page is about.
                 if (params.length === 2) {
                     const diff = params[1].value - params[0].value
                     lines.push(`<span style="opacity:.7">Gap: ${diff >= 0 ? '+' : ''}${fmt(diff)}</span>`)
@@ -197,7 +211,7 @@ onBeforeUnmount(() => {
 })
 
 // The canvas only exists once there is something to draw.
-watch([actualProjection, targetProjection], async () => {
+watch([equity], async () => {
     if (!hasChart.value) {
         if (chart) { chart.dispose(); chart = null }
         return
@@ -297,7 +311,7 @@ watch([actualProjection, targetProjection], async () => {
                 </div>
 
                 <div v-if="hasChart" class="chartWrap mb-3">
-                    <div class="chartTitle">Compounding forward — plan vs your actual pace</div>
+                    <div class="chartTitle">Equity — your actual trades per day vs plan pace</div>
                     <div ref="chartEl" class="chartBox"></div>
                 </div>
 
@@ -306,8 +320,9 @@ watch([actualProjection, targetProjection], async () => {
                     <strong v-bind:class="pnlClass(actualProjection.profit)">{{ fmt(actualProjection.finalBalance) }}</strong>
                     in {{ months }} month(s)
                     (<span v-bind:class="pnlClass(actualProjection.totalReturnPct)">{{ fmt(actualProjection.totalReturnPct) }}%</span>)<span
-                        v-if="targetProjection"> — vs <strong>{{ fmt(targetProjection.finalBalance) }}</strong> if you hit your
-                        {{ fmt(target, 2) }}%/day target</span>.
+                        v-if="targetProjection"> — vs <strong class="planHi">{{ fmt(targetProjection.finalBalance) }}</strong>
+                        (<span class="planHi">{{ fmt(targetProjection.totalReturnPct) }}%</span>) if you hit your
+                        <span class="targetHi">{{ fmt(target, 2) }}%/day target</span></span>.
                 </p>
                 <p v-else-if="!months" class="hintLine mb-0">Enter a horizon above to project your actual pace forward.</p>
 
@@ -389,6 +404,18 @@ watch([actualProjection, targetProjection], async () => {
 
 .goalLine {
     font-size: 0.92rem;
+}
+
+/* Plan target highlight — same blue as the Plan line in the chart, so the
+   target figure reads as "plan", distinct from the green/red actual. */
+.planHi {
+    color: #2f9bff;
+    font-weight: 700;
+}
+
+.targetHi {
+    font-weight: 700;
+    text-decoration: underline;
 }
 
 .chartWrap {
