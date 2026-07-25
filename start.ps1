@@ -7,7 +7,8 @@
     One command to bring the project up:
       1. Start the TradeNote app in Docker (dev / local / prod compose file).
       2. Wait until the web app answers on its port.
-      3. Run the MT5 -> TradeNote sync once (emails a reminder if new deals).
+      3. Launch the MetaTrader 5 terminal (if not already open).
+      4. Run the MT5 -> TradeNote sync once (emails a reminder if new deals).
 
     Atlas IP whitelisting is OPT-IN (-UpdateIp). The recommended setup is to set
     Atlas Network Access to 0.0.0.0/0 once, which never needs updating again (the
@@ -136,6 +137,28 @@ if (-not $SkipDocker) {
         Write-Host "TradeNote is up at $appUrl" -ForegroundColor Green
     } else {
         Write-Warning "TradeNote did not respond within ~2 min. Check logs: docker compose -f $composeFile logs -f tradenote"
+    }
+}
+
+# 3b. --- Launch the MT5 terminal (once, on project start) --------------------
+# The per-minute sync never auto-opens MT5 (it skips when the terminal is closed),
+# so starting the project is what brings MT5 up. Path defaults to the standard
+# install; override with MT5_TERMINAL_PATH in .env. If MT5 is already open, nothing
+# happens.
+if (-not $SkipSync) {
+    Section "Launching MetaTrader 5 terminal"
+    if (Get-Process -Name "terminal64" -ErrorAction SilentlyContinue) {
+        Write-Host "MT5 already running." -ForegroundColor Green
+    } else {
+        $mt5Path = $envMap["MT5_TERMINAL_PATH"]
+        if (-not $mt5Path) { $mt5Path = "C:\Program Files\MetaTrader 5\terminal64.exe" }
+        if (Test-Path $mt5Path) {
+            Start-Process -FilePath $mt5Path
+            Write-Host "Started MT5: $mt5Path" -ForegroundColor Green
+            Start-Sleep -Seconds 8   # let it connect before the first sync reads history
+        } else {
+            Write-Warning "MT5 terminal not found at $mt5Path. Set MT5_TERMINAL_PATH in .env, or open MT5 manually."
+        }
     }
 }
 
