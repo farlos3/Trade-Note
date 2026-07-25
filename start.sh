@@ -3,7 +3,8 @@
 # Start the whole TradeNote project.
 #   1. Start the TradeNote app in Docker (dev / local / prod compose file).
 #   2. Wait until the web app answers on its port.
-#   3. Run the MT5 -> TradeNote sync once (emails a reminder if new deals).
+#   3. Launch the MetaTrader 5 terminal (if not already open; Windows only).
+#   4. Run the MT5 -> TradeNote sync once (emails a reminder if new deals).
 #
 # Atlas IP whitelisting is OPT-IN (--update-ip). The recommended setup is to set
 # Atlas Network Access to 0.0.0.0/0 once, which never needs updating again (the
@@ -127,6 +128,31 @@ if [[ "$SKIP_DOCKER" -eq 0 ]]; then
     printf '\033[32mTradeNote is up at %s\033[0m\n' "$APP_URL"
   else
     warn "TradeNote did not respond within ~2 min. Check logs: docker compose -f $COMPOSE_FILE logs -f tradenote"
+  fi
+fi
+
+# 3b. --- Launch the MT5 terminal (once, on project start) --------------------
+# The per-minute sync never auto-opens MT5 (it skips when the terminal is closed),
+# so starting the project is what brings MT5 up. Windows only; override the path
+# with MT5_TERMINAL_PATH in .env. No-op if MT5 is already running or not on Windows.
+if [[ "$SKIP_SYNC" -eq 0 ]]; then
+  section "Launching MetaTrader 5 terminal"
+  if command -v tasklist >/dev/null 2>&1; then
+    if tasklist /FI "IMAGENAME eq terminal64.exe" /NH 2>/dev/null | grep -qi "terminal64.exe"; then
+      printf '\033[32mMT5 already running.\033[0m\n'
+    else
+      MT5_PATH="$(read_env MT5_TERMINAL_PATH)"
+      [[ -n "$MT5_PATH" ]] || MT5_PATH="C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+      if [[ -f "/c/Program Files/MetaTrader 5/terminal64.exe" || -f "${MT5_PATH}" ]]; then
+        cmd.exe //c start "" "$MT5_PATH" >/dev/null 2>&1 && \
+          printf '\033[32mStarted MT5: %s\033[0m\n' "$MT5_PATH"
+        sleep 8   # let it connect before the first sync reads history
+      else
+        warn "MT5 terminal not found at $MT5_PATH. Set MT5_TERMINAL_PATH in .env, or open MT5 manually."
+      fi
+    fi
+  else
+    warn "Not on Windows (no tasklist) — open MetaTrader 5 manually before syncing."
   fi
 fi
 

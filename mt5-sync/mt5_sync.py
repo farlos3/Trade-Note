@@ -17,6 +17,7 @@ import io
 import json
 import os
 import smtplib
+import subprocess
 import sys
 from email.message import EmailMessage
 
@@ -57,6 +58,35 @@ def load_state():
 def save_state(state):
     with open(STATE_PATH, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
+
+
+def tradenote_up(cfg):
+    """True if the TradeNote project (Docker/dev server) is running and reachable.
+    Ties the whole sync to the app's lifecycle: when TradeNote is down we skip the
+    run entirely -- before touching MT5 -- so nothing happens (and MT5 is never
+    launched) unless the project is actually up."""
+    try:
+        url = cfg.get("tradenote", "url").rstrip("/")
+        r = requests.get(url, timeout=5)
+        return r.status_code < 500
+    except Exception:  # noqa: BLE001 - any connection error means it's down
+        return False
+
+
+def mt5_terminal_running():
+    """True if an MT5 terminal process is already open. Used to avoid mt5.initialize()
+    auto-LAUNCHING the terminal on a schedule -- so closing MT5 actually stops the
+    sync from popping it back open. If the check itself fails, assume running so a
+    detection glitch never silently stops syncing."""
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq terminal64.exe", "/NH"],
+            capture_output=True, text=True, timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return "terminal64.exe" in (out.stdout or "").lower()
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def connect(cfg):
@@ -339,6 +369,12 @@ def main():
     cfg = load_config()
     state = load_state()
 
+    # Bind the sync to the project's lifecycle: do nothing (and never touch/launch
+    # MT5) unless TradeNote is actually running. Stop the project -> sync stops.
+    if not tradenote_up(cfg):
+        log("TradeNote not reachable -- skipping (sync only runs while the project is up).")
+        return
+
     # --- Sliding window, not a moving watermark --------------------------------
     # Two facts drive this design:
     #
@@ -364,6 +400,13 @@ def main():
     to = now + dt.timedelta(days=2)
     last_deal_unix = int(state.get("last_deal_unix", 0))
     log(f"Sync window (sliding): {frm:%Y-%m-%d %H:%M} -> {to:%Y-%m-%d %H:%M}")
+
+    # Don't wake a closed terminal. mt5.initialize() would auto-launch MT5 if it's
+    # not running, so a 1-minute schedule kept re-opening it after you closed it.
+    # Skip the run instead; syncing resumes automatically once MT5 is open again.
+    if not mt5_terminal_running():
+        log("MT5 terminal not running -- skipping (won't auto-launch it).")
+        return
 
     connect(cfg)
     try:
