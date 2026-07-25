@@ -23,3 +23,7 @@ skills-lock.json
 # Claude Code project dir: ignore the vendored skills, but keep shared config
 # (settings.json, commands) trackable so it can be committed deliberately.
 .claude/skills/
+
+# Local parquet backup copies + Atlas migration dump
+backup/data/
+_atlasdump/

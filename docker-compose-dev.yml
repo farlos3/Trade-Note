@@ -7,6 +7,17 @@ name: tradenote
 # Start:  docker compose -f docker-compose-dev.yml up -d --build
 # Logs:   docker compose -f docker-compose-dev.yml logs -f tradenote
 services:
+  mongo:
+    image: mongo:7
+    container_name: tradenote_mongo
+    restart: unless-stopped
+    # Exposed on localhost so host-side tools (the parquet backup, mongodump) can
+    # reach it. The app itself connects over the compose network at mongo:27017.
+    ports:
+      - 27017:27017
+    volumes:
+      - mongo_data:/data/db
+
   tradenote:
     build:
       context: .
@@ -14,6 +25,8 @@ services:
     image: tradenote:local
     container_name: tradenote_app
     restart: unless-stopped
+    depends_on:
+      - mongo
     ports:
       - 8080:8080
     dns:
@@ -41,3 +54,6 @@ services:
       R2_BUCKET: ${R2_BUCKET:-}
       R2_PUBLIC_URL: ${R2_PUBLIC_URL:-}
       R2_ENDPOINT: ${R2_ENDPOINT:-}
+
+volumes:
+  mongo_data:

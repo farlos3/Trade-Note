@@ -1,5 +1,14 @@
 name: tradenote
 services:
+  mongo:
+    image: mongo:7
+    container_name: tradenote_mongo
+    restart: unless-stopped
+    ports:
+      - 27017:27017
+    volumes:
+      - mongo_data:/data/db
+
   tradenote:
     container_name: tradenote_app
     hostname: tradenote_app
@@ -7,6 +16,8 @@ services:
       context: .
       dockerfile: ./docker/Dockerfile
     image: tradenote:latest
+    depends_on:
+      - mongo
     ports:
       - 8080:8080
     dns:
@@ -27,3 +38,6 @@ services:
       R2_BUCKET: ${R2_BUCKET}
       R2_PUBLIC_URL: ${R2_PUBLIC_URL}
       R2_ENDPOINT: ${R2_ENDPOINT:-}
+
+volumes:
+  mongo_data:
