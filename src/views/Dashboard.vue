@@ -2,7 +2,7 @@
 import { computed, onBeforeMount, ref } from 'vue'
 import SpinnerLoadingPage from '../components/SpinnerLoadingPage.vue';
 import Filters from '../components/Filters.vue'
-import { selectedDashTab, spinnerLoadingPage, dashboardIdMounted, totals, amountCase, amountCapital, profitAnalysis, renderData, selectedRatio, dashboardChartsMounted, hasData, satisfactionArray, availableTags, groups, barChartNegativeTagGroups, currentUser } from '../stores/globals';
+import { selectedDashTab, spinnerLoadingPage, dashboardIdMounted, totals, amountCase, amountCapital, profitAnalysis, renderData, selectedRatio, dashboardChartsMounted, hasData, satisfactionArray, availableTags, groups, barChartNegativeTagGroups, currentUser, filteredTrades } from '../stores/globals';
 import { useThousandCurrencyFormat, useTwoDecCurrencyFormat, useXDecCurrencyFormat, useMountDashboard, useThousandFormat, useXDecFormat } from '../utils/utils';
 import NoData from '../components/NoData.vue';
 
@@ -57,6 +57,60 @@ const keyStats = computed(() => {
     const profitFactor = sumLoss > 0 ? sumWin / sumLoss : null
     return { trades, wins, losses, winRate, avgWin, avgLoss, profitFactor }
 })
+
+// Seconds -> compact human duration ("29s", "5m 12s", "2h 05m").
+const formatDuration = (seconds) => {
+    if (!isFinite(seconds) || seconds < 0) return '-'
+    const s = Math.round(seconds)
+    if (s < 60) return s + 's'
+    const m = Math.floor(s / 60)
+    if (m < 60) return m + 'm ' + String(s % 60).padStart(2, '0') + 's'
+    return Math.floor(m / 60) + 'h ' + String(m % 60).padStart(2, '0') + 'm'
+}
+
+// Per-trade stats that `totals` doesn't carry: position size range, how long
+// trades are held, and the long/short win split. Walks filteredTrades (the same
+// set every other dashboard number is built from) so it follows the filters.
+const tradeStats = computed(() => {
+    const statusKey = amountCase.value + 'Status'   // grossStatus | netStatus
+    let minLot = null, maxLot = null
+    let durationSum = 0, durationCount = 0
+    let longs = 0, longsWon = 0, shorts = 0, shortsWon = 0
+
+    filteredTrades.forEach(day => {
+        (day.trades || []).forEach(t => {
+            // buyQuantity is the position size. MT5 sends it in lots; for stock
+            // imports it is a share count. Either way min/max are comparable
+            // within one account's own history.
+            const lot = Number(t.buyQuantity)
+            if (isFinite(lot) && lot > 0) {
+                if (minLot === null || lot < minLot) minLot = lot
+                if (maxLot === null || lot > maxLot) maxLot = lot
+            }
+
+            // Only closed trades have a usable exit; open ones have exitTime 0.
+            const entry = Number(t.entryTime), exit = Number(t.exitTime)
+            if (isFinite(entry) && isFinite(exit) && exit > entry) {
+                durationSum += exit - entry
+                durationCount++
+            }
+
+            const won = t[statusKey] === 'win'
+            if (t.strategy === 'long') { longs++; if (won) longsWon++ }
+            else if (t.strategy === 'short') { shorts++; if (won) shortsWon++ }
+        })
+    })
+
+    return {
+        minLot, maxLot,
+        avgLength: durationCount ? formatDuration(durationSum / durationCount) : '-',
+        longs, longsWon, shorts, shortsWon
+    }
+})
+
+// Lots need more than 2 decimals (0.01 is a common minimum) but trailing zeros
+// on share counts are noise, so trim them.
+const formatLot = (v) => v === null ? '-' : String(Number(v.toFixed(4)))
 
 const ratioCompute = computed(() => {
     let ratio = {}
@@ -141,32 +195,41 @@ onBeforeMount(async () => {
             </div>
 
             <!-- KEY PERFORMANCE STATS -->
+            <!-- Ordered so related tiles sit next to each other and stay paired at
+                 every breakpoint (6 / 4 / 3 / 2 per row): volume, outcome counts,
+                 rates, money per trade, direction, position size. -->
             <div v-if="hasData" class="row g-2 mb-3 text-center">
-                <div class="col-6 col-md-4 col-xl">
+                <div class="col-6 col-lg-3 col-xl-2">
                     <div class="dailyCard statCard">
                         <h5 class="titleWithDesc">{{ useThousandFormat(keyStats.trades) }}</h5>
                         <span class="dashInfoTitle">Total Trades</span>
                     </div>
                 </div>
-                <div class="col-6 col-md-4 col-xl">
+                <div class="col-6 col-lg-3 col-xl-2">
                     <div class="dailyCard statCard">
-                        <h5 class="titleWithDesc">{{ keyStats.winRate.toFixed(1) }}%</h5>
-                        <span class="dashInfoTitle">Win Rate</span>
+                        <h5 class="titleWithDesc">{{ tradeStats.avgLength }}</h5>
+                        <span class="dashInfoTitle">Avg. Trade Length</span>
                     </div>
                 </div>
-                <div class="col-6 col-md-4 col-xl">
+                <div class="col-6 col-lg-3 col-xl-2">
                     <div class="dailyCard statCard">
                         <h5 class="titleWithDesc acctPos">{{ keyStats.wins }}</h5>
                         <span class="dashInfoTitle">Wins</span>
                     </div>
                 </div>
-                <div class="col-6 col-md-4 col-xl">
+                <div class="col-6 col-lg-3 col-xl-2">
                     <div class="dailyCard statCard">
                         <h5 class="titleWithDesc acctNeg">{{ keyStats.losses }}</h5>
                         <span class="dashInfoTitle">Losses</span>
                     </div>
                 </div>
-                <div class="col-6 col-md-4 col-xl">
+                <div class="col-6 col-lg-3 col-xl-2">
+                    <div class="dailyCard statCard">
+                        <h5 class="titleWithDesc">{{ keyStats.winRate.toFixed(1) }}%</h5>
+                        <span class="dashInfoTitle">Win Rate</span>
+                    </div>
+                </div>
+                <div class="col-6 col-lg-3 col-xl-2">
                     <div class="dailyCard statCard">
                         <h5 class="titleWithDesc">
                             {{ keyStats.profitFactor === null ? (keyStats.wins ? '∞' : '-') : keyStats.profitFactor.toFixed(2) }}
@@ -174,16 +237,44 @@ onBeforeMount(async () => {
                         <span class="dashInfoTitle">Profit Factor</span>
                     </div>
                 </div>
-                <div class="col-6 col-md-4 col-xl">
+                <div class="col-6 col-lg-3 col-xl-2">
                     <div class="dailyCard statCard">
                         <h5 class="titleWithDesc acctPos">{{ isNaN(keyStats.avgWin) ? '-' : useTwoDecCurrencyFormat(keyStats.avgWin) }}</h5>
                         <span class="dashInfoTitle">Avg Win</span>
                     </div>
                 </div>
-                <div class="col-6 col-md-4 col-xl">
+                <div class="col-6 col-lg-3 col-xl-2">
                     <div class="dailyCard statCard">
                         <h5 class="titleWithDesc acctNeg">{{ isNaN(keyStats.avgLoss) ? '-' : useTwoDecCurrencyFormat(keyStats.avgLoss) }}</h5>
                         <span class="dashInfoTitle">Avg Loss</span>
+                    </div>
+                </div>
+                <div class="col-6 col-lg-3 col-xl-2">
+                    <div class="dailyCard statCard">
+                        <h5 class="titleWithDesc acctPos">
+                            {{ tradeStats.longs ? tradeStats.longsWon + '/' + tradeStats.longs : '-' }}
+                        </h5>
+                        <span class="dashInfoTitle">Longs Won</span>
+                    </div>
+                </div>
+                <div class="col-6 col-lg-3 col-xl-2">
+                    <div class="dailyCard statCard">
+                        <h5 class="titleWithDesc acctPos">
+                            {{ tradeStats.shorts ? tradeStats.shortsWon + '/' + tradeStats.shorts : '-' }}
+                        </h5>
+                        <span class="dashInfoTitle">Shorts Won</span>
+                    </div>
+                </div>
+                <div class="col-6 col-lg-3 col-xl-2">
+                    <div class="dailyCard statCard">
+                        <h5 class="titleWithDesc">{{ formatLot(tradeStats.minLot) }}</h5>
+                        <span class="dashInfoTitle">Minimum Lot</span>
+                    </div>
+                </div>
+                <div class="col-6 col-lg-3 col-xl-2">
+                    <div class="dailyCard statCard">
+                        <h5 class="titleWithDesc">{{ formatLot(tradeStats.maxLot) }}</h5>
+                        <span class="dashInfoTitle">Maximum Lot</span>
                     </div>
                 </div>
             </div>
@@ -267,106 +358,20 @@ onBeforeMount(async () => {
                                         </div>
                                     </div>
 
-                                    <!-- SECOND LINE -->
-                                    <div class="col-12">
-                                        <div class="row">
-                                            <!-- Left square -->
-                                            <div class="col-12 order-lg-2 col-lg-6">
-                                                <!-- first line -->
-                                                <div class="row mb-2">
-                                                    <div class="col-6">
-                                                        <div class="dailyCard">
-                                                            <h5 class="titleWithDesc">
-                                                                <span
-                                                                    v-if="!isNaN(profitAnalysis[amountCase + 'AvWinPerShare'])">{{
-            useTwoDecCurrencyFormat(profitAnalysis[amountCase +
-                'AvWinPerShare'])
-        }}</span>
-                                                                <span v-else>-</span>
-                                                            </h5>
-                                                            <span class="dashInfoTitle">Win Per Share (avg.)</span>
-                                                        </div>
+                                    <!-- SECOND LINE : SATISFACTION -->
+                                    <!-- The win/loss donut that used to sit here was removed: it drew a
+                                         bare ring with no number, and win rate is already shown both as a
+                                         headline tile and as its own chart below. Avg win / avg loss /
+                                         win rate / profit factor were duplicated here too, and now live
+                                         only in the headline row. -->
+                                    <div v-show="satisfactionArray.length > 0" class="col-12">
+                                        <div class="row text-center">
+                                            <div class="col-12 col-lg-6 offset-lg-3">
+                                                <div v-if="dashboardIdMounted" class="dailyCard">
+                                                    <div v-bind:key="renderData" id="pieChart2"
+                                                        class="chartIdCardClass">
                                                     </div>
-                                                    <div class="col-6">
-                                                        <div class="dailyCard">
-                                                            <h5 class="titleWithDesc">
-                                                                <span
-                                                                    v-if="!isNaN(profitAnalysis[amountCase + 'AvLossPerShare'])">{{
-            useTwoDecCurrencyFormat(profitAnalysis[amountCase +
-                'AvLossPerShare'])
-        }}</span>
-                                                                <span v-else>-</span>
-                                                            </h5>
-                                                            <span class="dashInfoTitle">Loss Per Share (avg.)</span>
-                                                        </div>
-                                                    </div>
-                                                </div>
-
-                                                <!-- second line -->
-                                                <div class="row mb-2 mb-lg-0">
-                                                    <div class="col-6">
-                                                        <div class="dailyCard">
-                                                            <h5 class="titleWithDesc">
-                                                                <span
-                                                                    v-if="profitAnalysis[amountCase + 'HighWinPerShare'] > 0">{{
-            useTwoDecCurrencyFormat(profitAnalysis[amountCase +
-                'HighWinPerShare'])
-        }}</span>
-                                                                <span v-else>-</span>
-                                                            </h5>
-                                                            <span class="dashInfoTitle">Win Per Share (high)</span>
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-6">
-                                                        <div class="dailyCard">
-                                                            <h5 class="titleWithDesc">
-                                                                <span
-                                                                    v-if="profitAnalysis[amountCase + 'HighLossPerShare'] > 0">{{
-            useTwoDecCurrencyFormat(profitAnalysis[amountCase +
-                'HighLossPerShare']) }}</span>
-                                                                <span v-else>-</span>
-                                                            </h5>
-                                                            <span class="dashInfoTitle">Loss Per Share (high)</span>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-
-
-                                            <!-- Right square -->
-                                            <div class="col-12 order-lg-1 col-lg-6">
-                                                <div class="row text-center mb-3">
-                                                    <div
-                                                        v-bind:class="[satisfactionArray.length > 0 ? 'col-6' : 'col-12']">
-                                                        <div class="dailyCard">
-                                                            <div v-if="dashboardIdMounted">
-                                                                <div v-bind:key="renderData" id="pieChart1"
-                                                                    class="chartIdCardClass">
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-
-                                                    <div v-show="satisfactionArray.length > 0" class="col-6">
-                                                        <div v-if="dashboardIdMounted">
-                                                            <div v-if="!satisfactionArray.length > 0" class="dailyCard">
-                                                                <div
-                                                                    class="chartIdCardClass d-flex align-items-center justify-content-center">
-                                                                    <div>
-                                                                        <div>-</div>
-                                                                        <div class="dashInfoTitle">Satisfaction</div>
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                            <div v-show="satisfactionArray.length > 0"
-                                                                class="dailyCard">
-                                                                <div v-bind:key="renderData" id="pieChart2"
-                                                                    class="chartIdCardClass">
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-
+                                                    <span class="dashInfoTitle">Satisfaction</span>
                                                 </div>
                                             </div>
                                         </div>
@@ -389,18 +394,8 @@ onBeforeMount(async () => {
                                     </div>
                                 </div>
 
-                                <!-- APPT/APPS/PROFIT FACTOR CHART -->
-                                <div class="col-12 col-xl-6 mb-3">
-                                    <div class="dailyCard">
-                                        <h6>{{ ratioCompute.name }} <span
-                                                v-if="ratioCompute.name != 'Profit Factor'">({{ ratioCompute.shortName
-                                                }})</span></h6>
-                                        <div v-bind:key="renderData" id="barChart1" class="chartClass"></div>
-                                    </div>
-                                </div>
-
                                 <!-- WIN LOSS CHART -->
-                                <div class="col-12 col-xl-6 mb-3">
+                                <div class="col-12 mb-3">
                                     <div class="dailyCard">
                                         <h6>Win Rate</h6>
                                         <!--<div class="text-center" v-if="!dashboardChartsMounted">

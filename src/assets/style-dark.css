@@ -1199,12 +1199,75 @@ ol li[data-list="bullet"] {
     font-size: x-small;
 }
 
+/* Daily page calendar. It is only a compact date picker next to the day card,
+   so the card is capped and centred instead of stretching across the whole
+   sidebar column -- the 7 weekday columns then divide that smaller width.
+   Both .calCard and .calDivDay are used on the Daily page only, so the full
+   Calendar page (.calDivDash) keeps its large cells. */
+.calCard {
+    max-width: 310px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
 .calDivDay {
-    margin: 2px;
+    /* The cell also carries Bootstrap's .col, which would stretch it via
+       `flex: 1 0 0%` and add 0.75rem of horizontal padding -- in a 32px cell
+       that leaves ~6px of content box and throws the digit off-centre. Pin the
+       box, zero the padding, and centre it with `margin: auto` so the cells
+       line up under the Mo/Tu/We headings, which are centred in the same column. */
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    margin: 1px auto;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
-    height: 40px;
-    width: 40px;
+}
+
+.calCard .dayNumber {
+    font-size: 0.72rem !important;
+    /* line-height must stay <= the 30px content box, otherwise the inline box
+       overflows and drags the digit downwards. */
+    line-height: 1;
+    margin: 0 !important;
+}
+
+/* The month nav and weekday letters are sized by Calendar.vue's scoped styles,
+   which compile to `.class[data-v-*]` (specificity 0,2,0). Qualifying with the
+   extra .dailyCard class gives 0,3,0 so these win regardless of file order,
+   and only inside the Daily page's calendar card. */
+.dailyCard.calCard .calMonthNav {
+    gap: 0.5rem;
+    margin-bottom: 0.4rem;
+}
+
+.dailyCard.calCard .calMonthLabel {
+    font-size: 0.85rem;
+    min-width: 100px;
+}
+
+.dailyCard.calCard .calNavBtn {
+    width: 24px;
+    height: 24px;
+    font-size: 0.9rem;
+}
+
+.dailyCard.calCard .calWeekday {
+    font-size: 0.68rem;
+    color: var(--white-60);
+    margin-bottom: 0.15rem;
+    text-align: center;
+}
+
+/* Weekday columns carry .col padding too; removing it lets the 32px cells sit
+   flush under their heading instead of being nudged inwards. */
+.dailyCard.calCard .row > .col {
+    padding-left: 0;
+    padding-right: 0;
 }
 
 .calDivDash p {
@@ -1263,6 +1326,32 @@ ol li[data-list="bullet"] {
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.06em;
+}
+
+/* Headline stat tiles. They sit in a 12-across grid that wraps, so every tile
+   must be the same height regardless of whether its label runs to one line or
+   two -- otherwise the rows sit ragged. */
+.statCard {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.25rem;
+    height: 100%;
+    min-height: 5.25rem;
+    padding: 0.75rem 0.5rem;
+}
+
+.statCard h5 {
+    margin: 0;
+    line-height: 1.1;
+    white-space: nowrap;
+}
+
+.statCard .dashInfoTitle {
+    font-size: 0.6rem;
+    line-height: 1.25;
+    letter-spacing: 0.04em;
 }
 
 .dailyCard {

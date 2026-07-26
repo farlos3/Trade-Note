@@ -1149,6 +1149,25 @@ export async function useCalculateProfitAnalysis(param) {
             profitAnalysis.netAvLossPerShare = (-totals.netSharePLLoss / totals.netLossCount)
             //console.log("  --> Gross Average Loss Per Share "+grossAvLossPerShare+" and net "+netAvLossPerShare)
 
+            // Average P&L per TRADE, in currency. The *PerShare figures above divide
+            // by quantity, which assumes quantity means "shares". MT5 sends volume in
+            // lots (0.01 lot = 1oz of gold), so dividing by it inflates the result by
+            // orders of magnitude and means nothing for forex/CFD. These don't divide.
+            profitAnalysis.grossAvWin = (totals.grossWins / totals.grossWinsCount)
+            profitAnalysis.netAvWin = (totals.netWins / totals.netWinsCount)
+            profitAnalysis.grossAvLoss = (-totals.grossLoss / totals.grossLossCount)
+            profitAnalysis.netAvLoss = (-totals.netLoss / totals.netLossCount)
+
+            // Win rate (%) and profit factor (gross wins / gross losses). Profit factor
+            // is left undefined when there are no losses, so the tile shows "-" rather
+            // than Infinity.
+            const grossTotalCount = totals.grossWinsCount + totals.grossLossCount
+            const netTotalCount = totals.netWinsCount + totals.netLossCount
+            profitAnalysis.grossWinRate = grossTotalCount ? (totals.grossWinsCount / grossTotalCount) * 100 : NaN
+            profitAnalysis.netWinRate = netTotalCount ? (totals.netWinsCount / netTotalCount) * 100 : NaN
+            profitAnalysis.grossProfitFactor = totals.grossLoss ? (totals.grossWins / -totals.grossLoss) : NaN
+            profitAnalysis.netProfitFactor = totals.netLoss ? (totals.netWins / -totals.netLoss) : NaN
+
             //console.log(" -> Calculating gross and net Highest Win Per Share")
             profitAnalysis.grossHighWinPerShare = totals.highGrossSharePLWin
             profitAnalysis.netHighWinPerShare = totals.highNetSharePLWin

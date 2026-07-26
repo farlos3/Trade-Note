@@ -22,7 +22,6 @@ export async function useLoadCalendar() {
     return new Promise(async (resolve, reject) => {
         renderingCharts.value = true
         miniCalendarsData.length = 0
-        let currentMonthNumber = dayjs(selectedMonth.value.start * 1000).tz(timeZoneTrade.value).month()
         let tradesArray = []
 
         tradesArray = filteredTrades
@@ -90,8 +89,14 @@ export async function useLoadCalendar() {
                 }
 
             }
-            //console.log("param1 "+param1+" and selected month "+selectedMonth.value.start)
-            if (param1 == selectedMonth.value.start) {
+            // param2 marks the month being viewed. This used to be inferred by
+            // comparing param1 with selectedMonth.start, but that only holds when
+            // the stored timestamp is exactly startOf('month') in the trade
+            // timezone. When it isn't, the comparison never matches, calendarData
+            // stays empty and the Calendar page renders weekday headings with no
+            // days under them. The caller knows which month it asked for, so it
+            // says so instead of us re-deriving it.
+            if (param2) {
                 for (let key in calendarData) delete calendarData[key]
                 Object.assign(calendarData, calendarJson)
                 //console.log("calendarData "+JSON.stringify(calendarData))
@@ -106,21 +111,13 @@ export async function useLoadCalendar() {
         //let currentMonthNumber = dayjs(selectedMonth.value.start * 1000).month()
         //console.log("currentMonthNumber "+currentMonthNumber)
 
-        if (pageId.value == 'calendar') {
-            let i = 0
-            if (pageId.value == 'calendar') {
-                while (i <= currentMonthNumber) {
-                    let tempUnix = dayjs(selectedMonth.value.start * 1000).tz(timeZoneTrade.value).subtract(i, 'month').startOf('month').unix()
-                    //this.calendarMonths.push(this.monthFormat(tempUnix))
-                    //console.log("tempUnix "+tempUnix)
-                    createCalendar(tempUnix)
-                    i++
-                }
-            }
-        } else {
-            //console.log(" creating from selected month "+selectedMonth.value.start)
-            createCalendar(selectedMonth.value.start)
-        }
+        // Only the month being viewed needs a day grid, on both pages. The
+        // Calendar page used to also build one calendar per elapsed month to fill
+        // miniCalendarsData, but the mini-calendar grid that read it was replaced
+        // by the year-at-a-glance summary, which aggregates filteredTrades
+        // directly. Nothing renders those extra calendars now, so building them
+        // was pure work -- twelve of them each December.
+        await createCalendar(selectedMonth.value.start, true)
         //console.log(" -> Mini Cal data "+JSON.stringify(miniCalendarsData.value))
 
         //console.log("calendarData " + JSON.stringify(calendarData))
