@@ -33,6 +33,10 @@ export async function useECharts(param) {
     for (let index = 1; index <= 2; index++) {
         var chartId = 'pieChart' + index
         //console.log("chartId " + chartId)
+        // The element can legitimately be absent: the win/loss donut (pieChart1)
+        // was removed from the dashboard, and pieChart2 only renders when there
+        // is satisfaction data. echarts.init(null) throws, so skip early.
+        if (!document.getElementById(chartId)) continue
         if (param == "clear") {
             echarts.init(document.getElementById(chartId)).clear()
         }
@@ -570,26 +574,14 @@ export function useLineBarChart(param) {
                     }
                 },
             },
+            // Cumulated P&L is a running total, so only the line is meaningful.
+            // The per-period bars that used to sit behind it (chartBarData) were
+            // dropped -- they plot a different quantity on the same axis, which
+            // made the scale unreadable once the cumulative total grew.
             series: [{
                 data: chartData,
                 type: 'line',
                 smooth: true,
-                itemStyle: {
-                    color: '#35C4FE',
-                },
-                emphasis: {
-                    itemStyle: {
-                        color: '#01B4FF'
-                    }
-                },
-            },
-            {
-                data: chartBarData,
-                type: 'bar',
-                smooth: true,
-                label: {
-                    color: cssColor87
-                },
                 itemStyle: {
                     color: '#35C4FE',
                 },
@@ -1033,7 +1025,12 @@ export function useBarChart(param1) {
             },
             series: [{
                 data: chartData,
-                type: 'bar',
+                // Win rate over time reads as a trend, so it renders as a line.
+                // Anything else reaching useBarChart keeps bars -- the selector
+                // also matches barChartNegative* ids, which are re-rendered by
+                // useBarChartNegative right after and must not change shape here.
+                type: param1 == "barChart2" ? 'line' : 'bar',
+                smooth: true,
                 label: {
                     color: cssColor87
                 },

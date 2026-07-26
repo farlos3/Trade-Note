@@ -788,7 +788,7 @@ function getOHLC(date, symbol, type) {
             <!-- added v-if instead v-show because need to wait for patterns to load -->
             <div class="row">
                 <!-- ============ CARD ============ -->
-                <div class="col-12 col-xl-8">
+                <div class="col-12 col-xl-9">
                     <!-- v-show insead of v-if or else init tab does not work cause div is not created until spinner is false-->
                     <div v-for="(itemTrade, index) in filteredTrades" class="row mt-2">
                         <div class="col-12">
@@ -1151,7 +1151,7 @@ function getOHLC(date, symbol, type) {
                 <!-- end card-->
                 <!-- ============ CALENDAR ============ -->
                 <div v-show="calendarData && !spinnerLoadingPage"
-                    class="col-12 col-xl-4 text-center mt-2 align-self-start">
+                    class="col-12 col-xl-3 text-center mt-2 align-self-start">
                     <div class="dailyCard calCard">
                         <div class="row">
                             <Calendar />
