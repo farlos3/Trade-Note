@@ -27,3 +27,6 @@ skills-lock.json
 # Local parquet backup copies + Atlas migration dump
 backup/data/
 _atlasdump/
+
+# Pre-restore safety dumps of the local database
+backup/pre-restore/

@@ -92,13 +92,28 @@ const equity = computed(() => {
     const t = target.value
     let bal = s
     const dates = [], actual = [], plan = []
+    // Same numbers expressed as profit rather than balance, for the P&L views.
+    const cumActual = [], cumPlan = [], dayActual = [], dayPlan = []
     rows.forEach((d, i) => {
-        bal += Number(d.net) || 0
+        const net = Number(d.net) || 0
+        bal += net
         dates.push(d.date)
         actual.push(Number(bal.toFixed(2)))
-        plan.push(t != null ? Number((s * Math.pow(1 + t / 100, i + 1)).toFixed(2)) : null)
+        cumActual.push(Number((bal - s).toFixed(2)))
+        dayActual.push(Number(net.toFixed(2)))
+        if (t != null) {
+            const planBal = s * Math.pow(1 + t / 100, i + 1)
+            plan.push(Number(planBal.toFixed(2)))
+            cumPlan.push(Number((planBal - s).toFixed(2)))
+            // Profit the plan needs on this specific day: the compounded balance
+            // going into the day, times the daily rate. It grows day by day, so a
+            // flat line here would understate what the plan asks for later on.
+            dayPlan.push(Number((s * Math.pow(1 + t / 100, i) * (t / 100)).toFixed(2)))
+        } else {
+            plan.push(null); cumPlan.push(null); dayPlan.push(null)
+        }
     })
-    return { dates, actual, plan }
+    return { dates, actual, plan, cumActual, cumPlan, dayActual, dayPlan }
 })
 
 /** Same horizon, but compounding at the rate you actually achieved. */
@@ -125,6 +140,25 @@ const ACTUAL_COLOR = '#f59e0b' // amber: CVD-separated from the blue on every ch
 const SURFACE = '#1b1f2a'
 const INK_MUTED = 'rgba(237, 240, 247, 0.60)'
 
+// Profit/loss colouring, only used by the daily bars where the sign IS the
+// message. The line charts stay blue/amber so plan-vs-actual never reads as
+// good-vs-bad.
+const WIN_COLOR = '#00CA73'
+const LOSS_COLOR = '#f87171'
+
+const CHART_MODES = [
+    { value: 'equity', label: 'Equity', title: 'Equity — your actual trades per day vs plan pace' },
+    { value: 'cumulative', label: 'Cumulative P&L', title: 'Cumulative profit since the start balance vs plan pace' },
+    { value: 'daily', label: 'Daily P&L', title: 'Profit per traded day vs the profit the plan needs that day' },
+]
+const chartMode = ref(localStorage.getItem('planVsActualChartMode') || 'equity')
+if (!CHART_MODES.some((m) => m.value === chartMode.value)) chartMode.value = 'equity'
+watch(chartMode, (v) => localStorage.setItem('planVsActualChartMode', v))
+
+const chartTitle = computed(
+    () => (CHART_MODES.find((m) => m.value === chartMode.value) || CHART_MODES[0]).title,
+)
+
 const chartEl = ref(null)
 let chart = null
 
@@ -136,28 +170,50 @@ function renderChart() {
 
     const eq = equity.value
     const dates = eq.dates
+    const mode = chartMode.value
+    const planData = mode === 'equity' ? eq.plan : mode === 'cumulative' ? eq.cumPlan : eq.dayPlan
+    const actualData = mode === 'equity' ? eq.actual : mode === 'cumulative' ? eq.cumActual : eq.dayActual
+    const planName = mode === 'daily'
+        ? `Plan needs (${fmt(target.value, 2)}%/day)`
+        : `Plan (${fmt(target.value, 2)}%/day)`
 
     const series = []
-    if (eq.plan.some((v) => v != null)) {
+    if (planData.some((v) => v != null)) {
         series.push({
-            name: `Plan (${fmt(target.value, 2)}%/day)`,
+            name: planName,
             type: 'line',
-            data: eq.plan,
+            data: planData,
             showSymbol: false,
             lineStyle: { color: PLAN_COLOR, width: 2, type: 'dashed' },
             itemStyle: { color: PLAN_COLOR, borderColor: SURFACE, borderWidth: 2 },
+            z: 3,
         })
     }
-    series.push({
-        name: 'Actual (real trades)',
-        type: 'line',
-        data: eq.actual,
-        showSymbol: true,
-        symbolSize: 6,
-        lineStyle: { color: ACTUAL_COLOR, width: 2 },
-        itemStyle: { color: ACTUAL_COLOR, borderColor: SURFACE, borderWidth: 2 },
-        areaStyle: { color: 'rgba(245, 158, 11, 0.08)' },
-    })
+    if (mode === 'daily') {
+        // Bars, not a line: each day is an independent amount, and colouring by
+        // sign is the whole point of this view.
+        series.push({
+            name: 'Actual (real trades)',
+            type: 'bar',
+            data: actualData.map((v) => ({
+                value: v,
+                itemStyle: { color: v >= 0 ? WIN_COLOR : LOSS_COLOR },
+            })),
+            barMaxWidth: 28,
+            z: 2,
+        })
+    } else {
+        series.push({
+            name: 'Actual (real trades)',
+            type: 'line',
+            data: actualData,
+            showSymbol: true,
+            symbolSize: 6,
+            lineStyle: { color: ACTUAL_COLOR, width: 2 },
+            itemStyle: { color: ACTUAL_COLOR, borderColor: SURFACE, borderWidth: 2 },
+            areaStyle: { color: 'rgba(245, 158, 11, 0.08)' },
+        })
+    }
 
     chart.setOption({
         backgroundColor: 'transparent',
@@ -190,7 +246,8 @@ function renderChart() {
         xAxis: {
             type: 'category',
             data: dates,
-            boundaryGap: false,
+            // Bars need to sit inside their slot; lines should reach the edges.
+            boundaryGap: mode === 'daily',
             axisLine: { lineStyle: { color: 'rgba(255,255,255,0.12)' } },
             axisTick: { show: false },
             axisLabel: { color: INK_MUTED, fontSize: 10, hideOverlap: true },
@@ -216,8 +273,9 @@ onBeforeUnmount(() => {
     if (chart) { chart.dispose(); chart = null }
 })
 
-// The canvas only exists once there is something to draw.
-watch([equity], async () => {
+// The canvas only exists once there is something to draw. Switching mode has to
+// re-render too, since the series type and axis change with it.
+watch([equity, chartMode], async () => {
     if (!hasChart.value) {
         if (chart) { chart.dispose(); chart = null }
         return
@@ -317,7 +375,16 @@ watch([equity], async () => {
                 </div>
 
                 <div v-if="hasChart" class="chartWrap mb-3">
-                    <div class="chartTitle">Equity — your actual trades per day vs plan pace</div>
+                    <div class="chartHead">
+                        <div class="chartTitle">{{ chartTitle }}</div>
+                        <div class="chartModes" role="group" aria-label="Chart type">
+                            <button v-for="m in CHART_MODES" :key="m.value" type="button"
+                                :class="['chartModeBtn', { active: chartMode === m.value }]"
+                                :aria-pressed="chartMode === m.value" v-on:click="chartMode = m.value">
+                                {{ m.label }}
+                            </button>
+                        </div>
+                    </div>
                     <div ref="chartEl" class="chartBox"></div>
                 </div>
 
@@ -430,11 +497,50 @@ watch([equity], async () => {
     padding: 0.6rem 0.4rem 0.4rem;
 }
 
+.chartHead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.35rem;
+}
+
 .chartTitle {
     font-size: 0.75rem;
     font-weight: 600;
     color: var(--white-60);
     padding-left: 0.5rem;
+}
+
+.chartModes {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 0.4rem;
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.chartModeBtn {
+    border: 0;
+    background: transparent;
+    color: var(--white-60);
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.25rem 0.6rem;
+    border-radius: 0.3rem;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.chartModeBtn:hover {
+    color: var(--white-87);
+}
+
+.chartModeBtn.active {
+    background: rgba(47, 155, 255, 0.18);
+    color: #2f9bff;
 }
 
 .chartBox {
