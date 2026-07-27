@@ -536,21 +536,11 @@ export function useLineBarChart(param) {
                     color: white87.value
                 },
                 formatter: (params) => {
-                    var proceeds
-                    var cumulProceeds
-                    var date
-                    params.forEach((element, index) => {
-                        if (index == 0) {
-                            cumulProceeds = useThousandCurrencyFormat(element.value)
-                            date = element.name
-                        }
-                        if (index == 1) {
-                            proceeds = useThousandCurrencyFormat(element.value)
-                        }
-                    });
-                    //console.log("params "+JSON.stringify(params[0][0]))
-                    return date + "<br>Proceeds: " + proceeds + "<br>Cumulated: " + cumulProceeds
-
+                    // Single series (running total) — no separate "Proceeds" series
+                    // exists, so show just the date and the cumulated value (2 dp).
+                    const p = Array.isArray(params) ? params[0] : params
+                    if (!p) return ''
+                    return p.name + "<br>Cumulated: " + useTwoDecCurrencyFormat(p.value)
                 }
             },
             axisLabel: {

@@ -117,8 +117,18 @@ def fetch_deals(frm, to):
     if deals is None:
         log(f"history_deals_get returned None: {mt5.last_error()}")
         return []
-    # Keep only actual trade deals (buy/sell). Skip balance/credit/correction entries.
-    return [d for d in deals if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL)]
+    # Exclude deals belonging to positions that are STILL OPEN. Otherwise the
+    # entry deal alone gets imported as an open trade, and when the position later
+    # closes the re-import is dropped by TradeNote's dateUnix dedup — so the trade
+    # stays stuck "open" and never shows its realised P&L. Import only complete
+    # (closed) round-trips.
+    open_positions = mt5.positions_get() or []
+    open_ids = {p.ticket for p in open_positions} | {getattr(p, "identifier", p.ticket) for p in open_positions}
+    # Keep only actual trade deals (buy/sell) whose position has closed. Skip
+    # balance/credit/correction entries too.
+    return [d for d in deals
+            if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL)
+            and d.position_id not in open_ids]
 
 
 def build_report_xlsx(account_login, server, deals):
