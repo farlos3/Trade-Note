@@ -25,11 +25,11 @@
 #   ./start.sh --mode prod    # published image
 #   ./start.sh --ip-only      # just refresh the Atlas IP whitelist
 #   ./start.sh --skip-sync    # don't load trade data at all
-#   ./start.sh --restore-r2   # force an R2 restore even if MongoDB has trades
+#   ./start.sh --skip-restore # keep the local DB; don't pull the R2 backup
 set -o pipefail
 
 MODE="dev"
-UPDATE_IP=0; SKIP_DOCKER=0; SKIP_SYNC=0; IP_ONLY=0; RESTORE_R2=0
+UPDATE_IP=0; SKIP_DOCKER=0; SKIP_SYNC=0; IP_ONLY=0; SKIP_RESTORE=0
 
 usage() {
   cat <<'EOF'
@@ -39,10 +39,10 @@ Usage: ./start.sh [options]
                           Only needed if the Atlas Network Access list is NOT 0.0.0.0/0.
   --ip-only               only refresh the Atlas IP whitelist, then exit
   --skip-docker           skip starting Docker
-  --skip-sync             skip loading trade data entirely
-  --restore-r2            force restoring trades from the R2 Parquet backup.
-                          Off Windows this happens automatically when MongoDB is
-                          empty; this flag also overwrites data that is there.
+  --skip-sync             skip the MT5 -> TradeNote sync (the update step)
+  --skip-restore          don't pull the R2 backup at startup. By default every
+                          run restores it first (after dumping the current DB to
+                          backup/pre-restore/), then syncs newer trades on top.
   -h, --help              show this help
 EOF
 }
@@ -55,7 +55,7 @@ while [[ $# -gt 0 ]]; do
     --skip-ip)     UPDATE_IP=0; shift;;   # kept for compatibility (now the default)
     --skip-docker) SKIP_DOCKER=1; shift;;
     --skip-sync)   SKIP_SYNC=1; shift;;
-    --restore-r2)  RESTORE_R2=1; shift;;
+    --skip-restore) SKIP_RESTORE=1; shift;;
     -h|--help)     usage; exit 0;;
     *) echo "Unknown arg: $1" >&2; usage; exit 64;;
   esac
@@ -140,29 +140,89 @@ if [[ "$SKIP_DOCKER" -eq 0 ]]; then
   fi
 fi
 
-# 3b/4. --- Load trade data ---------------------------------------------------
-# Two mutually exclusive sources, chosen by platform. `tasklist` is the probe:
-# it exists only on Windows, which is also the only place the MetaTrader5 Python
-# package can be installed (its wheel binds to the terminal's DLL).
+# 4. --- Trade data: restore from R2, then update ------------------------------
+# Order matters and is deliberate: every start begins from the R2 backup (the
+# canonical state), and only then are newer trades layered on top from MT5.
+#
+# Restoring is destructive -- restore_from_r2.py DROPs each collection before
+# reinserting -- so anything created locally since the last backup (notes, tags,
+# screenshots, trades) would be gone. A mongodump of the live DB is therefore
+# taken first, every time, and the restore is skipped outright if that dump
+# cannot be produced. Pass --skip-restore to start from the local DB as-is.
 
 PY=""
 if command -v python3 >/dev/null 2>&1; then PY="python3"
 elif command -v python >/dev/null 2>&1; then PY="python"; fi
 
+db_name() {
+  local db; db="$(read_env TRADENOTE_DATABASE)"
+  [[ -n "$db" ]] || db="tradenote"
+  printf '%s' "$db"
+}
+
 # Documents in the local `trades` collection. Prints a number, or NOTHING when
-# the count could not be established (Mongo unreachable, container still booting,
-# unexpected output). That distinction matters: the restore below DROPs
-# collections, so "couldn't tell" must never be mistaken for "empty".
+# the count could not be established (Mongo unreachable, container still
+# booting, unexpected output) -- "couldn't tell" must never read as "empty".
 count_trades() {
-  local db out
-  db="$(read_env TRADENOTE_DATABASE)"; [[ -n "$db" ]] || db="tradenote"
+  local out
   out="$(docker compose -f "$COMPOSE_FILE" exec -T mongo mongosh --quiet --eval \
-        "print(db.getSiblingDB('$db').getCollection('trades').countDocuments())" \
+        "print(db.getSiblingDB('$(db_name)').getCollection('trades').countDocuments())" \
         2>/dev/null | tail -n1 | tr -d '[:space:]')"
   [[ "$out" =~ ^[0-9]+$ ]] && printf '%s' "$out"
 }
 
-# --- Windows: read MetaTrader 5 directly ---
+# Full dump of the live database, kept locally so a restore is always undoable:
+#   docker compose -f <file> exec -T mongo mongorestore --archive --drop < <file>
+SNAPSHOT_PATH=""
+snapshot_local_db() {
+  local dir out
+  dir="$ROOT_DIR/backup/pre-restore"
+  mkdir -p "$dir" || return 1
+  out="$dir/$(db_name)-$(date +%Y%m%d-%H%M%S).archive"
+  if docker compose -f "$COMPOSE_FILE" exec -T mongo \
+       mongodump --db "$(db_name)" --archive --quiet > "$out" 2>/dev/null && [[ -s "$out" ]]; then
+    SNAPSHOT_PATH="$out"
+    return 0
+  fi
+  rm -f "$out"
+  return 1
+}
+
+restore_from_r2() {
+  section "Restoring trade data from the R2 backup"
+
+  if [[ -z "$PY" ]]; then
+    warn "Python not found; cannot restore from R2. Install Python 3, then: pip install pymongo pyarrow boto3"
+    return 0
+  fi
+  if ! "$PY" -c "import pymongo, pyarrow, boto3" >/dev/null 2>&1; then
+    warn "R2 restore needs missing packages. Run: $PY -m pip install --user pymongo pyarrow boto3"
+    return 0
+  fi
+
+  local n; n="$(count_trades)"
+  if [[ -z "$n" ]]; then
+    warn "Could not reach MongoDB — skipping the restore rather than risk dropping collections blindly. Check: docker compose -f $COMPOSE_FILE logs mongo"
+    return 0
+  fi
+
+  if ! snapshot_local_db; then
+    warn "Could not dump the current database, so the restore was skipped — it DROPs collections and there would be no way back. Check that the mongo container is up."
+    return 0
+  fi
+  printf '\033[90mSafety dump of the current DB (%s trade(s)): %s\033[0m\n' "$n" "${SNAPSHOT_PATH#$ROOT_DIR/}"
+
+  local rc=0
+  "$PY" "$ROOT_DIR/backup/restore_from_r2.py" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    warn "R2 restore did not complete (exit $rc) — the local database is untouched, see the message above."
+  else
+    printf '\033[32mRestored — MongoDB now holds %s trade(s).\033[0m\n' "$(count_trades)"
+  fi
+  return 0
+}
+
+# --- Windows only: read MetaTrader 5 and add anything newer than the backup ---
 sync_from_mt5() {
   section "Launching MetaTrader 5 terminal"
   # The per-minute sync never auto-opens MT5 (it skips when the terminal is
@@ -185,7 +245,7 @@ sync_from_mt5() {
   section "Running MT5 -> TradeNote sync (once)"
   if [[ -z "$PY" ]]; then
     warn "Python not found; skipping MT5 sync. Install Python 3 and: pip install MetaTrader5 openpyxl requests"
-    return
+    return 0
   fi
   local rc=0
   "$PY" "$ROOT_DIR/mt5-sync/mt5_sync.py" || rc=$?
@@ -193,54 +253,18 @@ sync_from_mt5() {
   return 0
 }
 
-# --- Everywhere else: MongoDB, falling back to the R2 Parquet backup ---
-load_from_db_or_r2() {
-  section "Loading trade data (MongoDB / R2 backup)"
-  local n; n="$(count_trades)"
+# 4a. Baseline: whatever is in the R2 backup.
+if [[ "$SKIP_RESTORE" -eq 0 ]]; then
+  restore_from_r2
+fi
 
-  if [[ -z "$n" ]]; then
-    warn "Could not read the trades count from MongoDB — skipping the R2 restore rather than risk overwriting data. Check: docker compose -f $COMPOSE_FILE logs mongo"
-    return 0
-  fi
-
-  if [[ "$n" -gt 0 && "$RESTORE_R2" -eq 0 ]]; then
-    printf '\033[32mMongoDB already holds %s trade(s) — using it.\033[0m\n' "$n"
-    printf '\033[90mRe-pull from the R2 snapshot instead:  ./start.sh --restore-r2\033[0m\n'
-    return 0
-  fi
-
-  if [[ -z "$PY" ]]; then
-    warn "Python not found; cannot restore from R2. Install Python 3, then: pip install pymongo pyarrow boto3"
-    return 0
-  fi
-  if ! "$PY" -c "import pymongo, pyarrow, boto3" >/dev/null 2>&1; then
-    warn "R2 restore needs missing packages. Run: $PY -m pip install --user pymongo pyarrow boto3"
-    return 0
-  fi
-
-  if [[ "$n" -gt 0 ]]; then
-    # restore_from_r2.py DROPs each collection before reinserting, so this
-    # replaces the local data outright -- only ever on an explicit --restore-r2.
-    warn "--restore-r2 given: DROPPING the local collections (including the $n trade(s) above) and replacing them with the R2 snapshot."
-  else
-    echo "MongoDB has no trades — restoring the latest snapshot from R2."
-  fi
-
-  local rc=0
-  "$PY" "$ROOT_DIR/backup/restore_from_r2.py" || rc=$?
-  if [[ $rc -ne 0 ]]; then
-    warn "R2 restore did not complete (exit $rc) — see the message above. Check the R2_* keys in .env, or back up first with: $PY backup/backup_to_r2.py"
-  else
-    printf '\033[32mRestored %s trade(s) from the R2 backup.\033[0m\n' "$(count_trades)"
-  fi
-  return 0
-}
-
+# 4b. Update: newer trades straight from the terminal. `tasklist` exists only on
+# Windows, which is also the only place the MetaTrader5 wheel installs.
 if [[ "$SKIP_SYNC" -eq 0 ]]; then
   if command -v tasklist >/dev/null 2>&1; then
     sync_from_mt5
   else
-    load_from_db_or_r2
+    printf '\033[90mNot on Windows — no local MetaTrader 5 to sync from; the R2 restore above is the data source.\033[0m\n'
   fi
 fi
 
