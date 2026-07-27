@@ -79,6 +79,10 @@ const tradeStats = computed(() => {
 
     filteredTrades.forEach(day => {
         (day.trades || []).forEach(t => {
+            // Skip still-open positions: they have no exit and no realised P&L,
+            // so counting them would inflate the long/short totals (and can't be
+            // won/lost yet). Matches `totals`, which ignores them (tradesCount 0).
+            if (t.openPosition) return
             // buyQuantity is the position size. MT5 sends it in lots; for stock
             // imports it is a share count. Either way min/max are comparable
             // within one account's own history.

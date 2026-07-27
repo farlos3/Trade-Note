@@ -20,9 +20,16 @@ function blankPlan(id) {
         horizonMonths: '',
         dailyPct: '',
         goalBalance: '',
+        // Optional stepped daily target: { id, from, pct }. Once the balance
+        // reaches `from`, switch to `pct` %/day (highest reached level wins).
+        // Below the first level, the flat dailyPct applies. Empty = flat only.
+        tiers: [],
         // Ad-hoc deposits: { id, date: 'YYYY-MM-DD', amount }. No fixed cadence —
         // add one whenever you actually put money in.
         deposits: [],
+        // Ad-hoc withdrawals: { id, date, amount, note }. Money taken out mid-way,
+        // with a note for what it was for.
+        withdrawals: [],
         // Translates the $/day target into pips/day, using the same pip-size /
         // contract-size conventions as manual order entry (see addOrder.js).
         symbol: 'XAUUSD',
@@ -109,6 +116,26 @@ export function addDeposit(plan) {
 export function removeDeposit(plan, depositId) {
     const idx = plan.deposits.findIndex((d) => d.id === depositId)
     if (idx !== -1) plan.deposits.splice(idx, 1)
+}
+
+export function addWithdrawal(plan) {
+    if (!Array.isArray(plan.withdrawals)) plan.withdrawals = []
+    plan.withdrawals.push({ id: Date.now() + Math.random(), date: dayjs().format('YYYY-MM-DD'), amount: '', note: '' })
+}
+
+export function removeWithdrawal(plan, withdrawalId) {
+    const idx = plan.withdrawals.findIndex((w) => w.id === withdrawalId)
+    if (idx !== -1) plan.withdrawals.splice(idx, 1)
+}
+
+export function addTier(plan) {
+    if (!Array.isArray(plan.tiers)) plan.tiers = []
+    plan.tiers.push({ id: Date.now() + Math.random(), from: '', pct: '' })
+}
+
+export function removeTier(plan, tierId) {
+    const idx = plan.tiers.findIndex((t) => t.id === tierId)
+    if (idx !== -1) plan.tiers.splice(idx, 1)
 }
 
 watch(state, () => {
