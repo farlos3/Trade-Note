@@ -119,7 +119,12 @@ def main():
     try:
         client.admin.command("ping")
     except Exception as e:  # noqa: BLE001
-        sys.exit(f"Cannot reach local MongoDB: {e}. Is the project running?")
+        # Run on a short interval (e.g. every 30 min): whenever the project is
+        # simply not up there is nothing to back up. Treat that as a benign skip
+        # (exit 0) so Task Scheduler history isn't full of false failures --
+        # real problems (R2 misconfig, upload errors) still exit non-zero below.
+        log(f"Local MongoDB not reachable ({e}). Project not running -- nothing to back up, skipping.")
+        sys.exit(0)
 
     s3, bucket = r2_client(env)
     db = client[db_name]
