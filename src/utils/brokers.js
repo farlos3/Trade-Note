@@ -127,6 +127,9 @@ export async function useBrokerMetaTrader5(param) {
                         }
                         temp.SymbolOriginal = Object.values(row)[2]
                         temp.Symbol = Object.values(row)[2].replace(/#*/, '')
+                        // Column 7 (the report's "Order" slot) carries the MT5
+                        // position_id: it keys each position as its own trade.
+                        temp.PositionId = Object.values(row)[7] != null ? Object.values(row)[7].toString() : ""
                         temp.Qty = (Object.values(row)[5]).toString()
                         //console.log(" -> Qty import "+temp.Qty)
                         temp.Price = Object.values(row)[6].toString()

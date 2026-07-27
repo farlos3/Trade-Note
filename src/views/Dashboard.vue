@@ -243,18 +243,6 @@ onBeforeMount(async () => {
                 </div>
                 <div class="col-6 col-lg-3 col-xl-2">
                     <div class="dailyCard statCard">
-                        <h5 class="titleWithDesc acctPos">{{ isNaN(keyStats.avgWin) ? '-' : useTwoDecCurrencyFormat(keyStats.avgWin) }}</h5>
-                        <span class="dashInfoTitle">Avg Win</span>
-                    </div>
-                </div>
-                <div class="col-6 col-lg-3 col-xl-2">
-                    <div class="dailyCard statCard">
-                        <h5 class="titleWithDesc acctNeg">{{ isNaN(keyStats.avgLoss) ? '-' : useTwoDecCurrencyFormat(keyStats.avgLoss) }}</h5>
-                        <span class="dashInfoTitle">Avg Loss</span>
-                    </div>
-                </div>
-                <div class="col-6 col-lg-3 col-xl-2">
-                    <div class="dailyCard statCard">
                         <h5 class="titleWithDesc acctPos">
                             {{ tradeStats.longs ? tradeStats.longsWon + '/' + tradeStats.longs : '-' }}
                         </h5>
@@ -362,24 +350,6 @@ onBeforeMount(async () => {
                                         </div>
                                     </div>
 
-                                    <!-- SECOND LINE : SATISFACTION -->
-                                    <!-- The win/loss donut that used to sit here was removed: it drew a
-                                         bare ring with no number, and win rate is already shown both as a
-                                         headline tile and as its own chart below. Avg win / avg loss /
-                                         win rate / profit factor were duplicated here too, and now live
-                                         only in the headline row. -->
-                                    <div v-show="satisfactionArray.length > 0" class="col-12">
-                                        <div class="row text-center">
-                                            <div class="col-12 col-lg-6 offset-lg-3">
-                                                <div v-if="dashboardIdMounted" class="dailyCard">
-                                                    <div v-bind:key="renderData" id="pieChart2"
-                                                        class="chartIdCardClass">
-                                                    </div>
-                                                    <span class="dashInfoTitle">Satisfaction</span>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
                                 </div>
                             </div>
                         </div>

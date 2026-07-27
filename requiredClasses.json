@@ -1,911 +1,979 @@
 [
-    {
-        "className": "_User",
-        "fields": {
-            "objectId": {
-                "type": "String"
-            },
-            "createdAt": {
-                "type": "Date"
-            },
-            "updatedAt": {
-                "type": "Date"
-            },
-            "ACL": {
-                "type": "ACL"
-            },
-            "username": {
-                "type": "String"
-            },
-            "password": {
-                "type": "String"
-            },
-            "email": {
-                "type": "String"
-            },
-            "emailVerified": {
-                "type": "Boolean"
-            },
-            "authData": {
-                "type": "Object"
-            },
-            "avatar": {
-                "type": "File"
-            },
-            "accounts": {
-                "type": "Array",
-                "required": false
-            },
-            "guidedTour": {
-                "type": "Boolean"
-            },
-            "apis": {
-                "type": "Array"
-            },
-            "timeZone": {
-                "type": "String"
-            },
-            "tags": {
-                "type": "Array"
-            },
-            "legacy": {
-                "type": "Array"
-            },
-            "layoutStyle": {
-                "type": "Array"
-            }
-        },
-        "classLevelPermissions": {
-            "find": {
-                "*": true
-            },
-            "count": {
-                "*": true
-            },
-            "get": {
-                "*": true
-            },
-            "create": {
-                "*": true
-            },
-            "update": {
-                "*": true
-            },
-            "delete": {
-                "*": true
-            },
-            "addField": {
-                "*": true
-            },
-            "protectedFields": {
-                "*": []
-            }
-        },
-        "indexes": {
-            "_id_": {
-                "_id": 1
-            },
-            "username_1": {
-                "username": 1
-            },
-            "email_1": {
-                "email": 1
-            },
-            "case_insensitive_username": {
-                "username": 1
-            },
-            "case_insensitive_email": {
-                "email": 1
-            }
-        }
+  {
+    "className": "_User",
+    "fields": {
+      "objectId": {
+        "type": "String"
+      },
+      "createdAt": {
+        "type": "Date"
+      },
+      "updatedAt": {
+        "type": "Date"
+      },
+      "ACL": {
+        "type": "ACL"
+      },
+      "username": {
+        "type": "String"
+      },
+      "password": {
+        "type": "String"
+      },
+      "email": {
+        "type": "String"
+      },
+      "emailVerified": {
+        "type": "Boolean"
+      },
+      "authData": {
+        "type": "Object"
+      },
+      "avatar": {
+        "type": "File"
+      },
+      "accounts": {
+        "type": "Array",
+        "required": false
+      },
+      "guidedTour": {
+        "type": "Boolean"
+      },
+      "apis": {
+        "type": "Array"
+      },
+      "timeZone": {
+        "type": "String"
+      },
+      "tags": {
+        "type": "Array"
+      },
+      "legacy": {
+        "type": "Array"
+      },
+      "layoutStyle": {
+        "type": "Array"
+      }
     },
-    {
-        "className": "trades",
-        "fields": {
-            "objectId": {
-                "type": "String"
-            },
-            "createdAt": {
-                "type": "Date"
-            },
-            "updatedAt": {
-                "type": "Date"
-            },
-            "ACL": {
-                "type": "ACL"
-            },
-            "user": {
-                "type": "Pointer",
-                "targetClass": "_User",
-                "required": false
-            },
-            "video": {
-                "type": "String",
-                "required": false
-            },
-            "videoName": {
-                "type": "String",
-                "required": false
-            },
-            "videoPoster": {
-                "type": "File",
-                "required": false
-            },
-            "blotter": {
-                "type": "Object",
-                "required": false
-            },
-            "pAndL": {
-                "type": "Object",
-                "required": false
-            },
-            "date": {
-                "type": "Date",
-                "required": false
-            },
-            "executions": {
-                "type": "Array",
-                "required": false
-            },
-            "trades": {
-                "type": "Array",
-                "required": false
-            },
-            "dateUnix": {
-                "type": "Number",
-                "required": false
-            },
-            "videoDate": {
-                "type": "Date",
-                "required": false
-            },
-            "videoDateUnix": {
-                "type": "Number"
-            },
-            "cashJournal": {
-                "type": "Object"
-            },
-            "useMasterKey": {
-                "type": "Boolean"
-            },
-            "satisfaction": {
-                "type": "Boolean"
-            },
-            "openPositions": {
-                "type": "Boolean"
-            }
-        },
-        "classLevelPermissions": {
-            "find": {
-                "*": true
-            },
-            "count": {
-                "*": true
-            },
-            "get": {
-                "*": true
-            },
-            "create": {
-                "*": true
-            },
-            "update": {
-                "*": true
-            },
-            "delete": {
-                "*": true
-            },
-            "addField": {
-                "*": true
-            },
-            "protectedFields": {
-                "*": []
-            }
-        },
-        "indexes": {
-            "_id_": {
-                "_id": 1
-            }
-        }
+    "classLevelPermissions": {
+      "find": {
+        "*": true
+      },
+      "count": {
+        "*": true
+      },
+      "get": {
+        "*": true
+      },
+      "create": {
+        "*": true
+      },
+      "update": {
+        "*": true
+      },
+      "delete": {
+        "*": true
+      },
+      "addField": {
+        "*": true
+      },
+      "protectedFields": {
+        "*": []
+      }
     },
-    {
-        "className": "playbooks",
-        "fields": {
-            "objectId": {
-                "type": "String"
-            },
-            "createdAt": {
-                "type": "Date"
-            },
-            "updatedAt": {
-                "type": "Date"
-            },
-            "ACL": {
-                "type": "ACL"
-            },
-            "user": {
-                "type": "Pointer",
-                "targetClass": "_User"
-            },
-            "playbook": {
-                "type": "String",
-                "required": false
-            },
-            "dateUnix": {
-                "type": "Number",
-                "required": false
-            },
-            "date": {
-                "type": "Date",
-                "required": false
-            }
-        },
-        "classLevelPermissions": {
-            "find": {
-                "*": true
-            },
-            "count": {
-                "*": true
-            },
-            "get": {
-                "*": true
-            },
-            "create": {
-                "*": true
-            },
-            "update": {
-                "*": true
-            },
-            "delete": {
-                "*": true
-            },
-            "addField": {
-                "*": true
-            },
-            "protectedFields": {
-                "*": []
-            }
-        },
-        "indexes": {
-            "_id_": {
-                "_id": 1
-            }
-        }
-    },
-    {
-        "className": "cashJournals",
-        "fields": {
-            "objectId": {
-                "type": "String"
-            },
-            "createdAt": {
-                "type": "Date"
-            },
-            "updatedAt": {
-                "type": "Date"
-            },
-            "ACL": {
-                "type": "ACL"
-            },
-            "dateUnix": {
-                "type": "Number",
-                "required": false
-            },
-            "cashJournal": {
-                "type": "Object",
-                "required": false
-            },
-            "user": {
-                "type": "Pointer",
-                "targetClass": "_User",
-                "required": false
-            },
-            "date": {
-                "type": "Date"
-            }
-        },
-        "classLevelPermissions": {
-            "find": {
-                "*": true
-            },
-            "count": {
-                "*": true
-            },
-            "get": {
-                "*": true
-            },
-            "create": {
-                "*": true
-            },
-            "update": {
-                "*": true
-            },
-            "delete": {
-                "*": true
-            },
-            "addField": {
-                "*": true
-            },
-            "protectedFields": {
-                "*": []
-            }
-        },
-        "indexes": {
-            "_id_": {
-                "_id": 1
-            }
-        }
-    },
-    {
-        "className": "dailyInfos",
-        "fields": {
-            "objectId": {
-                "type": "String"
-            },
-            "createdAt": {
-                "type": "Date"
-            },
-            "updatedAt": {
-                "type": "Date"
-            },
-            "ACL": {
-                "type": "ACL"
-            },
-            "user": {
-                "type": "Pointer",
-                "targetClass": "_User",
-                "required": false
-            },
-            "dateUnix": {
-                "type": "Number",
-                "required": false
-            },
-            "date": {
-                "type": "Date",
-                "required": false
-            },
-            "cashBalance": {
-                "type": "Number",
-                "required": false
-            },
-            "buyingPower": {
-                "type": "Number",
-                "required": false
-            }
-        },
-        "classLevelPermissions": {
-            "find": {
-                "*": true
-            },
-            "count": {
-                "*": true
-            },
-            "get": {
-                "*": true
-            },
-            "create": {
-                "*": true
-            },
-            "update": {
-                "*": true
-            },
-            "delete": {
-                "*": true
-            },
-            "addField": {
-                "*": true
-            },
-            "protectedFields": {
-                "*": []
-            }
-        },
-        "indexes": {
-            "_id_": {
-                "_id": 1
-            }
-        }
-    },
-    {
-        "className": "diaries",
-        "fields": {
-            "objectId": {
-                "type": "String"
-            },
-            "createdAt": {
-                "type": "Date"
-            },
-            "updatedAt": {
-                "type": "Date"
-            },
-            "ACL": {
-                "type": "ACL"
-            },
-            "dateUnix": {
-                "type": "Number",
-                "required": false
-            },
-            "date": {
-                "type": "Date",
-                "required": false
-            },
-            "user": {
-                "type": "Pointer",
-                "targetClass": "_User",
-                "required": false
-            },
-            "diary": {
-                "type": "String",
-                "required": false
-            }
-        },
-        "classLevelPermissions": {
-            "find": {
-                "*": true
-            },
-            "count": {
-                "*": true
-            },
-            "get": {
-                "*": true
-            },
-            "create": {
-                "*": true
-            },
-            "update": {
-                "*": true
-            },
-            "delete": {
-                "*": true
-            },
-            "addField": {
-                "*": true
-            },
-            "protectedFields": {
-                "*": []
-            }
-        },
-        "indexes": {
-            "_id_": {
-                "_id": 1
-            }
-        }
-    },
-    {
-        "className": "scenarios",
-        "fields": {
-            "objectId": {
-                "type": "String"
-            },
-            "createdAt": {
-                "type": "Date"
-            },
-            "updatedAt": {
-                "type": "Date"
-            },
-            "ACL": {
-                "type": "ACL"
-            },
-            "name": {
-                "type": "String",
-                "required": false
-            },
-            "dateUnix": {
-                "type": "Number",
-                "required": false
-            },
-            "date": {
-                "type": "Date",
-                "required": false
-            },
-            "scenario": {
-                "type": "Object",
-                "required": false
-            },
-            "commissions": {
-                "type": "Object",
-                "required": false
-            },
-            "user": {
-                "type": "Pointer",
-                "targetClass": "_User",
-                "required": false
-            },
-            "duration": {
-                "type": "Number",
-                "required": false
-            }
-        },
-        "classLevelPermissions": {
-            "find": {
-                "*": true
-            },
-            "count": {
-                "*": true
-            },
-            "get": {
-                "*": true
-            },
-            "create": {
-                "*": true
-            },
-            "update": {
-                "*": true
-            },
-            "delete": {
-                "*": true
-            },
-            "addField": {
-                "*": true
-            },
-            "protectedFields": {
-                "*": []
-            }
-        },
-        "indexes": {
-            "_id_": {
-                "_id": 1
-            }
-        }
-    },
-    {
-        "className": "screenshots",
-        "fields": {
-            "objectId": {
-                "type": "String"
-            },
-            "createdAt": {
-                "type": "Date"
-            },
-            "updatedAt": {
-                "type": "Date"
-            },
-            "ACL": {
-                "type": "ACL"
-            },
-            "user": {
-                "type": "Pointer",
-                "targetClass": "_User",
-                "required": false
-            },
-            "side": {
-                "type": "String",
-                "required": false
-            },
-            "name": {
-                "type": "String",
-                "required": false
-            },
-            "originalBase64": {
-                "type": "String",
-                "required": false
-            },
-            "annotatedBase64": {
-                "type": "String",
-                "required": false
-            },
-            "originalUrl": {
-                "type": "String",
-                "required": false
-            },
-            "annotatedUrl": {
-                "type": "String",
-                "required": false
-            },
-            "r2KeyOriginal": {
-                "type": "String",
-                "required": false
-            },
-            "r2KeyAnnotated": {
-                "type": "String",
-                "required": false
-            },
-            "markersOnly": {
-                "type": "Boolean",
-                "required": false
-            },
-            "maState": {
-                "type": "Object",
-                "required": false
-            },
-            "symbol": {
-                "type": "String"
-            },
-            "date": {
-                "type": "Date"
-            },
-            "dateUnix": {
-                "type": "Number"
-            },
-            "dateUnixDay": {
-                "type": "Number"
-            }
-        },
-        "classLevelPermissions": {
-            "find": {
-                "*": true
-            },
-            "count": {
-                "*": true
-            },
-            "get": {
-                "*": true
-            },
-            "create": {
-                "*": true
-            },
-            "update": {
-                "*": true
-            },
-            "delete": {
-                "*": true
-            },
-            "addField": {
-                "*": true
-            },
-            "protectedFields": {
-                "*": []
-            }
-        },
-        "indexes": {
-            "_id_": {
-                "_id": 1
-            }
-        }
-    },
-    {
-        "className": "satisfactions",
-        "fields": {
-            "objectId": {
-                "type": "String"
-            },
-            "createdAt": {
-                "type": "Date"
-            },
-            "updatedAt": {
-                "type": "Date"
-            },
-            "ACL": {
-                "type": "ACL"
-            },
-            "user": {
-                "type": "Pointer",
-                "targetClass": "_User",
-                "required": false
-            },
-            "dateUnix": {
-                "type": "Number"
-            },
-            "tradeId": {
-                "type": "String"
-            },
-            "satisfaction": {
-                "type": "Boolean"
-            }
-        },
-        "classLevelPermissions": {
-            "find": {
-                "*": true
-            },
-            "count": {
-                "*": true
-            },
-            "get": {
-                "*": true
-            },
-            "create": {
-                "*": true
-            },
-            "update": {
-                "*": true
-            },
-            "delete": {
-                "*": true
-            },
-            "addField": {
-                "*": true
-            },
-            "protectedFields": {
-                "*": []
-            }
-        },
-        "indexes": {
-            "_id_": {
-                "_id": 1
-            }
-        }
-    },
-    {
-        "className": "tags",
-        "fields": {
-            "objectId": {
-                "type": "String"
-            },
-            "createdAt": {
-                "type": "Date"
-            },
-            "updatedAt": {
-                "type": "Date"
-            },
-            "ACL": {
-                "type": "ACL"
-            },
-            "user": {
-                "type": "Pointer",
-                "targetClass": "_User",
-                "required": false
-            },
-            "dateUnix": {
-                "type": "Number"
-            },
-            "tradeId": {
-                "type": "String"
-            },
-            "tags": {
-                "type": "Array"
-            }
-        },
-        "classLevelPermissions": {
-            "find": {
-                "*": true
-            },
-            "count": {
-                "*": true
-            },
-            "get": {
-                "*": true
-            },
-            "create": {
-                "*": true
-            },
-            "update": {
-                "*": true
-            },
-            "delete": {
-                "*": true
-            },
-            "addField": {
-                "*": true
-            },
-            "protectedFields": {
-                "*": []
-            }
-        },
-        "indexes": {
-            "_id_": {
-                "_id": 1
-            }
-        }
-    },
-    {
-        "className": "notes",
-        "fields": {
-            "objectId": {
-                "type": "String"
-            },
-            "createdAt": {
-                "type": "Date"
-            },
-            "updatedAt": {
-                "type": "Date"
-            },
-            "ACL": {
-                "type": "ACL"
-            },
-            "user": {
-                "type": "Pointer",
-                "targetClass": "_User",
-                "required": false
-            },
-            "dateUnix": {
-                "type": "Number"
-            },
-            "tradeId": {
-                "type": "String"
-            },
-            "note": {
-                "type": "string"
-            },
-            "reason": {
-                "type": "string"
-            }
-        },
-        "classLevelPermissions": {
-            "find": {
-                "*": true
-            },
-            "count": {
-                "*": true
-            },
-            "get": {
-                "*": true
-            },
-            "create": {
-                "*": true
-            },
-            "update": {
-                "*": true
-            },
-            "delete": {
-                "*": true
-            },
-            "addField": {
-                "*": true
-            },
-            "protectedFields": {
-                "*": []
-            }
-        },
-        "indexes": {
-            "_id_": {
-                "_id": 1
-            }
-        }
-    },
-    {
-        "className": "excursions",
-        "fields": {
-            "objectId": {
-                "type": "String"
-            },
-            "createdAt": {
-                "type": "Date"
-            },
-            "updatedAt": {
-                "type": "Date"
-            },
-            "ACL": {
-                "type": "ACL"
-            },
-            "user": {
-                "type": "Pointer",
-                "targetClass": "_User",
-                "required": false
-            },
-            "dateUnix": {
-                "type": "Number"
-            },
-            "tradeId": {
-                "type": "String"
-            },
-            "stopLoss": {
-                "type": "Number"
-            },
-            "maePrice": {
-                "type": "Number"
-            },
-            "mfePrice": {
-                "type": "Number"
-            }
-        },
-        "classLevelPermissions": {
-            "find": {
-                "*": true
-            },
-            "count": {
-                "*": true
-            },
-            "get": {
-                "*": true
-            },
-            "create": {
-                "*": true
-            },
-            "update": {
-                "*": true
-            },
-            "delete": {
-                "*": true
-            },
-            "addField": {
-                "*": true
-            },
-            "protectedFields": {
-                "*": []
-            }
-        },
-        "indexes": {
-            "_id_": {
-                "_id": 1
-            }
-        }
+    "indexes": {
+      "_id_": {
+        "_id": 1
+      },
+      "username_1": {
+        "username": 1
+      },
+      "email_1": {
+        "email": 1
+      },
+      "case_insensitive_username": {
+        "username": 1
+      },
+      "case_insensitive_email": {
+        "email": 1
+      }
     }
+  },
+  {
+    "className": "trades",
+    "fields": {
+      "objectId": {
+        "type": "String"
+      },
+      "createdAt": {
+        "type": "Date"
+      },
+      "updatedAt": {
+        "type": "Date"
+      },
+      "ACL": {
+        "type": "ACL"
+      },
+      "user": {
+        "type": "Pointer",
+        "targetClass": "_User",
+        "required": false
+      },
+      "video": {
+        "type": "String",
+        "required": false
+      },
+      "videoName": {
+        "type": "String",
+        "required": false
+      },
+      "videoPoster": {
+        "type": "File",
+        "required": false
+      },
+      "blotter": {
+        "type": "Object",
+        "required": false
+      },
+      "pAndL": {
+        "type": "Object",
+        "required": false
+      },
+      "date": {
+        "type": "Date",
+        "required": false
+      },
+      "executions": {
+        "type": "Array",
+        "required": false
+      },
+      "trades": {
+        "type": "Array",
+        "required": false
+      },
+      "dateUnix": {
+        "type": "Number",
+        "required": false
+      },
+      "videoDate": {
+        "type": "Date",
+        "required": false
+      },
+      "videoDateUnix": {
+        "type": "Number"
+      },
+      "cashJournal": {
+        "type": "Object"
+      },
+      "useMasterKey": {
+        "type": "Boolean"
+      },
+      "satisfaction": {
+        "type": "Boolean"
+      },
+      "openPositions": {
+        "type": "Boolean"
+      }
+    },
+    "classLevelPermissions": {
+      "find": {
+        "*": true
+      },
+      "count": {
+        "*": true
+      },
+      "get": {
+        "*": true
+      },
+      "create": {
+        "*": true
+      },
+      "update": {
+        "*": true
+      },
+      "delete": {
+        "*": true
+      },
+      "addField": {
+        "*": true
+      },
+      "protectedFields": {
+        "*": []
+      }
+    },
+    "indexes": {
+      "_id_": {
+        "_id": 1
+      }
+    }
+  },
+  {
+    "className": "playbooks",
+    "fields": {
+      "objectId": {
+        "type": "String"
+      },
+      "createdAt": {
+        "type": "Date"
+      },
+      "updatedAt": {
+        "type": "Date"
+      },
+      "ACL": {
+        "type": "ACL"
+      },
+      "user": {
+        "type": "Pointer",
+        "targetClass": "_User"
+      },
+      "playbook": {
+        "type": "String",
+        "required": false
+      },
+      "dateUnix": {
+        "type": "Number",
+        "required": false
+      },
+      "date": {
+        "type": "Date",
+        "required": false
+      }
+    },
+    "classLevelPermissions": {
+      "find": {
+        "*": true
+      },
+      "count": {
+        "*": true
+      },
+      "get": {
+        "*": true
+      },
+      "create": {
+        "*": true
+      },
+      "update": {
+        "*": true
+      },
+      "delete": {
+        "*": true
+      },
+      "addField": {
+        "*": true
+      },
+      "protectedFields": {
+        "*": []
+      }
+    },
+    "indexes": {
+      "_id_": {
+        "_id": 1
+      }
+    }
+  },
+  {
+    "className": "cashJournals",
+    "fields": {
+      "objectId": {
+        "type": "String"
+      },
+      "createdAt": {
+        "type": "Date"
+      },
+      "updatedAt": {
+        "type": "Date"
+      },
+      "ACL": {
+        "type": "ACL"
+      },
+      "dateUnix": {
+        "type": "Number",
+        "required": false
+      },
+      "cashJournal": {
+        "type": "Object",
+        "required": false
+      },
+      "user": {
+        "type": "Pointer",
+        "targetClass": "_User",
+        "required": false
+      },
+      "date": {
+        "type": "Date"
+      }
+    },
+    "classLevelPermissions": {
+      "find": {
+        "*": true
+      },
+      "count": {
+        "*": true
+      },
+      "get": {
+        "*": true
+      },
+      "create": {
+        "*": true
+      },
+      "update": {
+        "*": true
+      },
+      "delete": {
+        "*": true
+      },
+      "addField": {
+        "*": true
+      },
+      "protectedFields": {
+        "*": []
+      }
+    },
+    "indexes": {
+      "_id_": {
+        "_id": 1
+      }
+    }
+  },
+  {
+    "className": "dailyInfos",
+    "fields": {
+      "objectId": {
+        "type": "String"
+      },
+      "createdAt": {
+        "type": "Date"
+      },
+      "updatedAt": {
+        "type": "Date"
+      },
+      "ACL": {
+        "type": "ACL"
+      },
+      "user": {
+        "type": "Pointer",
+        "targetClass": "_User",
+        "required": false
+      },
+      "dateUnix": {
+        "type": "Number",
+        "required": false
+      },
+      "date": {
+        "type": "Date",
+        "required": false
+      },
+      "cashBalance": {
+        "type": "Number",
+        "required": false
+      },
+      "buyingPower": {
+        "type": "Number",
+        "required": false
+      }
+    },
+    "classLevelPermissions": {
+      "find": {
+        "*": true
+      },
+      "count": {
+        "*": true
+      },
+      "get": {
+        "*": true
+      },
+      "create": {
+        "*": true
+      },
+      "update": {
+        "*": true
+      },
+      "delete": {
+        "*": true
+      },
+      "addField": {
+        "*": true
+      },
+      "protectedFields": {
+        "*": []
+      }
+    },
+    "indexes": {
+      "_id_": {
+        "_id": 1
+      }
+    }
+  },
+  {
+    "className": "diaries",
+    "fields": {
+      "objectId": {
+        "type": "String"
+      },
+      "createdAt": {
+        "type": "Date"
+      },
+      "updatedAt": {
+        "type": "Date"
+      },
+      "ACL": {
+        "type": "ACL"
+      },
+      "dateUnix": {
+        "type": "Number",
+        "required": false
+      },
+      "date": {
+        "type": "Date",
+        "required": false
+      },
+      "user": {
+        "type": "Pointer",
+        "targetClass": "_User",
+        "required": false
+      },
+      "diary": {
+        "type": "String",
+        "required": false
+      }
+    },
+    "classLevelPermissions": {
+      "find": {
+        "*": true
+      },
+      "count": {
+        "*": true
+      },
+      "get": {
+        "*": true
+      },
+      "create": {
+        "*": true
+      },
+      "update": {
+        "*": true
+      },
+      "delete": {
+        "*": true
+      },
+      "addField": {
+        "*": true
+      },
+      "protectedFields": {
+        "*": []
+      }
+    },
+    "indexes": {
+      "_id_": {
+        "_id": 1
+      }
+    }
+  },
+  {
+    "className": "scenarios",
+    "fields": {
+      "objectId": {
+        "type": "String"
+      },
+      "createdAt": {
+        "type": "Date"
+      },
+      "updatedAt": {
+        "type": "Date"
+      },
+      "ACL": {
+        "type": "ACL"
+      },
+      "name": {
+        "type": "String",
+        "required": false
+      },
+      "dateUnix": {
+        "type": "Number",
+        "required": false
+      },
+      "date": {
+        "type": "Date",
+        "required": false
+      },
+      "scenario": {
+        "type": "Object",
+        "required": false
+      },
+      "commissions": {
+        "type": "Object",
+        "required": false
+      },
+      "user": {
+        "type": "Pointer",
+        "targetClass": "_User",
+        "required": false
+      },
+      "duration": {
+        "type": "Number",
+        "required": false
+      }
+    },
+    "classLevelPermissions": {
+      "find": {
+        "*": true
+      },
+      "count": {
+        "*": true
+      },
+      "get": {
+        "*": true
+      },
+      "create": {
+        "*": true
+      },
+      "update": {
+        "*": true
+      },
+      "delete": {
+        "*": true
+      },
+      "addField": {
+        "*": true
+      },
+      "protectedFields": {
+        "*": []
+      }
+    },
+    "indexes": {
+      "_id_": {
+        "_id": 1
+      }
+    }
+  },
+  {
+    "className": "screenshots",
+    "fields": {
+      "objectId": {
+        "type": "String"
+      },
+      "createdAt": {
+        "type": "Date"
+      },
+      "updatedAt": {
+        "type": "Date"
+      },
+      "ACL": {
+        "type": "ACL"
+      },
+      "user": {
+        "type": "Pointer",
+        "targetClass": "_User",
+        "required": false
+      },
+      "side": {
+        "type": "String",
+        "required": false
+      },
+      "name": {
+        "type": "String",
+        "required": false
+      },
+      "originalBase64": {
+        "type": "String",
+        "required": false
+      },
+      "annotatedBase64": {
+        "type": "String",
+        "required": false
+      },
+      "originalUrl": {
+        "type": "String",
+        "required": false
+      },
+      "annotatedUrl": {
+        "type": "String",
+        "required": false
+      },
+      "r2KeyOriginal": {
+        "type": "String",
+        "required": false
+      },
+      "r2KeyAnnotated": {
+        "type": "String",
+        "required": false
+      },
+      "markersOnly": {
+        "type": "Boolean",
+        "required": false
+      },
+      "maState": {
+        "type": "Object",
+        "required": false
+      },
+      "symbol": {
+        "type": "String"
+      },
+      "date": {
+        "type": "Date"
+      },
+      "dateUnix": {
+        "type": "Number"
+      },
+      "dateUnixDay": {
+        "type": "Number"
+      }
+    },
+    "classLevelPermissions": {
+      "find": {
+        "*": true
+      },
+      "count": {
+        "*": true
+      },
+      "get": {
+        "*": true
+      },
+      "create": {
+        "*": true
+      },
+      "update": {
+        "*": true
+      },
+      "delete": {
+        "*": true
+      },
+      "addField": {
+        "*": true
+      },
+      "protectedFields": {
+        "*": []
+      }
+    },
+    "indexes": {
+      "_id_": {
+        "_id": 1
+      }
+    }
+  },
+  {
+    "className": "satisfactions",
+    "fields": {
+      "objectId": {
+        "type": "String"
+      },
+      "createdAt": {
+        "type": "Date"
+      },
+      "updatedAt": {
+        "type": "Date"
+      },
+      "ACL": {
+        "type": "ACL"
+      },
+      "user": {
+        "type": "Pointer",
+        "targetClass": "_User",
+        "required": false
+      },
+      "dateUnix": {
+        "type": "Number"
+      },
+      "tradeId": {
+        "type": "String"
+      },
+      "satisfaction": {
+        "type": "Boolean"
+      }
+    },
+    "classLevelPermissions": {
+      "find": {
+        "*": true
+      },
+      "count": {
+        "*": true
+      },
+      "get": {
+        "*": true
+      },
+      "create": {
+        "*": true
+      },
+      "update": {
+        "*": true
+      },
+      "delete": {
+        "*": true
+      },
+      "addField": {
+        "*": true
+      },
+      "protectedFields": {
+        "*": []
+      }
+    },
+    "indexes": {
+      "_id_": {
+        "_id": 1
+      }
+    }
+  },
+  {
+    "className": "tags",
+    "fields": {
+      "objectId": {
+        "type": "String"
+      },
+      "createdAt": {
+        "type": "Date"
+      },
+      "updatedAt": {
+        "type": "Date"
+      },
+      "ACL": {
+        "type": "ACL"
+      },
+      "user": {
+        "type": "Pointer",
+        "targetClass": "_User",
+        "required": false
+      },
+      "dateUnix": {
+        "type": "Number"
+      },
+      "tradeId": {
+        "type": "String"
+      },
+      "tags": {
+        "type": "Array"
+      }
+    },
+    "classLevelPermissions": {
+      "find": {
+        "*": true
+      },
+      "count": {
+        "*": true
+      },
+      "get": {
+        "*": true
+      },
+      "create": {
+        "*": true
+      },
+      "update": {
+        "*": true
+      },
+      "delete": {
+        "*": true
+      },
+      "addField": {
+        "*": true
+      },
+      "protectedFields": {
+        "*": []
+      }
+    },
+    "indexes": {
+      "_id_": {
+        "_id": 1
+      }
+    }
+  },
+  {
+    "className": "notes",
+    "fields": {
+      "objectId": {
+        "type": "String"
+      },
+      "createdAt": {
+        "type": "Date"
+      },
+      "updatedAt": {
+        "type": "Date"
+      },
+      "ACL": {
+        "type": "ACL"
+      },
+      "user": {
+        "type": "Pointer",
+        "targetClass": "_User",
+        "required": false
+      },
+      "dateUnix": {
+        "type": "Number"
+      },
+      "tradeId": {
+        "type": "String"
+      },
+      "note": {
+        "type": "string"
+      },
+      "reason": {
+        "type": "string"
+      }
+    },
+    "classLevelPermissions": {
+      "find": {
+        "*": true
+      },
+      "count": {
+        "*": true
+      },
+      "get": {
+        "*": true
+      },
+      "create": {
+        "*": true
+      },
+      "update": {
+        "*": true
+      },
+      "delete": {
+        "*": true
+      },
+      "addField": {
+        "*": true
+      },
+      "protectedFields": {
+        "*": []
+      }
+    },
+    "indexes": {
+      "_id_": {
+        "_id": 1
+      }
+    }
+  },
+  {
+    "className": "excursions",
+    "fields": {
+      "objectId": {
+        "type": "String"
+      },
+      "createdAt": {
+        "type": "Date"
+      },
+      "updatedAt": {
+        "type": "Date"
+      },
+      "ACL": {
+        "type": "ACL"
+      },
+      "user": {
+        "type": "Pointer",
+        "targetClass": "_User",
+        "required": false
+      },
+      "dateUnix": {
+        "type": "Number"
+      },
+      "tradeId": {
+        "type": "String"
+      },
+      "stopLoss": {
+        "type": "Number"
+      },
+      "maePrice": {
+        "type": "Number"
+      },
+      "mfePrice": {
+        "type": "Number"
+      }
+    },
+    "classLevelPermissions": {
+      "find": {
+        "*": true
+      },
+      "count": {
+        "*": true
+      },
+      "get": {
+        "*": true
+      },
+      "create": {
+        "*": true
+      },
+      "update": {
+        "*": true
+      },
+      "delete": {
+        "*": true
+      },
+      "addField": {
+        "*": true
+      },
+      "protectedFields": {
+        "*": []
+      }
+    },
+    "indexes": {
+      "_id_": {
+        "_id": 1
+      }
+    }
+  },
+  {
+    "className": "dayFiles",
+    "fields": {
+      "objectId": {
+        "type": "String"
+      },
+      "createdAt": {
+        "type": "Date"
+      },
+      "updatedAt": {
+        "type": "Date"
+      },
+      "ACL": {
+        "type": "ACL"
+      },
+      "user": {
+        "type": "Pointer",
+        "targetClass": "_User",
+        "required": false
+      },
+      "dateUnixDay": {
+        "type": "Number"
+      },
+      "url": {
+        "type": "String"
+      },
+      "key": {
+        "type": "String"
+      },
+      "filename": {
+        "type": "String"
+      },
+      "base64": {
+        "type": "String"
+      }
+    },
+    "classLevelPermissions": {
+      "find": {
+        "*": true
+      },
+      "count": {
+        "*": true
+      },
+      "get": {
+        "*": true
+      },
+      "create": {
+        "*": true
+      },
+      "update": {
+        "*": true
+      },
+      "delete": {
+        "*": true
+      },
+      "addField": {
+        "*": true
+      },
+      "protectedFields": {
+        "*": []
+      }
+    },
+    "indexes": {
+      "_id_": {
+        "_id": 1
+      }
+    }
+  }
 ]

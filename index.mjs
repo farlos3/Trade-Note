@@ -70,7 +70,7 @@ console.log(' -> Database URI ' + hiddenDatabaseURI)
 let tradenoteDatabase = process.env.TRADENOTE_DATABASE
 
 var app = express();
-app.use(express.json());
+app.use(express.json({ limit: '30mb' }));
 
 const port = process.env.TRADENOTE_PORT;
 const PROXY_PORT = 39482;
@@ -487,7 +487,7 @@ const setupApiRoutes = (app) => {
     
 
     
-    app.use(express.json());
+    app.use(express.json({ limit: '30mb' }));
 
     let allUsers
     const getAllUsers = async () => {

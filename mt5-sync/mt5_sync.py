@@ -158,8 +158,11 @@ def build_report_xlsx(account_login, server, deals):
         ts = dt.datetime.fromtimestamp(d.time, dt.timezone.utc).strftime("%Y.%m.%d %H:%M:%S")
         side = "buy" if d.type == mt5.DEAL_TYPE_BUY else "sell"
         direction = "in" if d.entry == mt5.DEAL_ENTRY_IN else "out"
+        # The "Order" column carries the MT5 position_id, so TradeNote can key each
+        # position as its own trade (two overlapping same-symbol positions would
+        # otherwise net into one). All deals of one position share position_id.
         ws.append([ts, str(d.ticket), d.symbol, side, direction,
-                   float(d.volume), float(d.price), str(d.order),
+                   float(d.volume), float(d.price), str(d.position_id),
                    float(d.commission), float(d.fee), float(d.swap),
                    float(d.profit), 0, d.comment or ""])
 

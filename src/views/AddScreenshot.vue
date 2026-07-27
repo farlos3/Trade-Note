@@ -35,6 +35,13 @@ onBeforeMount(async () => {
     await (spinnerLoadingPage.value = false)
 })
 currentDate.value = dayjs().tz(timeZoneTrade.value).format("YYYY-MM-DD HH:mm")
+
+// Escape a running/stuck upload: the form is hidden behind the spinner, so this
+// stops waiting and returns to the list (the in-flight request is abandoned).
+function cancelUpload() {
+    spinnerLoadingPage.value = false
+    window.location.href = '/screenshots'
+}
 //console.log(" current page id " + pageId.value)
 //console.log(" screenshot "+JSON.stringify(screenshot))
 let setupType = [{
@@ -128,6 +135,10 @@ async function getScreenshotToEdit(param) {
 </script>
 <template>
     <SpinnerLoadingPage />
+    <!-- Visible while uploading so a stuck/slow upload can be cancelled -->
+    <div v-show="spinnerLoadingPage" class="text-center mt-4">
+        <button type="button" class="btn btn-outline-secondary btn-sm" v-on:click="cancelUpload">Cancel</button>
+    </div>
     <div v-show="!spinnerLoadingPage">
         <div class="row mt-3 mb-3">
             <div class="col-12 mb-2">
@@ -201,7 +212,8 @@ async function getScreenshotToEdit(param) {
             </div>
         </div>
         <div class="mt-3">
-            <input type="file" @change="useSetupImageUpload" />
+            <input type="file" accept="image/*" multiple @change="useSetupImageUpload" />
+            <small class="d-block mt-1 text-muted">You can select several images at once (e.g. before / after) — all upload to this order.</small>
         </div>
         <Screenshot v-if="screenshot.originalBase64" :screenshot-data="screenshot" source="addScreenshot" />
 

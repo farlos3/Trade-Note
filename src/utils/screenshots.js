@@ -183,8 +183,13 @@ async function imgFileReader(param) {
     })
 }
 
+// Files picked in the file input — kept so Submit can upload several at once
+// (e.g. before/after). files[0] drives the on-screen preview as before.
+let pendingScreenshotFiles = []
+
 export async function useSetupImageUpload(event, param1, param2, param3) {
     tradeScreenshotChanged.value = true
+    pendingScreenshotFiles = Array.from((event.target && event.target.files) || [])
     if (pageId.value == "daily") {
         saveButton.value = true
         dateScreenshotEdited.value = true
@@ -386,6 +391,28 @@ export function useExpandScreenshot(param1, param2) {
     }
 }
 
+/* Upload every picked file as its own screenshot, sharing the form's date /
+   symbol / side. Each becomes a separate document (so before/after both attach to
+   the trade). Navigation is suppressed per-file and done once at the end. */
+async function uploadPendingScreenshots() {
+    spinnerLoadingPage.value = true
+    const base = { type: screenshot.type, date: screenshot.date, symbol: screenshot.symbol, side: screenshot.side }
+    const files = pendingScreenshotFiles.slice()
+    for (const file of files) {
+        for (const k in screenshot) delete screenshot[k]   // fresh doc per file
+        Object.assign(screenshot, base)
+        await imgFileReader(file)                            // sets originalBase64 etc.
+        screenshot.dateUnix = dayjs.tz(screenshot.date, timeZoneTrade.value).unix()
+        screenshot.side
+            ? screenshot.name = "t" + screenshot.dateUnix + "_" + screenshot.symbol + "_" + screenshot.side
+            : screenshot.name = screenshot.dateUnix + "_" + screenshot.symbol
+        await useUploadScreenshotToParse(true)               // skipNav
+    }
+    pendingScreenshotFiles = []
+    spinnerLoadingPage.value = false
+    window.location.href = "/screenshots"
+}
+
 export async function useSaveScreenshot() {
     console.log("\nSAVING SCREENSHOT")
     //console.log(" -> Setup to save " + JSON.stringify(screenshot))
@@ -408,6 +435,13 @@ export async function useSaveScreenshot() {
                 alert("Please add a screenshot")
                 return
             }
+        }
+
+        // Several files picked -> upload them all (before/after, etc.), then leave.
+        if (pageId.value == "addScreenshot" && !editingScreenshot.value && pendingScreenshotFiles.length > 1) {
+            await uploadPendingScreenshots()
+            resolve()
+            return
         }
 
         if (pageId.value == "addScreenshot") {
@@ -455,9 +489,16 @@ export async function useSaveScreenshot() {
 async function resolveScreenshotImages() {
     const result = { useR2: false }
 
+    // Human-readable, order-specific filename: symbol + the trade's date-time +
+    // side (e.g. XAUUSD_2026-07-27_133851_B). The server appends a short UUID so
+    // two shots of the same order never collide. This is only the R2 file name;
+    // `screenshot.name` (which links a shot to its trade) is left unchanged.
+    const stamp = dayjs.unix(screenshot.dateUnix).tz(timeZoneTrade.value).format('YYYY-MM-DD_HHmmss')
+    const orderKey = `${(screenshot.symbol || 'trade')}_${stamp}${screenshot.side ? '_' + screenshot.side : ''}`
+
     // ORIGINAL
     if (typeof screenshot.originalBase64 === 'string' && screenshot.originalBase64.startsWith('data:')) {
-        const up = await useUploadImageToR2(screenshot.originalBase64, 'orig_' + (screenshot.name || screenshot.dateUnix))
+        const up = await useUploadImageToR2(screenshot.originalBase64, orderKey + '_orig')
         if (up) { result.originalUrl = up.url; result.r2KeyOriginal = up.key; result.useR2 = true }
     } else if (useIsRemoteImage(screenshot.originalUrl)) {
         result.originalUrl = screenshot.originalUrl; result.r2KeyOriginal = screenshot.r2KeyOriginal; result.useR2 = true
@@ -465,7 +506,7 @@ async function resolveScreenshotImages() {
 
     // ANNOTATED
     if (typeof screenshot.annotatedBase64 === 'string' && screenshot.annotatedBase64.startsWith('data:')) {
-        const up = await useUploadImageToR2(screenshot.annotatedBase64, 'annot_' + (screenshot.name || screenshot.dateUnix))
+        const up = await useUploadImageToR2(screenshot.annotatedBase64, orderKey + '_annot')
         if (up) {
             // Replacing a previous annotation -> clean up the old object
             if (screenshot.r2KeyAnnotated && screenshot.r2KeyAnnotated !== up.key) {
@@ -494,7 +535,7 @@ function applyImageFields(obj, r2) {
     }
 }
 
-export async function useUploadScreenshotToParse() {
+export async function useUploadScreenshotToParse(skipNav = false) {
     return new Promise(async (resolve, reject) => {
         console.log(" -> Uploading to database")
 
@@ -570,7 +611,7 @@ export async function useUploadScreenshotToParse() {
             object.save()
                 .then(async (object) => {
                     console.log('  --> Added new screenshot with id ' + object.id)
-                    if (pageId.value == "addScreenshot") {
+                    if (pageId.value == "addScreenshot" && !skipNav) {
                         window.location.href = "/screenshots"
                     }
                     if (pageId.value == "daily") {
