@@ -3138,6 +3138,9 @@ export const tradeTagsId = ref()
 export const tradeTagsDateUnix = ref()
 export const availableTagsArray = reactive([])
 
+//DAY FILES (e.g. a PDF summarising a whole trading day, not one order)
+export const dayFiles = reactive([])
+
 //NOTES
 export const notes = reactive([])
 export const tradeNote = ref(null)

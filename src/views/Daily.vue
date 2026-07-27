@@ -17,6 +17,15 @@ import { useGetExcursions, useGetTags, useGetAvailableTags, useUpdateAvailableTa
 import { useCandlestickChart } from '../utils/charts';
 
 import { useGetMFEPrices } from '../utils/addTrades';
+import { dayFiles } from '../stores/globals';
+import { useUploadDayFile, useDeleteDayFile, useGetDayFiles, useDayFileFor } from '../utils/dayFiles';
+
+// Day-summary file (whole-day PDF): read the picked file and upload it for the day.
+async function onDayFileChange(event, dateUnixDay) {
+    const file = event.target && event.target.files && event.target.files[0]
+    if (file) await useUploadDayFile(file, dateUnixDay)
+    if (event.target) event.target.value = ''
+}
 
 /* MODULES */
 import Parse from 'parse/dist/parse.min.js'
@@ -83,6 +92,7 @@ onBeforeMount(async () => {
 })
 onMounted(async () => {
     await useMountDaily()
+    await useGetDayFiles()
     await useInitTooltip()
     useCreateAvailableTagsArray()
 
@@ -812,6 +822,22 @@ function getOHLC(date, symbol, type) {
                                                     data-bs-toggle="modal" data-bs-target="#tagsModal"
                                                     :data-index="index" class="ms-2 uil uil-tag-alt pointerClass"></i>
 
+                                                <!-- Whole-day summary file (e.g. a PDF across all orders) -->
+                                                <span class="ms-3 txt-small">
+                                                    <template v-if="useDayFileFor(itemTrade.dateUnix)">
+                                                        <a :href="useDayFileFor(itemTrade.dateUnix).url || useDayFileFor(itemTrade.dateUnix).base64"
+                                                            target="_blank" rel="noopener" class="pointerClass"
+                                                            title="Open day summary"><i class="uil uil-file-alt me-1"></i>{{ useDayFileFor(itemTrade.dateUnix).filename }}</a>
+                                                        <i class="uil uil-trash-alt ms-1 pointerClass" title="Delete day summary"
+                                                            v-on:click="useDeleteDayFile(useDayFileFor(itemTrade.dateUnix).objectId)"></i>
+                                                    </template>
+                                                    <label v-else class="pointerClass mb-0" title="Upload a PDF summarising the whole day">
+                                                        <i class="uil uil-file-upload-alt me-1"></i>Day summary
+                                                        <input type="file" accept="application/pdf,.pdf,image/*" class="d-none"
+                                                            @change="onDayFileChange($event, itemTrade.dateUnix)" />
+                                                    </label>
+                                                </span>
+
                                             </div>
                                             <div class="col-12 col-lg-auto ms-auto">P&L({{ selectedGrossNet.charAt(0)
                                                 }}):
@@ -960,10 +986,6 @@ function getOHLC(date, symbol, type) {
                                                             </th>
                                                             <th scope="col">Position</th>
                                                             <th scope="col">Entry</th>
-                                                            <th scope="col">P&L/Sec<i class="ps-1 uil uil-info-circle"
-                                                                    data-bs-toggle="tooltip"
-                                                                    data-bs-title="Profit&Loss per unit of security traded (baught or shorted)"></i>
-                                                            </th>
                                                             <th scope="col">P&L(n)</th>
                                                             <th scope="col">Tags</th>
                                                             <th scope="col">Note</th>
@@ -1015,15 +1037,6 @@ function getOHLC(date, symbol, type) {
                                                             </td>
 
                                                             <!--P&L/Vol-->
-                                                            <td>
-                                                                <span v-if="trade.tradesCount == 0"></span><span
-                                                                    v-else-if="trade.type == 'forex'">-</span><span
-                                                                    v-else
-                                                                    v-bind:class="[trade.grossSharePL > 0 ? 'greenTrade' : 'redTrade']">{{
-                                                                        useTwoDecCurrencyFormat(trade.grossSharePL)
-                                                                    }}</span>
-                                                            </td>
-
                                                             <!--P&L-->
                                                             <td>
                                                                 <span v-if="trade.tradesCount == 0"></span><span v-else

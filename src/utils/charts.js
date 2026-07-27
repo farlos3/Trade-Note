@@ -318,11 +318,11 @@ export function useDoubleLineChart(param1, param2, param3, param4) { //chartID, 
                     params.forEach((element, index) => {
                         //console.log('element ' + JSON.stringify(element))
                         if (index == 0) {
-                            gross = element.value.toFixed(0) + "$"
+                            gross = element.value.toFixed(2) + "$"
                             time = element.name
                         }
                         if (index == 1) {
-                            net = element.value.toFixed(0) + "$"
+                            net = element.value.toFixed(2) + "$"
                         }
                     });
                     //console.log("params "+JSON.stringify(params[0][0]))
@@ -592,7 +592,11 @@ export function usePieChart(param1, param2, param3) { //chart ID, green, red, pa
     return new Promise((resolve, reject) => {
         //console.log("  --> " + param1)
         //console.log("para 2 " + param2 + " and 3 " + param3)
-        let myChart = echarts.init(document.getElementById(param1));
+        // The dashboard win-rate / satisfaction donuts were removed from the DOM,
+        // so their container may not exist — skip instead of echarts.init(null).
+        const pieEl = document.getElementById(param1)
+        if (!pieEl) { resolve(); return }
+        let myChart = echarts.init(pieEl);
         let green = param2
         let red = param3
         const option = {

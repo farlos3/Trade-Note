@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted } from 'vue';
 import { selectedItem, modalDailyTradeOpen, pageId, tags, notes } from '../stores/globals';
-import { useSetupMarkerArea, useSelectedScreenshotFunction } from '../utils/screenshots';
+import { useSetupMarkerArea, useSelectedScreenshotFunction, useDeleteScreenshot } from '../utils/screenshots';
 import { useHourMinuteFormat, useTimeFormat, useEditItem, useCreatedDateFormat } from '../utils/utils';
 import { useGetTagInfo, useSaveTradeNote } from '../utils/daily';
 
@@ -25,6 +25,15 @@ onMounted(() => {
         principle.value = n ? (n.note || '') : ''
     }
 })
+
+// Delete straight from a confirm() instead of a Bootstrap popover: the popover
+// isn't initialised on content that renders later (e.g. inside the full-screen /
+// daily modal), so its "Yes" never appeared and the image couldn't be deleted.
+async function confirmDeleteScreenshot() {
+    if (!window.confirm('Delete this screenshot? This cannot be undone.')) return
+    selectedItem.value = props.screenshotData.objectId
+    await useDeleteScreenshot()
+}
 
 async function savePrinciple() {
     if (principleSaving.value) return
@@ -106,10 +115,8 @@ async function savePrinciple() {
 
                     <!-- Delete -->
                     <i v-if="props.screenshotData.objectId && props.source != 'addScreenshot'"
-                        v-on:click="selectedItem = props.screenshotData.objectId"
-                        class="ps-2 uil uil-trash-alt popoverDelete pointerClass" data-bs-html="true"
-                        data-bs-content="<div>Are you sure?</div><div class='text-center'><a type='button' class='btn btn-red btn-sm popoverYes'>Yes</a><a type='button' class='btn btn-outline-secondary btn-sm ms-2 popoverNo'>No</a></div>"
-                        data-bs-toggle="popover" data-bs-placement="left"></i>
+                        v-on:click="confirmDeleteScreenshot()"
+                        class="ps-2 uil uil-trash-alt pointerClass"></i>
                 </div>
             </div>
         </div>
@@ -117,7 +124,8 @@ async function savePrinciple() {
     </div>
 
     <!-- SCREENSHOTS -->
-    <div :class="[pageId === 'addScreenshot' ? 'imgContainerAddScreenshot' : 'imgContainer']">
+    <div :class="[pageId === 'addScreenshot' ? 'imgContainerAddScreenshot' : 'imgContainer',
+        (props.source !== 'fullScreen' && pageId !== 'addScreenshot') ? 'imgContainerPreview' : '']">
         <img :id="props.screenshotData.objectId ? 'screenshotDiv-' + props.source + '-' + props.screenshotData.objectId : 'screenshotDiv-' + props.source + '-' + props.screenshotData.dateUnix"
             class="screenshotImg mt-3 img-fluid"
             v-bind:src="props.screenshotData.originalUrl || props.screenshotData.originalBase64" />
@@ -179,5 +187,18 @@ async function savePrinciple() {
     border-color: var(--border-strong, rgba(255, 255, 255, 0.24));
     color: var(--white-87, rgba(255, 255, 255, 0.87));
     box-shadow: none;
+}
+
+/* Constrain the inline preview (Screenshots list / Daily tab) so a tall image
+   doesn't fill the whole page. The full-screen modal is exempt — it stays large. */
+.imgContainerPreview {
+    height: auto !important;
+    max-height: 460px;
+}
+
+.imgContainerPreview :deep(.screenshotImg) {
+    max-height: 460px;
+    width: auto;
+    max-width: 100%;
 }
 </style>

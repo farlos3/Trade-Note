@@ -349,7 +349,12 @@ export async function useImportTrades(param1, param2, param3, param0) {
             
             await getOpenPositionsParse(param2, param0)
             await createTrades()
-            await filterExisting("trades")
+            // API (MT5 sync) re-sends the full window every run and upserts each
+            // day (see useUploadTrades), so DON'T drop already-imported days here —
+            // dropping them by dateUnix loses later same-day trades (a 2nd/3rd trade
+            // on a day that was first imported with only one). Manual imports still
+            // dedup to avoid re-adding a file you already uploaded.
+            if (param2 !== "api") await filterExisting("trades")
             await useCreateBlotter()
             await useCreatePnL()
 
@@ -417,6 +422,10 @@ async function createTempExecutions() {
                 let temp2 = {};
                 temp2.account = tradesData[key].Account
                 temp2.broker = selectedBroker.value
+                // Carried through to the trade grouping so MT5 keys each position
+                // as its own trade (see createTrades' groupBy). Empty for brokers
+                // that don't supply it — their grouping is unchanged.
+                temp2.positionId = tradesData[key].PositionId || ""
                 if (!tradeAccounts.includes(tradesData[key].Account)) tradeAccounts.push(tradesData[key].Account)
                 /*usDate = dayjs.tz("07/22/2021 00:00:00", 'MM/DD/YYYY 00:00:00', "UTC")
                 //frDate = usDate.tz("Europe/Paris")
@@ -959,7 +968,10 @@ async function createTrades() {
         var b = _
             .chain(tempExecutions)
             .orderBy(["execTime"], ["asc"])
-            .groupBy(item => `"${item.symbol}+${item.type}+${item.strategy}+${item.td}"`);
+            // Include positionId so MT5 keeps each broker position as its own trade
+            // (two overlapping same-symbol positions won't net into one). For brokers
+            // that don't supply it, positionId is '' and grouping is unchanged.
+            .groupBy(item => `"${item.symbol}+${item.type}+${item.strategy}+${item.td}+${item.positionId || ''}"`);
 
         let objectB = JSON.parse(JSON.stringify(b))
         //console.log("object b "+JSON.stringify(objectB))
@@ -2024,6 +2036,18 @@ export async function useUploadTrades(param99, param0) {
             if (param99 === "api") {
                 let ParseNode = param0
                 parseObject = ParseNode.Object.extend(param2);
+                // Replace the day: destroy any existing document(s) for this day, then
+                // create a fresh one with the full current set of trades. The sync
+                // always sends the complete window, so the incoming day is
+                // authoritative — this makes re-imports pick up extra same-day trades
+                // (a 2nd/3rd trade on a day first imported with one) and never
+                // duplicates a day. Delete-then-create avoids stale-object update
+                // errors ("Object not found").
+                const existingQuery = new ParseNode.Query(parseObject);
+                existingQuery.equalTo("user", { "__type": "Pointer", "className": "_User", "objectId": currentUser.value.objectId })
+                existingQuery.equalTo("dateUnix", Number(param1))
+                const existingDocs = await existingQuery.find({ useMasterKey: true })
+                if (existingDocs.length) await ParseNode.Object.destroyAll(existingDocs, { useMasterKey: true })
                 object = new parseObject();
                 object.set("user", { "__type": "Pointer", "className": "_User", "objectId": currentUser.value.objectId })
             } else {
@@ -2069,6 +2093,9 @@ export async function useUploadTrades(param99, param0) {
                 }, (error) => {
                     console.log('Failed to create new trade, with error code: ' + error.message);
                     spinnerLoadingPage.value = false
+                    // Settle the promise so useUploadTrades doesn't hang forever and
+                    // the /api/trades request can respond (was causing a 120s timeout).
+                    reject(error)
                 });
         })
     }
