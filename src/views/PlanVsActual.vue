@@ -20,6 +20,11 @@ const months = computed(() => {
 const target = computed(() => numOrNull(activePlan.value.dailyPct))
 const startDate = computed(() => activePlan.value.startDate)
 const deposits = computed(() => activePlan.value.deposits)
+const withdrawals = computed(() => activePlan.value.withdrawals || [])
+const tiers = computed(() => activePlan.value.tiers || [])
+const hasTiers = computed(() =>
+    tiers.value.some((t) => t && t.pct !== '' && t.pct != null && Number.isFinite(Number(t.pct))),
+)
 
 /* ---- Real per-day P&L from the journal ---- */
 const PERIODS = [
@@ -105,8 +110,9 @@ const actualProjection = computed(() =>
 
 /** The plan's own projection, for a side-by-side comparison. */
 const targetProjection = computed(() =>
-    start.value > 0 && months.value && target.value != null
-        ? buildProjection(start.value, target.value, months.value, deposits.value, startDate.value)
+    start.value > 0 && months.value && (target.value != null || hasTiers.value)
+        ? buildProjection(start.value, target.value == null ? 0 : target.value,
+            months.value, deposits.value, startDate.value, tiers.value, withdrawals.value)
         : null,
 )
 

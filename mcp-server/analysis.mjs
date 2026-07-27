@@ -19,6 +19,10 @@ export function flattenTrades(dayDocs) {
   for (const day of dayDocs || []) {
     const arr = Array.isArray(day.trades) ? day.trades : []
     for (const t of arr) {
+      // Skip still-open positions: no exit, no realised P&L. Counting them would
+      // add a phantom "traded day" with $0 net (matches the dashboard, which
+      // ignores them too).
+      if (t.openPosition) continue
       const net = t.netProceeds != null ? num(t.netProceeds) : num(t.grossProceeds)
       out.push({
         id: t.id ?? null,

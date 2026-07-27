@@ -80,51 +80,100 @@ export function tradingDaysElapsed(fromDate) {
  * Returns `contributed` (start + deposits applied) so profit can exclude
  * money you paid in — otherwise deposits would masquerade as trading gains.
  */
-export function buildProjection(start, pctPerDay, months, deposits = [], fromDate) {
-    const r = pctPerDay / 100
+/**
+ * Turn tiered daily rates into a function balance -> rate. The flat `pctPerDay`
+ * is the STARTING rate; each tier `{ from, pct }` steps the rate to `pct` %/day
+ * once the balance reaches `from`. The highest `from` at or below the balance
+ * wins, so tiers read as "when the account reaches $X, switch to Y%/day"
+ * (e.g. start 5%/day, from $5,000 -> 3%, from $10,000 -> 1%). Below the first
+ * `from` the flat rate applies. With no usable tiers it's just the flat rate.
+ */
+export function tierRateResolver(pctPerDay, tiers) {
+    const list = (Array.isArray(tiers) ? tiers : [])
+        .map((t) => ({
+            from: t.from === '' || t.from == null ? null : Number(t.from),
+            pct: Number(t.pct),
+        }))
+        .filter((t) => Number.isFinite(t.pct) && t.from !== null && Number.isFinite(t.from))
+        .sort((a, b) => a.from - b.from)
+    // Below the first threshold: the flat target; if that's blank, the first tier.
+    const base = Number.isFinite(pctPerDay) ? pctPerDay / 100 : (list.length ? list[0].pct / 100 : 0)
+    if (!list.length) return () => base
+    return (balance) => {
+        let rate = base
+        for (const t of list) {
+            if (balance >= t.from) rate = t.pct / 100
+            else break
+        }
+        return rate
+    }
+}
+
+export function buildProjection(start, pctPerDay, months, deposits = [], fromDate, tiers = [], withdrawals = []) {
+    const rateAt = tierRateResolver(pctPerDay, tiers)
     const startDay = anchorOf(fromDate)
     const end = startDay.add(months, 'month')
 
-    // Bucket deposits onto the trading day each one lands on.
-    const byDate = new Map()
-    let ignoredDeposited = 0
-    for (const d of deposits || []) {
-        if (!d || !(Number(d.amount) > 0) || !d.date) continue
-        let dd = dayjs(d.date)
-        if (!dd.isValid()) continue
-        dd = dd.startOf('day')
-        if (dd.isBefore(startDay, 'day')) dd = startDay // before the plan starts -> day 1
-        if (dd.isAfter(end, 'day')) { ignoredDeposited += Number(d.amount); continue } // past the horizon
-        while (dd.day() === 0 || dd.day() === 6) dd = dd.add(1, 'day') // weekend -> next open day
-        const key = dd.format('YYYY-MM-DD')
-        byDate.set(key, (byDate.get(key) || 0) + Number(d.amount))
+    // Bucket cash movements onto the trading day each one lands on. Deposits and
+    // withdrawals share the same date rules (weekend -> next open day, before the
+    // start -> day 1, after the horizon -> ignored).
+    const bucket = (items) => {
+        const map = new Map()
+        let ignored = 0
+        for (const it of items || []) {
+            if (!it || !(Number(it.amount) > 0) || !it.date) continue
+            let dd = dayjs(it.date)
+            if (!dd.isValid()) continue
+            dd = dd.startOf('day')
+            if (dd.isBefore(startDay, 'day')) dd = startDay
+            if (dd.isAfter(end, 'day')) { ignored += Number(it.amount); continue }
+            while (dd.day() === 0 || dd.day() === 6) dd = dd.add(1, 'day')
+            const key = dd.format('YYYY-MM-DD')
+            map.set(key, (map.get(key) || 0) + Number(it.amount))
+        }
+        return { map, ignored }
     }
+    const { map: byDate, ignored: ignoredDeposited } = bucket(deposits)
+    const { map: wdByDate, ignored: ignoredWithdrawn } = bucket(withdrawals)
 
     let bal = start
     let n = 0
     let deposited = 0
+    let withdrawn = 0
     const days = []
 
     let cur = startDay
     while (!cur.isAfter(end, 'day')) {
         const dow = cur.day() // 0 = Sun, 6 = Sat -> market closed, no compounding
         if (dow !== 0 && dow !== 6) {
+            const key = cur.format('YYYY-MM-DD')
             const opening = bal
-            const dep = byDate.get(cur.format('YYYY-MM-DD')) || 0
+            const dep = byDate.get(key) || 0
             if (dep) deposited += dep
-            const profit = (opening + dep) * r
-            bal = opening + dep + profit
+            // Rate can depend on the day's balance (tiered plans step it down as
+            // the account grows); flat plans return the same rate every day.
+            const profit = (opening + dep) * rateAt(opening + dep)
+            const afterProfit = opening + dep + profit
+            // Withdrawals come out after the day's profit; never take out more than
+            // is there (a plan can't go negative from a scheduled withdrawal).
+            let wd = wdByDate.get(key) || 0
+            if (wd > afterProfit) wd = Math.max(afterProfit, 0)
+            if (wd) withdrawn += wd
+            bal = afterProfit - wd
             n++
             days.push({
                 n,
-                date: cur.format('YYYY-MM-DD'),
+                date: key,
                 weekday: cur.format('ddd'),
                 opening,
                 deposit: dep,
                 profit,
+                withdrawal: wd,
                 closing: bal,
                 contributed: start + deposited,
-                cumulativeReturnPct: ((bal - start - deposited) / (start + deposited)) * 100,
+                // Gain keeps money already withdrawn in the numerator — it was profit
+                // you took out, not capital lost.
+                cumulativeReturnPct: ((bal + withdrawn - start - deposited) / (start + deposited)) * 100,
             })
         }
         cur = cur.add(1, 'day')
@@ -136,10 +185,13 @@ export function buildProjection(start, pctPerDay, months, deposits = [], fromDat
         finalBalance: bal,
         deposited,
         ignoredDeposited,
+        withdrawn,
+        ignoredWithdrawn,
         contributed,
-        // Trading gain only — the money you paid in is not profit.
-        profit: bal - contributed,
-        totalReturnPct: contributed > 0 ? ((bal - contributed) / contributed) * 100 : 0,
+        // Trading gain only: money paid in isn't profit, money taken out still counts
+        // as gain (final balance + what you withdrew, less what you contributed).
+        profit: bal + withdrawn - contributed,
+        totalReturnPct: contributed > 0 ? ((bal + withdrawn - contributed) / contributed) * 100 : 0,
         days,
     }
 }
@@ -156,6 +208,7 @@ export function rollup(days, granularity) {
             tradingDays: 1,
             opening: d.opening,
             deposit: d.deposit || 0,
+            withdrawal: d.withdrawal || 0,
             profit: d.profit,
             closing: d.closing,
             cumulativeReturnPct: d.cumulativeReturnPct,
@@ -174,14 +227,17 @@ export function rollup(days, granularity) {
         const first = g[0]
         const last = g[g.length - 1]
         const depositInPeriod = g.reduce((s, d) => s + (d.deposit || 0), 0)
+        const withdrawalInPeriod = g.reduce((s, d) => s + (d.withdrawal || 0), 0)
         return {
             n: last.n,
             label: granularity === 'monthly' ? last.date.slice(0, 7) : `${first.date} → ${last.date}`,
             tradingDays: g.length,
             opening: first.opening,
             deposit: depositInPeriod,
-            // Trading gain only — deposits already accounted for separately.
-            profit: last.closing - first.opening - depositInPeriod,
+            withdrawal: withdrawalInPeriod,
+            // Trading gain only — deposits/withdrawals accounted for separately
+            // (add the withdrawal back: it left the balance but was still profit).
+            profit: last.closing - first.opening - depositInPeriod + withdrawalInPeriod,
             closing: last.closing,
             cumulativeReturnPct: last.cumulativeReturnPct,
         }
@@ -251,17 +307,19 @@ export function pipsRealismVerdict(pipsPerDay) {
  * time), so solve numerically instead — final balance is strictly increasing in
  * r, which makes bisection safe and exact to the tolerance.
  */
-export function requiredPctPerDay(start, goal, months, deposits = [], fromDate) {
+export function requiredPctPerDay(start, goal, months, deposits = [], fromDate, withdrawals = []) {
     if (!(start > 0) || !(goal > 0) || !months) return null
 
-    const hasDeposits = Array.isArray(deposits) && deposits.some((d) => d && Number(d.amount) > 0 && d.date)
-    if (!hasDeposits) {
+    const hasCashFlow = (arr) => Array.isArray(arr) && arr.some((x) => x && Number(x.amount) > 0 && x.date)
+    // The closed form only holds with no mid-way cash flows; any deposit or
+    // withdrawal breaks it, so solve numerically in that case.
+    if (!hasCashFlow(deposits) && !hasCashFlow(withdrawals)) {
         const days = tradingDaysAhead(months, fromDate)
         if (!days) return null
         return (Math.pow(goal / start, 1 / days) - 1) * 100
     }
 
-    const finalAt = (pct) => buildProjection(start, pct, months, deposits, fromDate).finalBalance
+    const finalAt = (pct) => buildProjection(start, pct, months, deposits, fromDate, [], withdrawals).finalBalance
     // Deposits alone may already clear the goal -> 0%/day (or less) suffices.
     if (finalAt(0) >= goal) return 0
 

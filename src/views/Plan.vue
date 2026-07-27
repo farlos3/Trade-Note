@@ -3,8 +3,9 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import PlanSelector from '../components/PlanSelector.vue'
 import PlanDepositsEditor from '../components/PlanDepositsEditor.vue'
+import PlanWithdrawalsEditor from '../components/PlanWithdrawalsEditor.vue'
 import FpDate from '../components/FpDate.vue'
-import { activePlan } from '../utils/planStore'
+import { activePlan, addTier, removeTier } from '../utils/planStore'
 import {
     numOrNull, buildProjection, rollup, requiredPctPerDay, realismVerdict,
     calendarWeeksAhead, equivalentPctForNDays, dollarsToPips, pipsRealismVerdict,
@@ -23,16 +24,24 @@ const target = computed(() => numOrNull(activePlan.value.dailyPct))
 const goal = computed(() => numOrNull(activePlan.value.goalBalance))
 const startDate = computed(() => activePlan.value.startDate)
 const deposits = computed(() => activePlan.value.deposits)
+const withdrawals = computed(() => activePlan.value.withdrawals || [])
+
+// Optional stepped daily target (lower the %/day as the account grows).
+const tiers = computed(() => activePlan.value.tiers || [])
+const hasTiers = computed(() =>
+    tiers.value.some((t) => t && t.pct !== '' && t.pct != null && Number.isFinite(Number(t.pct))),
+)
 
 const projection = computed(() =>
-    start.value > 0 && months.value && target.value != null
-        ? buildProjection(start.value, target.value, months.value, deposits.value, startDate.value)
+    start.value > 0 && months.value && (target.value != null || hasTiers.value)
+        ? buildProjection(start.value, target.value == null ? 0 : target.value,
+            months.value, deposits.value, startDate.value, tiers.value, withdrawals.value)
         : null,
 )
 
 const goalSeek = computed(() => {
     if (!(start.value > 0) || !(goal.value > 0) || !months.value) return null
-    const p = requiredPctPerDay(start.value, goal.value, months.value, deposits.value, startDate.value)
+    const p = requiredPctPerDay(start.value, goal.value, months.value, deposits.value, startDate.value, withdrawals.value)
     if (p == null) return null
     const days = projection.value ? projection.value.tradingDays
         : buildProjection(start.value, 0, months.value, deposits.value, startDate.value).tradingDays
@@ -117,6 +126,10 @@ let chart = null
 
 function renderChart() {
     if (!chartEl.value || !projection.value) return
+    // Re-init if a prior instance is bound to a replaced/detached DOM node
+    // (v-if recreated the div, or HMR left an orphaned instance) — otherwise
+    // echarts draws into the old node and the visible box stays blank.
+    if (chart && chart.getDom() !== chartEl.value) { chart.dispose(); chart = null }
     if (!chart) chart = echarts.init(chartEl.value)
     const days = projection.value.days
 
@@ -172,7 +185,9 @@ function renderChart() {
             },
         }],
     }, true)
-    chart.resize()
+    // Resize after layout settles — a resize while the container is still 0-sized
+    // (mid reactive flush / just-created by v-if) would leave the canvas blank.
+    requestAnimationFrame(() => chart && chart.resize())
 }
 
 const onResize = () => chart && chart.resize()
@@ -239,6 +254,11 @@ watch(projection, async (p) => {
             <PlanDepositsEditor :plan="activePlan" />
         </div>
 
+        <!-- ---------- Withdrawals (ad-hoc, with a note) ---------- -->
+        <div class="planCard mb-3">
+            <PlanWithdrawalsEditor :plan="activePlan" />
+        </div>
+
         <!-- ---------- Target projection ---------- -->
         <div class="planCard mb-3">
             <div class="planCardHead">
@@ -247,6 +267,35 @@ watch(projection, async (p) => {
                     <label class="planLabel mb-0">Target % per day</label>
                     <input type="number" step="0.1" placeholder="e.g. 1" class="form-control form-control-sm"
                         v-model="activePlan.dailyPct" />
+                </div>
+            </div>
+
+            <!-- Optional: step the daily % down as the balance grows -->
+            <div class="tierBlock mt-2">
+                <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-1">
+                    <span class="txt-small text-muted">
+                        <i class="uil uil-layer-group me-1"></i>Step the daily % down as the balance grows
+                        (optional) — start at the Target % above, then e.g. from $5,000 → 3%/day, from $10,000 → 1%/day.
+                    </span>
+                    <button type="button" class="btn btn-sm btn-outline-secondary"
+                        v-on:click="addTier(activePlan)">+ Add step</button>
+                </div>
+                <div v-if="tiers.length" class="tierRows">
+                    <div v-for="t in tiers" :key="t.id" class="tierRow">
+                        <span class="tierLabel">When balance reaches</span>
+                        <input type="number" step="100" placeholder="e.g. 10000"
+                            class="form-control form-control-sm tierNum" v-model="t.from" />
+                        <span class="tierLabel">switch to</span>
+                        <input type="number" step="0.1" placeholder="%/day"
+                            class="form-control form-control-sm tierNum" v-model="t.pct" />
+                        <span class="tierLabel">%/day</span>
+                        <i class="uil uil-trash-alt pointerClass tierDel"
+                            v-on:click="removeTier(activePlan, t.id)"></i>
+                    </div>
+                    <p class="txt-small text-muted mb-0" v-if="hasTiers">
+                        Below the first level the flat "Target % per day" applies; each level switches
+                        the rate once the balance reaches it.
+                    </p>
                 </div>
             </div>
 
@@ -269,6 +318,14 @@ watch(projection, async (p) => {
                             +{{ fmt(projection.ignoredDeposited) }} outside horizon, ignored
                         </div>
                         <div class="statSub" v-else>added on top of principal</div>
+                    </div>
+                    <div class="statTile" v-if="projection.withdrawn > 0">
+                        <div class="statLabel">Withdrawn</div>
+                        <div class="statValue redTrade">−{{ fmt(projection.withdrawn) }}</div>
+                        <div class="statSub" v-if="projection.ignoredWithdrawn > 0">
+                            +{{ fmt(projection.ignoredWithdrawn) }} outside horizon, ignored
+                        </div>
+                        <div class="statSub" v-else>taken out along the way</div>
                     </div>
                     <div class="statTile">
                         <div class="statLabel">Projected balance</div>
@@ -307,7 +364,7 @@ watch(projection, async (p) => {
                 <!-- Step-by-step compounding -->
                 <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
                     <span class="txt-small text-muted">
-                        Each trading day: <code>closing = (opening<span v-if="projection.deposited > 0"> + deposit</span>) × (1 + {{ fmt(target, 2) }}%)</code>
+                        Each trading day: <code>closing = (opening<span v-if="projection.deposited > 0"> + deposit</span>) × (1 + <span v-if="hasTiers">stepped %/day</span><span v-else>{{ fmt(target, 2) }}%</span>)</code>
                         — the next day opens on that closing balance.
                     </span>
                     <div class="btn-group btn-group-sm" role="group">
@@ -325,6 +382,7 @@ watch(projection, async (p) => {
                                 <th class="text-end" v-if="granularity !== 'daily'">Days</th>
                                 <th class="text-end">Opening</th>
                                 <th class="text-end" v-if="projection.deposited > 0">Deposit</th>
+                                <th class="text-end" v-if="projection.withdrawn > 0">Withdraw</th>
                                 <th class="text-end">Profit</th>
                                 <th class="text-end" v-if="lotSize != null">Pips</th>
                                 <th class="text-end">Closing</th>
@@ -340,6 +398,9 @@ watch(projection, async (p) => {
                                 <td class="text-end">{{ fmt(r.opening) }}</td>
                                 <td class="text-end" v-if="projection.deposited > 0">
                                     <span v-if="r.deposit">+{{ fmt(r.deposit) }}</span><span v-else class="text-muted">—</span>
+                                </td>
+                                <td class="text-end" v-if="projection.withdrawn > 0">
+                                    <span v-if="r.withdrawal" class="redTrade">−{{ fmt(r.withdrawal) }}</span><span v-else class="text-muted">—</span>
                                 </td>
                                 <td class="text-end" v-bind:class="pnlClass(r.profit)">{{ fmt(r.profit) }}</td>
                                 <td class="text-end" v-if="lotSize != null">{{ fmt(dollarsToPips(r.profit, activePlan.symbol, lotSize), 0) }}</td>
@@ -573,5 +634,43 @@ watch(projection, async (p) => {
     display: block;
     margin-top: 0.25rem;
     color: var(--white-60);
+}
+
+/* Stepped daily-% editor */
+.tierBlock {
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    padding-top: 0.6rem;
+}
+
+.tierRows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.4rem;
+}
+
+.tierRow {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+}
+
+.tierLabel {
+    font-size: 0.8rem;
+    color: var(--white-60);
+}
+
+.tierNum {
+    width: 120px;
+}
+
+.tierDel {
+    color: var(--white-60);
+    margin-left: 0.2rem;
+}
+
+.tierDel:hover {
+    color: #dc2626;
 }
 </style>
