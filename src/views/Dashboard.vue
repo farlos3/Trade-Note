@@ -55,7 +55,8 @@ const keyStats = computed(() => {
     const sumWin = Number(totals[ac + 'Wins']) || 0
     const sumLoss = Math.abs(Number(totals[ac + 'Loss']) || 0)
     const profitFactor = sumLoss > 0 ? sumWin / sumLoss : null
-    return { trades, wins, losses, winRate, avgWin, avgLoss, profitFactor }
+    const profit = Number(totals[ac + 'Proceeds']) || 0   // net P&L over the period (gross/net per toggle)
+    return { trades, wins, losses, winRate, avgWin, avgLoss, profitFactor, profit }
 })
 
 // Seconds -> compact human duration ("29s", "5m 12s", "2h 05m").
@@ -207,6 +208,14 @@ onBeforeMount(async () => {
                     <div class="dailyCard statCard">
                         <h5 class="titleWithDesc">{{ useThousandFormat(keyStats.trades) }}</h5>
                         <span class="dashInfoTitle">Total Trades</span>
+                    </div>
+                </div>
+                <div class="col-6 col-lg-3 col-xl-2">
+                    <div class="dailyCard statCard">
+                        <h5 class="titleWithDesc"
+                            v-bind:class="keyStats.profit > 0 ? 'acctPos' : keyStats.profit < 0 ? 'acctNeg' : ''">
+                            {{ useTwoDecCurrencyFormat(keyStats.profit) }}</h5>
+                        <span class="dashInfoTitle">Profit</span>
                     </div>
                 </div>
                 <div class="col-6 col-lg-3 col-xl-2">
@@ -368,13 +377,6 @@ onBeforeMount(async () => {
                                     </div>
                                 </div>
 
-                                <!-- WIN RATE (overall, wins vs losses across all trades) -->
-                                <div class="col-12 col-lg-6 mb-3">
-                                    <div class="dailyCard">
-                                        <h6>Win Rate</h6>
-                                        <div v-bind:key="renderData" id="pieChart1" style="height: 260px;"></div>
-                                    </div>
-                                </div>
 
                                 <!-- RISK REWARD CHART
                     <div class="col-12 col-xl-6 mb-3">
