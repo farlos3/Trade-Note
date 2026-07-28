@@ -986,6 +986,20 @@ async function createTrades() {
         mfePrices.length = 0 // reinitialize, for API
         openPositionsFile.length = 0 // reinitialize, for API
 
+        /* A position opened and closed on different days lands in two execution
+           groups (the group key includes td), so the closing group re-pushes the
+           carried-over open position. It is already in temp2 when the opening leg
+           came from this same import, and now that td is no longer rewritten to the
+           closing day both copies share a td -- which would put two rows for one
+           trade in the same day and inflate the trade count. The later
+           `temp2.find(x => x.id == ... && x.td == ...)` mutates whichever copy it
+           finds first, so keeping exactly one is both correct and sufficient.
+           Positions carried over from a previous import (the Parse branch) are not
+           in temp2 yet, so they still get pushed. */
+        const pushOpenPositionOnce = (pos) => {
+            if (!temp2.some((x) => x.id == pos.id && x.td == pos.td)) temp2.push(pos)
+        }
+
         for (const key2 of keys2) {
             var tempExecs = objectB[key2]
             //Count number of wins and losses for later total number of wins and losses
@@ -1036,15 +1050,16 @@ async function createTrades() {
                         console.log("  --> Open position already in Parse")
                         //existingOpenPosition = existingOpenPositionParse
 
+                        // Keep the stored `td` -- the day the position was OPENED.
+                        // It used to be replaced with the current execution's td, so
+                        // a position held past midnight was filed under the day it
+                        // closed. Anything carried overnight then landed on the wrong
+                        // day in Daily/Calendar/Dashboard.
                         Object.keys(openPositionsParse[existingOpenPositionParseIndex]).forEach((key) => {
-                            if (key == "td") {
-                                existingOpenPosition.td = tempExec.td
-                            } else {
-                                existingOpenPosition[key] = openPositionsParse[existingOpenPositionParseIndex][key]
-                            }
+                            existingOpenPosition[key] = openPositionsParse[existingOpenPositionParseIndex][key]
                         })
                         currentTradeId = existingOpenPosition.id //here currentTradeId is at this state because we "jump" over newTrade as we are continuing an open / swing trade
-                        temp2.push(existingOpenPosition)
+                        pushOpenPositionOnce(existingOpenPosition)
                         newTrade = false
 
                         //const existingOpenPositionParseIndex = openPositionsParse.findIndex(x => x.symbol == tempExec.symbol)
@@ -1058,20 +1073,16 @@ async function createTrades() {
                         //console.log(" existingOpenPositionFileIndex "+existingOpenPositionFileIndex)
                         //console.log("openPositionsFile "+JSON.stringify(openPositionsFile[existingOpenPositionFileIndex]))
                 
+                        // Same as the Parse branch above: `td` stays the opening day.
                         Object.keys(openPositionsFile[existingOpenPositionFileIndex]).forEach((key) => {
                             //console.log(" key "+key)
-                            if (key == "td") {
-                                existingOpenPosition.td = tempExec.td
-                            } else {
-                                existingOpenPosition[key] = openPositionsFile[existingOpenPositionFileIndex][key]
-                            }
+                            existingOpenPosition[key] = openPositionsFile[existingOpenPositionFileIndex][key]
                         })
                         //existingOpenPosition = existingOpenPositionFile
 
                         //console.log(" -> existingOpenPosition "+JSON.stringify(existingOpenPosition))
                         currentTradeId = existingOpenPosition.id //here currentTradeId is at this state because we "jump" over newTrade as we are continuing an open / swing trade
-                        existingOpenPosition.td = tempExec.td;
-                        temp2.push(existingOpenPosition)
+                        pushOpenPositionOnce(existingOpenPosition)
                         newTrade = false
 
                         //const existingOpenPositionFileIndex = openPositionsFile.findIndex(x => x.symbol == tempExec.symbol)

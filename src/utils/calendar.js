@@ -37,7 +37,10 @@ export async function useLoadCalendar() {
             //console.log("date "+dayJsDate)
             let dateForCalendarize = new Date(dayjs.unix(param1)).toLocaleString("en-US", { timeZone: timeZoneTrade.value })
             //console.log(" date for calendarize "+dateForCalendarize)
-            let calendarizeData = calendarize(dateForCalendarize, 1) // this creates.value calendar date numbers needed for a table calendar
+            // Offset 0 = weeks start on Sunday (1 would start them on Monday). Must
+            // stay in step with the `days` labels in Calendar.vue, which head these
+            // same columns -- a mismatch silently shifts every date by one column.
+            let calendarizeData = calendarize(dateForCalendarize, 0) // this creates.value calendar date numbers needed for a table calendar
             //console.log("calendarizeData "+calendarizeData)
 
             //console.log("  --> Getting trade and creating json for each day of given month")
