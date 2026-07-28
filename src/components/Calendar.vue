@@ -19,7 +19,8 @@ import customParseFormat from 'dayjs/plugin/customParseFormat.js'
 dayjs.extend(customParseFormat)
 
 
-const days = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
+// Column order must match the calendarize() offset in utils/calendar.js (0 = Sunday).
+const days = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]
 
 // Year-at-a-glance summary. On the Calendar page filteredTrades already spans
 // Jan 1 -> end of the selected month (see useGetSelectedRange), so aggregate it

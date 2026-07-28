@@ -13,23 +13,25 @@
 # Any step that is not applicable (Atlas keys missing, MT5 terminal closed,
 # Python absent) becomes a warning instead of aborting the whole run.
 #
-# Where trade data comes from depends on the platform (step 3b/4):
-#   Windows        -> read MetaTrader 5 directly. The MetaTrader5 Python package
-#                     is a Windows-only wheel bound to the terminal's DLL.
-#   macOS / Linux  -> that package cannot be installed, so there is no local MT5
-#                     to read. Use what is already in MongoDB, and restore the
-#                     latest Parquet snapshot from R2 when MongoDB has no trades.
+# Step 4 is a three-stage data cycle, in this order:
+#   4a restore  pull the R2 Parquet snapshot into MongoDB (always, so a start
+#               always begins from the backup -- including when MT5 won't open)
+#   4b update   read MetaTrader 5 and layer newer trades on top. Windows only:
+#               the MetaTrader5 wheel binds to the terminal's DLL and installs
+#               nowhere else, so on macOS/Linux 4a is the only data source.
+#   4c backup   push the result back to R2 for the next start.
 #
 # Usage:
 #   ./start.sh                # full run, dev hot-reload
 #   ./start.sh --mode prod    # published image
 #   ./start.sh --ip-only      # just refresh the Atlas IP whitelist
-#   ./start.sh --skip-sync    # don't load trade data at all
+#   ./start.sh --skip-sync    # don't read MetaTrader 5
 #   ./start.sh --skip-restore # keep the local DB; don't pull the R2 backup
+#   ./start.sh --skip-backup  # don't push the result back to R2
 set -o pipefail
 
 MODE="dev"
-UPDATE_IP=0; SKIP_DOCKER=0; SKIP_SYNC=0; IP_ONLY=0; SKIP_RESTORE=0
+UPDATE_IP=0; SKIP_DOCKER=0; SKIP_SYNC=0; IP_ONLY=0; SKIP_RESTORE=0; SKIP_BACKUP=0
 
 usage() {
   cat <<'EOF'
@@ -43,6 +45,9 @@ Usage: ./start.sh [options]
   --skip-restore          don't pull the R2 backup at startup. By default every
                           run restores it first (after dumping the current DB to
                           backup/pre-restore/), then syncs newer trades on top.
+  --skip-backup           don't push the database back to R2 at the end. The
+                          backup is skipped anyway when the database is empty or
+                          unreadable, so a bad run can't overwrite the snapshot.
   -h, --help              show this help
 EOF
 }
@@ -56,6 +61,7 @@ while [[ $# -gt 0 ]]; do
     --skip-docker) SKIP_DOCKER=1; shift;;
     --skip-sync)   SKIP_SYNC=1; shift;;
     --skip-restore) SKIP_RESTORE=1; shift;;
+    --skip-backup) SKIP_BACKUP=1; shift;;
     -h|--help)     usage; exit 0;;
     *) echo "Unknown arg: $1" >&2; usage; exit 64;;
   esac
@@ -222,6 +228,14 @@ restore_from_r2() {
   return 0
 }
 
+# Push the current database back up to R2. The guards (refuse on an empty or
+# unreadable database, so a bad run can't overwrite the snapshot) live in the
+# shared script, which stop.sh calls too -- one place, no drift.
+backup_to_r2() {
+  section "Backing up to R2"
+  bash "$ROOT_DIR/scripts/r2-backup.sh" --compose-file "$COMPOSE_FILE" || true
+}
+
 # --- Windows only: read MetaTrader 5 and add anything newer than the backup ---
 sync_from_mt5() {
   section "Launching MetaTrader 5 terminal"
@@ -266,6 +280,13 @@ if [[ "$SKIP_SYNC" -eq 0 ]]; then
   else
     printf '\033[90mNot on Windows — no local MetaTrader 5 to sync from; the R2 restore above is the data source.\033[0m\n'
   fi
+fi
+
+# 4c. Persist: push the result back to R2 so the next start picks it up. Runs even
+# when the MT5 sync was skipped or failed -- the guard inside is on the database
+# having data, not on the sync having succeeded.
+if [[ "$SKIP_BACKUP" -eq 0 ]]; then
+  backup_to_r2
 fi
 
 section "Done"
