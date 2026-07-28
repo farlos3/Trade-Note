@@ -18,12 +18,12 @@ import { useCandlestickChart } from '../utils/charts';
 
 import { useGetMFEPrices } from '../utils/addTrades';
 import { dayFiles } from '../stores/globals';
-import { useUploadDayFile, useDeleteDayFile, useGetDayFiles, useDayFileFor } from '../utils/dayFiles';
+import { useUploadDayFile, useDeleteDayFile, useGetDayFiles, useDayFilesFor } from '../utils/dayFiles';
 
 // Day-summary file (whole-day PDF): read the picked file and upload it for the day.
 async function onDayFileChange(event, dateUnixDay) {
-    const file = event.target && event.target.files && event.target.files[0]
-    if (file) await useUploadDayFile(file, dateUnixDay)
+    const files = event.target && event.target.files
+    if (files && files.length) await useUploadDayFile(files, dateUnixDay)
     if (event.target) event.target.value = ''
 }
 
@@ -822,18 +822,20 @@ function getOHLC(date, symbol, type) {
                                                     data-bs-toggle="modal" data-bs-target="#tagsModal"
                                                     :data-index="index" class="ms-2 uil uil-tag-alt pointerClass"></i>
 
-                                                <!-- Whole-day summary file (e.g. a PDF across all orders) -->
+                                                <!-- Whole-day summary files (PDFs/images across all orders); many per day -->
                                                 <span class="ms-3 txt-small">
-                                                    <template v-if="useDayFileFor(itemTrade.dateUnix)">
-                                                        <a :href="useDayFileFor(itemTrade.dateUnix).url || useDayFileFor(itemTrade.dateUnix).base64"
-                                                            target="_blank" rel="noopener" class="pointerClass"
-                                                            title="Open day summary"><i class="uil uil-file-alt me-1"></i>{{ useDayFileFor(itemTrade.dateUnix).filename }}</a>
-                                                        <i class="uil uil-trash-alt ms-1 pointerClass" title="Delete day summary"
-                                                            v-on:click="useDeleteDayFile(useDayFileFor(itemTrade.dateUnix).objectId)"></i>
-                                                    </template>
-                                                    <label v-else class="pointerClass mb-0" title="Upload a PDF summarising the whole day">
-                                                        <i class="uil uil-file-upload-alt me-1"></i>Day summary
-                                                        <input type="file" accept="application/pdf,.pdf,image/*" class="d-none"
+                                                    <span v-for="f in useDayFilesFor(itemTrade.dateUnix)" :key="f.objectId"
+                                                        class="me-2">
+                                                        <a :href="f.url || f.base64" target="_blank" rel="noopener"
+                                                            class="pointerClass" title="Open day summary"><i
+                                                                class="uil uil-file-alt me-1"></i>{{ f.filename }}</a>
+                                                        <i class="uil uil-trash-alt ms-1 pointerClass" title="Delete this file"
+                                                            v-on:click="useDeleteDayFile(f.objectId)"></i>
+                                                    </span>
+                                                    <label class="pointerClass mb-0" title="Upload one or more files summarising the whole day">
+                                                        <i class="uil uil-file-upload-alt me-1"></i>Add day summary
+                                                        <input type="file" multiple accept="application/pdf,.pdf,image/*"
+                                                            class="d-none"
                                                             @change="onDayFileChange($event, itemTrade.dateUnix)" />
                                                     </label>
                                                 </span>

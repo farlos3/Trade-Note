@@ -1,14 +1,28 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import axios from 'axios'
 import dayjs from 'dayjs'
 import { timeZoneTrade } from '../stores/globals'
 
-/* Behavior analysis from real trades, via the backend. */
+/* Behavior analysis from real trades, via the backend. Result is cached per
+   period in localStorage and only re-fetched when the underlying trade data
+   changes -- detected via a cheap fingerprint (day count + last write). So no
+   new order = reuse cache instead of re-running the analysis. */
 const loading = ref(false)
 const error = ref(null)
 const data = ref(null)
 const period = ref('30d')
+const cached = ref(false)      // current result served from cache (no new orders)
+const lastUpdated = ref(null)  // when the shown result was actually fetched
+
+const CACHE_KEY = 'aiAnalysisCache_v1'
+
+function loadCache() {
+    try { return JSON.parse(localStorage.getItem(CACHE_KEY) || '{}') } catch { return {} }
+}
+function saveCache(obj) {
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify(obj)) } catch { /* quota / disabled */ }
+}
 
 const PERIODS = [
     { id: '7d', label: '7 days' },
@@ -26,23 +40,79 @@ function rangeFor(p) {
     }
 }
 
-async function run() {
+async function fetchFingerprint(from, to) {
+    const params = {}
+    if (from) params.from = from
+    if (to) params.to = to
+    const res = await axios.get('/api/analysis/fingerprint', { params })
+    return res.data?.fingerprint || ''
+}
+
+// Show whatever is cached for a period immediately, no request. Returns true if
+// a cached result was displayed.
+function showCachedFor(p) {
+    const entry = loadCache()[p]
+    if (entry && entry.data) {
+        data.value = entry.data
+        cached.value = true
+        lastUpdated.value = entry.savedAt || null
+        return true
+    }
+    return false
+}
+
+/* force=true always re-fetches (manual refresh). Otherwise reuse the cache when
+   the data fingerprint is unchanged (no new orders since it was built). */
+async function run(force = false) {
     loading.value = true
     error.value = null
     try {
         const { from, to } = rangeFor(period.value)
+        const cache = loadCache()
+        const entry = cache[period.value]
+
+        let fp = ''
+        try { fp = await fetchFingerprint(from, to) } catch { fp = '' }
+
+        if (!force && entry && entry.data && fp && entry.fingerprint === fp) {
+            data.value = entry.data              // no new orders -> reuse cache
+            cached.value = true
+            lastUpdated.value = entry.savedAt || null
+            return
+        }
+
         const params = { tz: timeZoneTrade.value || 'UTC' }
         if (from) params.from = from
         if (to) params.to = to
         const res = await axios.get('/api/analysis/behavior', { params })
         data.value = res.data
+        cached.value = false
+        lastUpdated.value = Date.now()
+        cache[period.value] = {
+            fingerprint: res.data?.meta?.fingerprint || fp,
+            data: res.data,
+            savedAt: lastUpdated.value,
+        }
+        saveCache(cache)
     } catch (e) {
         error.value = e?.response?.data?.error || e.message
-        data.value = null
+        // Keep any already-shown cached data visible on error.
     } finally {
         loading.value = false
     }
 }
+
+const updatedLabel = () => (lastUpdated.value ? dayjs(lastUpdated.value).format('MMM D, HH:mm') : '')
+
+onMounted(() => {
+    showCachedFor(period.value)   // instant paint from cache
+    run(false)                    // then validate / refresh if orders changed
+})
+
+watch(period, (p) => {
+    if (!showCachedFor(p)) data.value = null
+    run(false)
+})
 
 /* ---- formatting helpers ---- */
 const fmt = (n, d = 2) => (n == null ? '—' : Number(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }))
@@ -98,10 +168,20 @@ const topEntries = (obj, n = 6) => (obj ? Object.entries(obj).slice(0, n) : [])
                     v-bind:class="['btn', 'btn-sm', period === p.id ? 'btn-primary' : 'btn-outline-secondary']"
                     v-on:click="period = p.id">{{ p.label }}</button>
             </div>
-            <button type="button" class="btn btn-success btn-sm ms-auto" v-on:click="run" :disabled="loading">
-                <span v-if="loading" class="spinner-border spinner-border-sm me-2" role="status"></span>
-                <i v-else class="uil uil-brain me-1"></i>Analyze behavior
-            </button>
+            <div class="ms-auto d-flex align-items-center gap-2">
+                <span v-if="lastUpdated" class="txt-small text-secondary">
+                    <i v-if="cached" class="uil uil-check-circle me-1"></i>{{ cached ? 'Cached' : 'Updated' }} · {{
+                        updatedLabel() }}
+                </span>
+                <button type="button" class="btn btn-outline-secondary btn-sm" v-on:click="run(true)"
+                    :disabled="loading" title="Force refresh (ignore cache)">
+                    <i class="uil uil-sync"></i>
+                </button>
+                <button type="button" class="btn btn-success btn-sm" v-on:click="run(false)" :disabled="loading">
+                    <span v-if="loading" class="spinner-border spinner-border-sm me-2" role="status"></span>
+                    <i v-else class="uil uil-brain me-1"></i>Analyze behavior
+                </button>
+            </div>
         </div>
 
         <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>

@@ -21,44 +21,46 @@ function fileToBase64(file) {
     })
 }
 
-/** Upload one file as the summary for `dateUnixDay` (start-of-day unix). Replaces
- *  any existing summary for that day so a day has a single current file. */
-export async function useUploadDayFile(file, dateUnixDay) {
-    if (!file) return
-    spinnerLoadingPage.value = true
-    try {
+/** Upload one or more files as summaries for `dateUnixDay` (start-of-day unix).
+ *  Multiple files per day are allowed -- each new file becomes its own record;
+ *  nothing existing is replaced. Accepts a single File, a FileList, or an array. */
+export async function useUploadDayFile(fileOrFiles, dateUnixDay) {
+    let files
+    if (!fileOrFiles) files = []
+    else if (typeof FileList !== 'undefined' && fileOrFiles instanceof FileList) files = Array.from(fileOrFiles)
+    else if (Array.isArray(fileOrFiles)) files = fileOrFiles
+    else files = [fileOrFiles]
+    if (!files.length) return
+
+    // NOTE: do NOT toggle the global spinnerLoadingPage here. The Daily view is
+    // wrapped in `v-if="!spinnerLoadingPage"`, so flipping it unmounts the day
+    // cards mid-upload and their per-day charts (pie / evolution) never re-render.
+    // Uploading a day file must leave the page (and its charts) intact.
+    const dateStr = dayjs.unix(dateUnixDay).tz(timeZoneTrade.value).format('YYYY-MM-DD')
+    // Continue numbering after any files already saved for this day so display
+    // names stay neutral & consistent: "Day summary <date>", then " (2)", " (3)"…
+    let seq = dayFiles.filter((d) => Number(d.dateUnixDay) === Number(dateUnixDay)).length
+    for (const file of files) {
         const base64 = await fileToBase64(file)
         const safe = (file.name || 'day-summary').replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40)
         // Readable, day-specific R2 name: daysummary_2026-07-27_<file> (the server
         // appends a short UUID + the real extension, e.g. .pdf).
-        const dateStr = dayjs.unix(dateUnixDay).tz(timeZoneTrade.value).format('YYYY-MM-DD')
         const up = await useUploadImageToR2(base64, 'daysummary_' + dateStr + '_' + safe)
 
-        // Replace an existing summary for this day (one file per day).
         const parseObject = Parse.Object.extend('dayFiles')
-        const existingQ = new Parse.Query(parseObject)
-        existingQ.equalTo('user', Parse.User.current())
-        existingQ.equalTo('dateUnixDay', Number(dateUnixDay))
-        const existing = await existingQ.first()
-        const obj = existing || new parseObject()
-
-        if (existing && existing.get('key') && (!up || existing.get('key') !== up.key)) {
-            await useDeleteImageFromR2(existing.get('key'))
-        }
+        const obj = new parseObject()
         obj.set('user', Parse.User.current())
         obj.set('dateUnixDay', Number(dateUnixDay))
-        // Neutral, per-day display name (not the original file's messy name), so
-        // every day's summary reads consistently. The real file still keeps its
-        // extension on R2.
-        obj.set('filename', 'Day summary ' + dateStr)
+        // Neutral per-day display name (not the file's messy original name), with
+        // an index when a day has more than one so they stay distinguishable.
+        obj.set('filename', 'Day summary ' + dateStr + (seq === 0 ? '' : ' (' + (seq + 1) + ')'))
+        seq++
         if (up) { obj.set('url', up.url); obj.set('key', up.key); obj.unset('base64') }
         else { obj.set('base64', base64) }   // R2 not configured -> keep in DB
         obj.setACL(new Parse.ACL(Parse.User.current()))
         await obj.save()
-        await useGetDayFiles()
-    } finally {
-        spinnerLoadingPage.value = false
     }
+    await useGetDayFiles()
 }
 
 export async function useGetDayFiles() {
@@ -95,7 +97,12 @@ export async function useDeleteDayFile(objectId) {
     }
 }
 
-/** The summary file for a given day, or undefined. */
+/** The first summary file for a given day, or undefined. */
 export function useDayFileFor(dateUnixDay) {
     return dayFiles.find((d) => Number(d.dateUnixDay) === Number(dateUnixDay))
+}
+
+/** All summary files for a given day (a day can have several). */
+export function useDayFilesFor(dateUnixDay) {
+    return dayFiles.filter((d) => Number(d.dateUnixDay) === Number(dateUnixDay))
 }

@@ -11,7 +11,7 @@ import Proxy from 'http-proxy'
 import { useImportTrades, useGetExistingTradesArray, useUploadTrades } from './src/utils/addTrades.js';
 import { currentUser, uploadMfePrices } from './src/stores/globals.js';
 import { useGetTimeZone } from './src/utils/utils.js';
-import { fetchDayDocs, fetchNotes } from './mcp-server/db.mjs';
+import { fetchDayDocs, fetchNotes, fetchTradesFingerprint } from './mcp-server/db.mjs';
 import { flattenTrades, computeStats, findBehaviorPatterns, computeDailyBreakdown } from './mcp-server/analysis.mjs';
 import Stripe from 'stripe';
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
@@ -280,6 +280,13 @@ const setupApiRoutes = (app) => {
             const stats = computeStats(trades, tz)
             const patterns = findBehaviorPatterns(trades, { revengeWindowMinutes: 15, tz })
 
+            // Fingerprint of the underlying data (day count + most recent write),
+            // so the client can cache this result and skip re-running until an
+            // order actually changes. Matches /api/analysis/fingerprint.
+            const fpCount = days.length
+            const fpLastUpdate = days.reduce((m, d) => Math.max(m, d._updated_at ? new Date(d._updated_at).getTime() : 0), 0)
+            const fingerprint = `${fpCount}:${fpLastUpdate}`
+
             // Recent journal notes so the user can eyeball behavior vs. commentary
             let notes = []
             try {
@@ -298,6 +305,7 @@ const setupApiRoutes = (app) => {
             res.status(200).json({
                 range: { from: req.query.from || null, to: req.query.to || null },
                 timezone: tz,
+                meta: { fingerprint },
                 stats,
                 patterns,
                 daily: computeDailyBreakdown(trades), // per-day P&L: plan target vs reality
@@ -305,6 +313,23 @@ const setupApiRoutes = (app) => {
             })
         } catch (error) {
             console.error(' -> Behavior analysis error', error)
+            res.status(500).send({ error: String(error?.message || error) })
+        }
+    });
+
+    /**********************************************
+     * GET /api/analysis/fingerprint?from=&to=
+     * Cheap signature of the trade data so the client can reuse a cached
+     * analysis until an order changes. Returns { fingerprint: "count:lastUpdate" }.
+     **********************************************/
+    app.get('/api/analysis/fingerprint', async (req, res) => {
+        try {
+            const fromUnix = isoToUnix(req.query.from)
+            const toUnix = isoToUnix(req.query.to)
+            const fp = await fetchTradesFingerprint({ fromUnix, toUnix })
+            res.status(200).json({ fingerprint: `${fp.count}:${fp.lastUpdate}` })
+        } catch (error) {
+            console.error(' -> Fingerprint error', error)
             res.status(500).send({ error: String(error?.message || error) })
         }
     });

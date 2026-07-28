@@ -444,8 +444,11 @@ def main():
         # Advance the watermark to the newest deal we've now pushed.
         state["last_deal_unix"] = max(d.time for d in deals)
         save_state(state)
+        # Email reminder disabled for now (not needed yet). Re-enable by
+        # uncommenting the call below; the notify_email() helper and its
+        # [notify] config are left in place.
         # Email summarises only the genuinely new deals, not the whole window.
-        notify_email(cfg, new_deals, resp, ai)
+        # notify_email(cfg, new_deals, resp, ai)
         log("Done.")
     finally:
         mt5.shutdown()

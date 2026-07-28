@@ -6,7 +6,7 @@ import { spinnerLoadingPage, diaries, selectedItem, spinnerLoadMore, endOfList, 
 import { useCheckVisibleScreen, useCreatedDateFormat, useEditItem, useInitPopover, useLoadMore } from '../utils/utils';
 import { useGetDiaries } from '../utils/diary';
 import { useGetTags, useGetTagInfo, useGetAvailableTags, useDailySatisfactionChange, useGetSatisfactions } from '../utils/daily';
-import { useGetDayFiles, useDayFileFor } from '../utils/dayFiles';
+import { useGetDayFiles, useDayFilesFor } from '../utils/dayFiles';
 
 onBeforeMount(async () => {
 
@@ -89,22 +89,20 @@ onMounted(async () => {
                 <!-- Diary text -->
                 <div v-if="itemDiary.diary" class="quill diaryText mt-3" v-html="itemDiary.diary"></div>
 
-                <!-- Day summary file (whole-day PDF/image), uploaded on Daily -->
-                <div v-if="useDayFileFor(itemDiary.dateUnix)" class="dayFileBlock mt-3">
-                    <div class="dayFileHeader d-flex align-items-center mb-2">
-                        <i class="uil uil-file-alt me-2"></i>
-                        <a :href="fileSrc(useDayFileFor(itemDiary.dateUnix))" target="_blank" rel="noopener"
-                            class="pointerClass fw-bold">{{ useDayFileFor(itemDiary.dateUnix).filename }}</a>
-                        <a :href="fileSrc(useDayFileFor(itemDiary.dateUnix))" target="_blank" rel="noopener"
-                            class="ms-2 pointerClass" title="Open in new tab"><i
-                                class="uil uil-external-link-alt"></i></a>
-                    </div>
-                    <div class="dayFilePreview">
-                        <iframe v-if="isPdf(useDayFileFor(itemDiary.dateUnix))"
-                            :src="fileSrc(useDayFileFor(itemDiary.dateUnix))" class="dayFileFrame"
-                            loading="lazy"></iframe>
-                        <img v-else :src="fileSrc(useDayFileFor(itemDiary.dateUnix))" class="dayFileImg"
-                            loading="lazy" />
+                <!-- Day summary files (whole-day PDFs/images), uploaded on Daily; many per day -->
+                <div v-if="useDayFilesFor(itemDiary.dateUnix).length" class="dayFileBlock mt-3">
+                    <div v-for="f in useDayFilesFor(itemDiary.dateUnix)" :key="f.objectId" class="mb-3">
+                        <div class="dayFileHeader d-flex align-items-center mb-2">
+                            <i class="uil uil-file-alt me-2"></i>
+                            <a :href="fileSrc(f)" target="_blank" rel="noopener" class="pointerClass fw-bold">{{
+                                f.filename }}</a>
+                            <a :href="fileSrc(f)" target="_blank" rel="noopener" class="ms-2 pointerClass"
+                                title="Open in new tab"><i class="uil uil-external-link-alt"></i></a>
+                        </div>
+                        <div class="dayFilePreview">
+                            <iframe v-if="isPdf(f)" :src="fileSrc(f)" class="dayFileFrame" loading="lazy"></iframe>
+                            <img v-else :src="fileSrc(f)" class="dayFileImg" loading="lazy" />
+                        </div>
                     </div>
                 </div>
             </div>
