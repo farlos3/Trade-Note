@@ -94,6 +94,31 @@ export async function fetchNotes({ fromUnix, toUnix } = {}) {
     .toArray()
 }
 
+/**
+ * Cheap signature of the trade data in a range, used to decide whether a cached
+ * analysis is still current. Changes whenever a day doc is (re)written -- adding
+ * a brand-new day bumps the count; adding orders to an existing day re-writes
+ * that day doc (import upserts), bumping its _updated_at. No heavy fields read.
+ */
+export async function fetchTradesFingerprint({ fromUnix, toUnix } = {}) {
+  const db = await getDb()
+  const q = { ...(await getUserFilter(db)) }
+  if (fromUnix != null || toUnix != null) {
+    q.dateUnix = {}
+    if (fromUnix != null) q.dateUnix.$gte = fromUnix
+    if (toUnix != null) q.dateUnix.$lt = toUnix
+  }
+  const coll = db.collection('trades')
+  const count = await coll.countDocuments(q)
+  const latest = await coll
+    .find(q, { projection: { _updated_at: 1 } })
+    .sort({ _updated_at: -1 })
+    .limit(1)
+    .toArray()
+  const lastUpdate = latest[0]?._updated_at ? new Date(latest[0]._updated_at).getTime() : 0
+  return { count, lastUpdate }
+}
+
 export async function closeDb() {
   if (client) { await client.close(); client = undefined }
 }

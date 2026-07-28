@@ -368,14 +368,11 @@ onBeforeMount(async () => {
                                     </div>
                                 </div>
 
-                                <!-- WIN LOSS CHART -->
-                                <div class="col-12 mb-3">
+                                <!-- WIN RATE (overall, wins vs losses across all trades) -->
+                                <div class="col-12 col-lg-6 mb-3">
                                     <div class="dailyCard">
                                         <h6>Win Rate</h6>
-                                        <!--<div class="text-center" v-if="!dashboardChartsMounted">
-                                    <div class="spinner-border text-blue" role="status"></div>
-                                </div>-->
-                                        <div v-bind:key="renderData" id="barChart2" class="chartClass"></div>
+                                        <div v-bind:key="renderData" id="pieChart1" style="height: 260px;"></div>
                                     </div>
                                 </div>
 
