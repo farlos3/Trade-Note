@@ -188,12 +188,18 @@ async function monthLastNext(param) {
     color: #ffffff;
 }
 
-/* Bright-green win cells: white text is low-contrast, use dark text instead.
-   Red loss cells keep white (good contrast). */
+/* Coloured P&L cells use dark text: white is low-contrast on the bright green /
+   red fills. */
 .greenTradeDiv .dayNumber,
 .greenTradeDiv .calTrades,
 .greenTradeDiv .calAmount {
     color: #06281a;
+}
+
+.redTradeDiv .dayNumber,
+.redTradeDiv .calTrades,
+.redTradeDiv .calAmount {
+    color: #2a0808;
 }
 
 /* ===== Year-at-a-glance summary ===== */
