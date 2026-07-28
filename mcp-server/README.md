@@ -1,14 +1,18 @@
 # TradeNote MCP server — AI trading-behavior analysis
 
 A small [MCP](https://modelcontextprotocol.io) server that exposes your TradeNote
-trades (from MongoDB Atlas) as read-only tools, so an AI agent — **Claude Desktop**
-or **Claude Code** — can analyze not just your win rate but your *behavior*:
-revenge trading, overtrading, position-size tilt, and holding-time asymmetry.
+trades as read-only tools, so an AI agent — **Claude Desktop** or **Claude Code** —
+can analyze not just your win rate but your *behavior*: revenge trading,
+overtrading, position-size tilt, and holding-time asymmetry.
 
 ```
-Claude Desktop / Code ──MCP──► this server ──read──► MongoDB Atlas (trades, notes)
+Claude Desktop / Code ──MCP──► this server ──read──► local MongoDB (trades, notes)
    (the analyst)                (4 tools)             (your journal data)
 ```
+
+The TradeNote web app shows the same flags on its **AI Analysis** page, computed
+by the same rules. What the agent adds is interpretation: tying the numbers to
+your journal notes and answering follow-up questions.
 
 ## Tools
 
@@ -24,28 +28,35 @@ All tools are **read-only** — the server never writes to the database.
 ## Prerequisites
 
 - **Node.js 18+**
-- The project's `MONGO_URI` (the server reads the repo-root `.env` automatically)
-- Atlas must accept connections from this machine. Simplest and permanent: set
-  **Network Access → 0.0.0.0/0** once (the database is still protected by its
-  user/password + TLS). If you keep a tight whitelist instead, refresh it with
-  `./start.sh --ip-only` whenever your public IP changes.
+- The project running (`./start.sh`), so MongoDB is up — the tools read from it
+  live. Stop the project and the tools return nothing.
 
-## Install
+## Install (macOS and Windows)
 
-```bash
-cd mcp-server
-npm install
-```
-
-Quick check it runs (Ctrl-C to stop — it waits for an MCP client on stdio):
+One command registers the server with Claude Desktop on either platform:
 
 ```bash
-npm start
+./scripts/install-mcp.sh          # install / update
+./scripts/install-mcp.sh --print  # show what it would write, change nothing
+./scripts/install-mcp.sh --remove # take it back out
 ```
 
-## Connect to Claude Desktop
+It finds Claude Desktop's config for your platform, runs `npm install` if the
+dependencies are missing, **merges** the entry (any other MCP servers you have
+are left alone), and keeps the previous file as `.bak`. On Windows it converts
+the Git Bash path to a native one, since Claude Desktop is not a Git Bash
+process. Then quit Claude Desktop **completely** and reopen it — the config is
+read once at startup.
 
-Edit the config file (create it if missing):
+> The server runs on the host, so it connects to MongoDB on `localhost:27017`,
+> not the `mongo:27017` in `.env` — that hostname only resolves inside the
+> Docker network. `db.mjs` rewrites it, and the installer sets `MCP_MONGO_URI`
+> explicitly. Override that variable for a different database.
+
+## Connect to Claude Desktop by hand
+
+Only needed if you'd rather not use the installer. Edit the config file
+(create it if missing):
 
 - **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
@@ -80,7 +91,8 @@ claude mcp add tradenote -- node ABSOLUTE/PATH/TO/TradeNote/mcp-server/server.mj
 
 | Var | Default | Purpose |
 |-----|---------|---------|
-| `MONGO_URI` | from `../.env` | Atlas connection string |
+| `MCP_MONGO_URI` | rewritten `MONGO_URI` | Connection string for this server. Set it to point somewhere else. |
+| `MONGO_URI` | from `../.env` | The app's connection string; its `mongo:` host is rewritten to `localhost` here |
 | `TRADENOTE_USER` | (all trades) | Restrict to one account (username/email) |
 | `TRADENOTE_TZ` | `UTC` | IANA tz for weekday / entry-hour grouping, e.g. `Asia/Bangkok` |
 
@@ -98,7 +110,7 @@ The agent calls the tools, pulls your real numbers, and reasons over them.
 - **Read-only.** No tool can modify or delete trades.
 - Trade *summaries* are sent to Claude as context during analysis (inherent to
   using an LLM). Secrets like API keys are never exposed by these tools.
-- Data lives in your own Atlas cluster; this server just reads it.
+- Data lives in your own local MongoDB; this server just reads it.
 
 ## Development
 

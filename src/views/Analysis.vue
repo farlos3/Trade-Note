@@ -119,6 +119,11 @@ const fmt = (n, d = 2) => (n == null ? '—' : Number(n).toLocaleString(undefine
 const pct = (n) => (n == null ? '—' : (n * 100).toFixed(1) + '%')
 const pnlClass = (n) => (n == null ? '' : n > 0 ? 'greenTrade' : n < 0 ? 'redTrade' : '')
 
+/* Card copy per flag. `rule` states the exact test the backend applies, so the
+   number on the card can be reconciled with why it did or didn't trip; the
+   thresholds below are the ones hard-coded in mcp-server/analysis.mjs
+   (findBehaviorPatterns) and must be kept in step with it. `why` says what the
+   pattern costs, `action` what to do about it. */
 function flagCards(p) {
     if (!p) return []
     return [
@@ -129,6 +134,9 @@ function flagCards(p) {
             bad: p.revengeTrading.count > 0,
             metric: `${p.revengeTrading.count}`,
             sub: p.revengeTrading.count ? `net ${fmt(p.revengeTrading.netPnL)} · win ${pct(p.revengeTrading.winRate)}` : 'none',
+            rule: `Counts every trade opened less than ${p.revengeTrading.windowMinutes} minutes after closing a losing one.`,
+            why: 'Entries that fast are usually a reaction to the loss rather than a fresh setup, so they tend to win less often than your normal trades. Compare the win rate above with your overall win rate — if it is lower, these trades are costing you.',
+            action: 'Set a fixed cool-down after a loss and only re-enter on a setup you wrote down beforehand.',
         },
         {
             key: 'overtrading',
@@ -137,6 +145,9 @@ function flagCards(p) {
             bad: p.overtrading.flaggedDays > 0,
             metric: `${p.overtrading.flaggedDays} days`,
             sub: p.overtrading.flaggedDays ? `net ${fmt(p.overtrading.netOnFlaggedDays)} on flagged days` : 'none',
+            rule: `Flags a day when its trade count reaches ${p.overtrading.flagThreshold} — that is twice your median of ${p.overtrading.medianTradesPerDay}/day, or the median plus 3, whichever is larger.`,
+            why: 'The bar is your own median, not a fixed number, so it adapts to how you trade. A day far above it usually means chasing rather than waiting for setups. Check the net on flagged days: if it is negative while your overall P&L is positive, volume is what is leaking money.',
+            action: 'Cap the number of trades per day in advance, and stop for the day once you hit it.',
         },
         {
             key: 'sizing',
@@ -145,6 +156,9 @@ function flagCards(p) {
             bad: p.positionSizingTilt.flag != null,
             metric: p.positionSizingTilt.ratio != null ? `${fmt(p.positionSizingTilt.ratio)}×` : '—',
             sub: `after loss ${fmt(p.positionSizingTilt.avgSizeAfterLoss, 3)} · after win ${fmt(p.positionSizingTilt.avgSizeAfterWin, 3)}`,
+            rule: 'Compares average lot size on trades that follow a loss with those that follow a win. Trips above 1.25× — a quarter bigger after losing.',
+            why: 'Doubling down to win it back is the fastest route to an outsized loss: risk grows exactly when your read on the market has just been proven wrong. A ratio near 1.00× means your size is independent of the last result, which is what you want.',
+            action: 'Fix position size by account risk (a set % per trade), not by how the previous trade went.',
         },
         {
             key: 'holding',
@@ -153,6 +167,9 @@ function flagCards(p) {
             bad: p.holdingTimeBias.flag != null,
             metric: p.holdingTimeBias.ratio != null ? `${fmt(p.holdingTimeBias.ratio)}×` : '—',
             sub: `loss ${fmt(p.holdingTimeBias.avgLoserHoldMinutes, 1)} min · win ${fmt(p.holdingTimeBias.avgWinnerHoldMinutes, 1)} min`,
+            rule: 'Compares average holding time of losing trades with winning ones. Trips above 1.3× — losers held nearly a third longer.',
+            why: 'This is the disposition effect: taking profit early feels safe while a loss stays "not real" until closed. It shrinks your winners and stretches your losers, which drags the profit factor down even when your win rate looks fine.',
+            action: 'Decide the exit before entering — stop and target — and let those close the trade instead of deciding in the moment.',
         },
     ]
 }
@@ -236,6 +253,12 @@ const topEntries = (obj, n = 6) => (obj ? Object.entries(obj).slice(0, n) : [])
                     <div class="flagMetric">{{ c.metric }}</div>
                     <div class="flagSub">{{ c.sub }}</div>
                     <div class="flagDesc">{{ c.desc }}</div>
+                    <details class="flagMore">
+                        <summary>What this means</summary>
+                        <p class="flagNote"><span class="flagNoteLabel">How it is measured</span>{{ c.rule }}</p>
+                        <p class="flagNote"><span class="flagNoteLabel">Why it matters</span>{{ c.why }}</p>
+                        <p class="flagNote mb-0"><span class="flagNoteLabel">What to do</span>{{ c.action }}</p>
+                    </details>
                 </div>
             </div>
 
@@ -359,6 +382,56 @@ const topEntries = (obj, n = 6) => (obj ? Object.entries(obj).slice(0, n) : [])
     font-size: 0.72rem;
     opacity: 0.55;
     margin-top: 0.35rem;
+}
+
+/* Collapsed by default: the grid stays scannable, and the full reasoning is one
+   click away on the card it belongs to. */
+.flagMore {
+    margin-top: 0.5rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+    padding-top: 0.45rem;
+}
+
+.flagMore > summary {
+    font-size: 0.72rem;
+    font-weight: 600;
+    opacity: 0.7;
+    cursor: pointer;
+    list-style: none;
+}
+
+.flagMore > summary::-webkit-details-marker {
+    display: none;
+}
+
+.flagMore > summary::before {
+    content: '▸ ';
+    display: inline-block;
+    transition: transform 0.15s ease;
+}
+
+.flagMore[open] > summary::before {
+    content: '▾ ';
+}
+
+.flagMore > summary:hover {
+    opacity: 1;
+}
+
+.flagNote {
+    font-size: 0.72rem;
+    line-height: 1.5;
+    opacity: 0.75;
+    margin: 0.5rem 0 0;
+}
+
+.flagNoteLabel {
+    display: block;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 0.62rem;
+    opacity: 0.65;
 }
 
 .breakTable {

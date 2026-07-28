@@ -35,11 +35,30 @@ export function readEnv(key) {
 let client
 let userFilterCache
 
+/**
+ * Connection string for this process.
+ *
+ * `.env` holds the URI the *app container* uses, whose host is the compose
+ * service name (`mongo:27017`). That name only resolves inside the Docker
+ * network. This server runs on the host — Claude Desktop launches it directly —
+ * where the same database is reachable on the published port instead. Rewriting
+ * the host keeps one `.env` working for both, so Claude Desktop doesn't need a
+ * second copy of the credentials.
+ *
+ * Set MCP_MONGO_URI to override (e.g. a remote database, or when running this
+ * server inside the compose network after all).
+ */
+export function resolveMongoUri() {
+  const override = readEnv('MCP_MONGO_URI')
+  if (override) return override
+  const uri = readEnv('MONGO_URI')
+  if (!uri) throw new Error('MONGO_URI is not set (env or ../.env)')
+  return uri.replace(/@mongo:(\d+)/, '@localhost:$1').replace(/\/\/mongo:(\d+)/, '//localhost:$1')
+}
+
 async function getDb() {
   if (!client) {
-    const uri = readEnv('MONGO_URI')
-    if (!uri) throw new Error('MONGO_URI is not set (env or ../.env)')
-    client = new MongoClient(uri)
+    client = new MongoClient(resolveMongoUri())
     await client.connect()
   }
   return client.db()
