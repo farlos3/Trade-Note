@@ -347,7 +347,7 @@ watch([equity, chartMode], async () => {
                 <div class="statGrid my-3">
                     <div class="statTile">
                         <div class="statLabel">Principal</div>
-                        <div class="statValue">{{ fmt(start, 0) }}</div>
+                        <div class="statValue">{{ fmt(start, 2) }}</div>
                         <div class="statSub">starting balance</div>
                     </div>
                     <div class="statTile">

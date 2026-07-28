@@ -100,7 +100,8 @@ onMounted(async () => {
                                 title="Open in new tab"><i class="uil uil-external-link-alt"></i></a>
                         </div>
                         <div class="dayFilePreview">
-                            <iframe v-if="isPdf(f)" :src="fileSrc(f)" class="dayFileFrame" loading="lazy"></iframe>
+                            <iframe v-if="isPdf(f)" :src="fileSrc(f) + '#view=FitH'" class="dayFileFrame"
+                                loading="lazy"></iframe>
                             <img v-else :src="fileSrc(f)" class="dayFileImg" loading="lazy" />
                         </div>
                     </div>
@@ -145,10 +146,13 @@ onMounted(async () => {
     width: 100%;
 }
 
+/* Flex to the page shape instead of reserving a fixed height: the frame scales
+   with the card width at ~A4 portrait aspect, and #view=FitH fits the page to
+   that width -- so the page fills the frame with little leftover space. */
 .dayFileFrame {
     width: 100%;
-    height: 70vh;
-    min-height: 480px;
+    aspect-ratio: 1 / 1.414;
+    max-height: 88vh;
     border: 1px solid rgba(128, 128, 128, 0.3);
     border-radius: 8px;
     background: #fff;
@@ -156,11 +160,11 @@ onMounted(async () => {
 
 .dayFileImg {
     display: block;
+    width: auto;
     max-width: 100%;
-    max-height: 70vh;
+    height: auto;
     margin: 0 auto;
     border: 1px solid rgba(128, 128, 128, 0.3);
     border-radius: 8px;
-    object-fit: contain;
 }
 </style>
