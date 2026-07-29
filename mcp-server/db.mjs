@@ -38,15 +38,19 @@ let userFilterCache
 /**
  * Connection string for this process.
  *
- * `.env` holds the URI the *app container* uses, whose host is the compose
- * service name (`mongo:27017`). That name only resolves inside the Docker
- * network. This server runs on the host — Claude Desktop launches it directly —
- * where the same database is reachable on the published port instead. Rewriting
- * the host keeps one `.env` working for both, so Claude Desktop doesn't need a
- * second copy of the credentials.
+ * This module has two callers with different views of the network:
+ *   - index.mjs, running INSIDE the app container, where `.env`'s
+ *     `mongo:27017` (the compose service name) is exactly right;
+ *   - the MCP server, launched on the HOST by Claude Desktop, where that
+ *     hostname does not resolve and the database is on the published port.
  *
- * Set MCP_MONGO_URI to override (e.g. a remote database, or when running this
- * server inside the compose network after all).
+ * So the rewrite is conditional on where we actually are. `/.dockerenv` is
+ * present in every container and absent on the host. Rewriting unconditionally
+ * breaks the app's own /api/analysis endpoints, which is not obvious because the
+ * failure surfaces later as "Topology is closed" rather than a connect error.
+ *
+ * MCP_MONGO_URI overrides everything (remote database, or a host-run server that
+ * needs a different address).
  */
 export function resolveMongoUri() {
   const override = readEnv('MCP_MONGO_URI')
@@ -60,6 +64,7 @@ export function resolveMongoUri() {
   if (process.env.MONGO_URI) return process.env.MONGO_URI
   const uri = readEnv('MONGO_URI')
   if (!uri) throw new Error('MONGO_URI is not set (env or ../.env)')
+  if (existsSync('/.dockerenv')) return uri
   return uri.replace(/@mongo:(\d+)/, '@localhost:$1').replace(/\/\/mongo:(\d+)/, '//localhost:$1')
 }
 
@@ -76,8 +81,11 @@ async function getDb() {
       client = undefined
     }
   }
-  client = new MongoClient(resolveMongoUri())
-  await client.connect()
+  // Assign only once connected: a failed connect must not leave a dead client
+  // cached, or every later call reuses it and fails the same way.
+  const c = new MongoClient(resolveMongoUri())
+  await c.connect()
+  client = c
   return client.db()
 }
 
