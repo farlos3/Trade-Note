@@ -51,16 +51,33 @@ let userFilterCache
 export function resolveMongoUri() {
   const override = readEnv('MCP_MONGO_URI')
   if (override) return override
+  // When MONGO_URI is a real process env var, we're the app running INSIDE the
+  // compose network (docker sets `environment: MONGO_URI`), where `mongo:27017`
+  // is the correct, resolvable host -- use it verbatim. Only the standalone MCP
+  // server on the host lacks it in process.env (it reads the app's .env file),
+  // and there the compose hostname isn't resolvable, so rewrite to the published
+  // localhost port. Rewriting unconditionally broke the app's /api/analysis/*.
+  if (process.env.MONGO_URI) return process.env.MONGO_URI
   const uri = readEnv('MONGO_URI')
   if (!uri) throw new Error('MONGO_URI is not set (env or ../.env)')
   return uri.replace(/@mongo:(\d+)/, '@localhost:$1').replace(/\/\/mongo:(\d+)/, '//localhost:$1')
 }
 
 async function getDb() {
-  if (!client) {
-    client = new MongoClient(resolveMongoUri())
-    await client.connect()
+  // Recover from a dropped connection (e.g. mongo restarted during a stop/start
+  // cycle): a cached-but-dead client otherwise fails every later request with
+  // "Topology is closed" until the whole app restarts.
+  if (client) {
+    try {
+      await client.db().command({ ping: 1 })
+      return client.db()
+    } catch {
+      try { await client.close() } catch { /* already gone */ }
+      client = undefined
+    }
   }
+  client = new MongoClient(resolveMongoUri())
+  await client.connect()
   return client.db()
 }
 

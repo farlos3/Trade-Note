@@ -48,6 +48,10 @@ services:
       TRADENOTE_USER: ${TRADENOTE_USER:-}
       TRADENOTE_PASSWORD: ${TRADENOTE_PASSWORD:-}
       TRADENOTE_AUTO_LOGIN: ${TRADENOTE_AUTO_LOGIN:-}
+      # Optional — enables the LLM analysis on the AI Analysis page (billed per
+      # token, separate from a Claude subscription). Leave unset to keep it off.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANALYSIS_MODEL: ${ANALYSIS_MODEL:-}
       R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
       R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
       R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
