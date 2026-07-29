@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "tradenote": {
+      "command": "C:/nvm4w/nodejs/node.exe",
+      "args": ["D:/Monetary/Trader/TradeNote/mcp-server/server.mjs"],
+      "env": {
+        "TRADENOTE_TZ": "Asia/Bangkok",
+        "MCP_MONGO_URI": "mongodb://localhost:27017/tradenote"
+      }
+    }
+  }
+}

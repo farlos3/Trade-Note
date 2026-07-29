@@ -12,6 +12,7 @@ import { useImportTrades, useGetExistingTradesArray, useUploadTrades } from './s
 import { currentUser, uploadMfePrices } from './src/stores/globals.js';
 import { useGetTimeZone } from './src/utils/utils.js';
 import { fetchDayDocs, fetchNotes, fetchTradesFingerprint } from './mcp-server/db.mjs';
+import Anthropic from '@anthropic-ai/sdk';
 import { flattenTrades, computeStats, findBehaviorPatterns, computeDailyBreakdown } from './mcp-server/analysis.mjs';
 import Stripe from 'stripe';
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
@@ -270,6 +271,12 @@ const setupApiRoutes = (app) => {
         return Number.isNaN(ms) ? undefined : Math.floor(ms / 1000)
     }
 
+    // Claude (LLM) analysis is optional: only enabled when ANTHROPIC_API_KEY is
+    // set. The SDK reads the key from the environment automatically. Model is
+    // overridable via ANALYSIS_MODEL (e.g. a cheaper model for lower cost).
+    const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic() : null
+    const ANALYSIS_MODEL = process.env.ANALYSIS_MODEL || 'claude-opus-5'
+
     app.get('/api/analysis/behavior', async (req, res) => {
         try {
             const tz = req.query.tz || process.env.TRADENOTE_TZ || 'UTC'
@@ -330,6 +337,65 @@ const setupApiRoutes = (app) => {
             res.status(200).json({ fingerprint: `${fp.count}:${fp.lastUpdate}` })
         } catch (error) {
             console.error(' -> Fingerprint error', error)
+            res.status(500).send({ error: String(error?.message || error) })
+        }
+    });
+
+    /**********************************************
+     * GET /api/analysis/ai-summary?from=&to=&tz=
+     * Claude (LLM) reads the same computed stats + behavioral flags and writes a
+     * natural-language analysis. Optional: disabled (200 {disabled:true}) when
+     * ANTHROPIC_API_KEY isn't set, so the client falls back to its rule-based
+     * summary. Returns { summary, fingerprint } on success.
+     **********************************************/
+    app.get('/api/analysis/ai-summary', async (req, res) => {
+        try {
+            if (!anthropic) {
+                return res.status(200).json({ disabled: true, reason: 'ANTHROPIC_API_KEY is not set on the server' })
+            }
+            const tz = req.query.tz || process.env.TRADENOTE_TZ || 'UTC'
+            const fromUnix = isoToUnix(req.query.from)
+            const toUnix = isoToUnix(req.query.to)
+            const days = await fetchDayDocs({ fromUnix, toUnix })
+            const trades = flattenTrades(days)
+            const stats = computeStats(trades, tz)
+            const patterns = findBehaviorPatterns(trades, { revengeWindowMinutes: 15, tz })
+
+            const fpCount = days.length
+            const fpLastUpdate = days.reduce((m, d) => Math.max(m, d._updated_at ? new Date(d._updated_at).getTime() : 0), 0)
+            const fingerprint = `${fpCount}:${fpLastUpdate}`
+
+            if (!stats.trades) {
+                return res.status(200).json({ summary: 'No trades in the selected period — nothing to analyze yet.', fingerprint })
+            }
+
+            let notes = []
+            try {
+                const raw = await fetchNotes({ fromUnix, toUnix })
+                notes = raw
+                    .filter(n => (n.reason && n.reason.trim()) || (n.note && n.note.trim()))
+                    .slice(-15).reverse()
+                    .map(n => ({ date: n.dateUnix ? new Date(n.dateUnix * 1000).toISOString().slice(0, 10) : null, reason: n.reason || null, note: n.note || null }))
+            } catch (e) { /* notes optional */ }
+
+            const payload = { range: { from: req.query.from || null, to: req.query.to || null }, timezone: tz, stats, patterns, notes }
+            const system = 'You are a trading-performance coach. Analyze the trader\'s behavior from the computed statistics and behavioral flags provided as JSON. Be concise, specific and actionable, in plain English. Ground every claim in the numbers given — never invent data. Structure the reply as: a one-line verdict; Strengths; Watch-outs (revenge trading, overtrading, position-size tilt, holding-time bias, weak entry hours where relevant); and Recommendations. Use short bullet points. Do not restate the raw JSON.'
+
+            const msg = await anthropic.messages.create({
+                model: ANALYSIS_MODEL,
+                max_tokens: 16000,
+                output_config: { effort: 'medium' },
+                system,
+                messages: [{ role: 'user', content: `Here is my trading data. Write the behavior analysis.\n\n${JSON.stringify(payload, null, 2)}` }],
+            })
+
+            if (msg.stop_reason === 'refusal') {
+                return res.status(200).json({ summary: null, refused: true, fingerprint })
+            }
+            const summary = (msg.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n').trim()
+            res.status(200).json({ summary, fingerprint, model: msg.model })
+        } catch (error) {
+            console.error(' -> AI summary error', error)
             res.status(500).send({ error: String(error?.message || error) })
         }
     });
