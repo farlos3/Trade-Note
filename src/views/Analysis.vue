@@ -156,6 +156,50 @@ async function runAI(force = false) {
     }
 }
 
+/* ---- Export for "ask Claude yourself" (subscription, no API key) ----
+   Bundles the computed data with a ready-to-use prompt so you can paste it into
+   Claude Desktop / Code / claude.ai and get the analysis on your subscription. */
+const copied = ref(false)
+const CLAUDE_INSTRUCTION = 'You are a trading-performance coach. Analyze the trader\'s behavior from the computed statistics and behavioral flags below. Be concise, specific and actionable, in plain English. Ground every claim in the numbers — never invent data. Structure the reply as: a one-line verdict; Strengths; Watch-outs (revenge trading, overtrading, position-size tilt, holding-time bias, weak entry hours where relevant); and Recommendations. Use short bullet points.'
+
+function claudePayload() {
+    const d = data.value || {}
+    return {
+        instruction: CLAUDE_INSTRUCTION,
+        range: d.range || null,
+        timezone: d.timezone || null,
+        data: { stats: d.stats || null, patterns: d.patterns || null, notes: d.notes || [] },
+    }
+}
+
+function claudePasteText() {
+    const p = claudePayload()
+    const r = p.range || {}
+    return `${p.instruction}\n\nHere is my trading data (${r.from || 'all'} to ${r.to || 'now'}, timezone ${p.timezone || 'UTC'}):\n\n\`\`\`json\n${JSON.stringify(p.data, null, 2)}\n\`\`\``
+}
+
+async function copyForClaude() {
+    try {
+        await navigator.clipboard.writeText(claudePasteText())
+        copied.value = true
+        setTimeout(() => (copied.value = false), 2000)
+    } catch (e) {
+        downloadForClaude()   // clipboard blocked (e.g. non-HTTPS) -> fall back to a file
+    }
+}
+
+function downloadForClaude() {
+    const blob = new Blob([JSON.stringify(claudePayload(), null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `tradenote-behavior-${period.value}.json`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+}
+
 onMounted(() => {
     showCachedFor(period.value)   // instant paint from cache
     showCachedAiFor(period.value) // and any cached AI analysis for this period
@@ -465,6 +509,21 @@ const narrative = computed(() => {
                         <li v-for="(x, i) in narrative.recs" :key="'r' + i">{{ x }}</li>
                     </ul>
                 </div>
+
+                <!-- Ask Claude yourself: export prompt + data to paste into Claude
+                     Desktop / Code / claude.ai (uses your subscription, no API key). -->
+                <div class="bsExport">
+                    <div class="txt-small text-secondary mb-2">
+                        <i class="uil uil-comment-alt-lines me-1"></i>Ask Claude yourself (uses your subscription — free):
+                        copy the prompt + data below and paste it into Claude Desktop / Code / claude.ai.
+                    </div>
+                    <button type="button" class="btn btn-outline-primary btn-sm me-2" v-on:click="copyForClaude()">
+                        <i class="uil uil-copy me-1"></i>{{ copied ? 'Copied!' : 'Copy prompt + data' }}
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" v-on:click="downloadForClaude()">
+                        <i class="uil uil-download-alt me-1"></i>Download JSON
+                    </button>
+                </div>
             </div>
         </template>
     </div>
@@ -697,6 +756,12 @@ const narrative = computed(() => {
 .bsHintErr {
     background: rgba(220, 53, 69, 0.08);
     border-color: rgba(220, 53, 69, 0.35);
+}
+
+.bsExport {
+    margin-top: 0.9rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .flagNoteLabel {
