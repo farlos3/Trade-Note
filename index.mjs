@@ -672,6 +672,9 @@ const setupApiRoutes = (app) => {
                 balance: Number(b.balance) || 0,
                 deposit: Number(b.deposit) || 0,
                 withdrawal: Number(b.withdrawal) || 0,
+                // Dated deposits/withdrawals so the equity curve can drop on the
+                // day money left the account (each: {t: unix, amount, type}).
+                cashFlows: Array.isArray(b.cashFlows) ? b.cashFlows : [],
                 updatedAt: Date.now(),
             }
             const idx = arr.findIndex(a => String(a.login) === String(b.login))
