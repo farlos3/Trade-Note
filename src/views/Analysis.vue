@@ -239,13 +239,13 @@ function flagCards(p) {
         {
             key: 'overtrading',
             title: 'Overtrading',
-            desc: `Days with abnormal trade count (median ${p.overtrading.medianTradesPerDay}/day, flag ≥ ${p.overtrading.flagThreshold})`,
+            desc: `Days with abnormal trade count / total lots, or an oversized trade (lot ≥ ${fmt(p.overtrading.lotCap, 2)})`,
             bad: p.overtrading.flaggedDays > 0,
             metric: `${p.overtrading.flaggedDays} days`,
-            sub: p.overtrading.flaggedDays ? `net ${fmt(p.overtrading.netOnFlaggedDays)} on flagged days` : 'none',
-            rule: `Flags a day when its trade count reaches ${p.overtrading.flagThreshold} — that is twice your median of ${p.overtrading.medianTradesPerDay}/day, or the median plus 3, whichever is larger.`,
-            why: 'The bar is your own median, not a fixed number, so it adapts to how you trade. A day far above it usually means chasing rather than waiting for setups. Check the net on flagged days: if it is negative while your overall P&L is positive, volume is what is leaking money.',
-            action: 'Cap the number of trades per day in advance, and stop for the day once you hit it.',
+            sub: p.overtrading.flaggedDays ? `net ${fmt(p.overtrading.netOnFlaggedDays)} · ${p.overtrading.oversizedTrades} oversized trade(s)` : 'none',
+            rule: `Flags a day when its trade count reaches ${p.overtrading.flagThreshold} (2× your median of ${p.overtrading.medianTradesPerDay}/day, or median + 3), OR its total lots reach ${fmt(p.overtrading.lotsThreshold, 2)} (2× your median of ${fmt(p.overtrading.medianLotsPerDay, 2)} lots/day), OR it contains a single trade with lot ≥ ${fmt(p.overtrading.lotCap, 2)} — a size bigger than your normal. Each flagged day notes which one tripped.`,
+            why: 'The count/lots bars are your own medians, so they adapt to how you trade; the oversized-lot bar is a fixed size you consider too big. A day far above your norm — or one where you sized up past that lot — usually means chasing rather than waiting for setups.',
+            action: 'Cap the number of trades and the total lots per day in advance, and keep single-trade lot at or below your normal size.',
         },
         {
             key: 'sizing',
@@ -313,7 +313,16 @@ const narrative = computed(() => {
     const flags = []
     if (p.overtrading && p.overtrading.flaggedDays > 0) {
         const d = (p.overtrading.days && p.overtrading.days[0]) || null
-        flags.push(`Overtrading — ${d ? `${d.date}: ${d.trades} trades` : `${p.overtrading.flaggedDays} day(s)`} (median ~${p.overtrading.medianTradesPerDay}/day). More volume usually means lower quality`)
+        let detail = `${p.overtrading.flaggedDays} day(s)`
+        if (d) {
+            const r = d.reason || ''
+            const bits = []
+            if (r.includes('count')) bits.push(`${d.trades} trades`)
+            if (r.includes('lots')) bits.push(`${fmt(d.volume, 2)} lots`)
+            if (r.includes('oversized')) bits.push(`${d.oversizedTrades} oversized (lot ≥ ${fmt(p.overtrading.lotCap, 2)})`)
+            detail = `${d.date}: ${bits.join(', ')}`
+        }
+        flags.push(`Overtrading — ${detail} (norm ~${p.overtrading.medianTradesPerDay} trades / ${fmt(p.overtrading.medianLotsPerDay, 2)} lots per day; oversized ≥ ${fmt(p.overtrading.lotCap, 2)} lot)`)
     }
     if (p.positionSizingTilt && p.positionSizingTilt.flag) {
         flags.push(`Sizing up after losses ${fmt(p.positionSizingTilt.ratio)}× — martingale / revenge tendency`)

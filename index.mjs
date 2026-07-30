@@ -285,7 +285,7 @@ const setupApiRoutes = (app) => {
             const days = await fetchDayDocs({ fromUnix, toUnix })
             const trades = flattenTrades(days)
             const stats = computeStats(trades, tz)
-            const patterns = findBehaviorPatterns(trades, { revengeWindowMinutes: 15, tz })
+            const patterns = findBehaviorPatterns(trades, { revengeWindowMinutes: 15, tz, overtradeLotCap: Number(process.env.OVERTRADE_LOT_CAP) || 0.1 })
 
             // Fingerprint of the underlying data (day count + most recent write),
             // so the client can cache this result and skip re-running until an
@@ -359,7 +359,7 @@ const setupApiRoutes = (app) => {
             const days = await fetchDayDocs({ fromUnix, toUnix })
             const trades = flattenTrades(days)
             const stats = computeStats(trades, tz)
-            const patterns = findBehaviorPatterns(trades, { revengeWindowMinutes: 15, tz })
+            const patterns = findBehaviorPatterns(trades, { revengeWindowMinutes: 15, tz, overtradeLotCap: Number(process.env.OVERTRADE_LOT_CAP) || 0.1 })
 
             const fpCount = days.length
             const fpLastUpdate = days.reduce((m, d) => Math.max(m, d._updated_at ? new Date(d._updated_at).getTime() : 0), 0)
