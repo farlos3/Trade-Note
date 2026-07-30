@@ -1,9 +1,15 @@
 <script setup>
-import { computed, onBeforeMount, ref } from 'vue'
+import { computed, onBeforeMount, onMounted, ref, watch, nextTick } from 'vue'
+import * as echarts from 'echarts'
+import dayjs from 'dayjs'
+import utc from 'dayjs/plugin/utc.js'; dayjs.extend(utc)
+import timezone from 'dayjs/plugin/timezone.js'; dayjs.extend(timezone)
 import SpinnerLoadingPage from '../components/SpinnerLoadingPage.vue';
 import Filters from '../components/Filters.vue'
-import { selectedDashTab, spinnerLoadingPage, dashboardIdMounted, totals, amountCase, amountCapital, profitAnalysis, renderData, selectedRatio, dashboardChartsMounted, hasData, satisfactionArray, availableTags, groups, barChartNegativeTagGroups, currentUser, filteredTrades } from '../stores/globals';
+import { selectedDashTab, spinnerLoadingPage, dashboardIdMounted, totals, amountCase, amountCapital, profitAnalysis, renderData, selectedRatio, dashboardChartsMounted, hasData, satisfactionArray, availableTags, groups, barChartNegativeTagGroups, currentUser, filteredTrades, timeZoneTrade } from '../stores/globals';
 import { useThousandCurrencyFormat, useTwoDecCurrencyFormat, useXDecCurrencyFormat, useMountDashboard, useThousandFormat, useXDecFormat } from '../utils/utils';
+import { activePlan } from '../utils/planStore'
+import { numOrNull } from '../utils/planMath'
 import NoData from '../components/NoData.vue';
 
 const dashTabs = [{
@@ -158,6 +164,74 @@ onBeforeMount(async () => {
     
     //console.log(" barChartNegativeTagGroups "+JSON.stringify(barChartNegativeTagGroups.value))
 })
+
+/* Real-balance equity curve: starts at the plan's starting balance, steps by each
+   traded day's net P&L, and drops when money is withdrawn (using the plan's dated
+   withdrawals — the only dated source we have). Only shown when a start balance is
+   set; without it there is no baseline to plot. */
+const equitySeries = computed(() => {
+    const startBal = numOrNull(activePlan.value && activePlan.value.startBalance)
+    if (!startBal || startBal <= 0 || !filteredTrades.length) return null
+    const field = amountCase.value + 'Proceeds'
+    const tz = timeZoneTrade.value || 'UTC'
+    // Net P&L per traded date.
+    const netByDate = new Map()
+    filteredTrades.forEach((t) => {
+        const date = dayjs.unix(t.dateUnix).tz(tz).format('YYYY-MM-DD')
+        netByDate.set(date, (netByDate.get(date) || 0) + Number(t.pAndL && t.pAndL[field] || 0))
+    })
+    const firstDate = [...netByDate.keys()].sort()[0]
+    // Withdrawal total per date, from MT5's dated balance ops (pushed by the sync)
+    // — so the curve drops on the day money actually left, even a day with no trades.
+    const wdByDate = new Map()
+    mt5Accounts.value
+        .flatMap((a) => (Array.isArray(a.cashFlows) ? a.cashFlows : []))
+        .filter((cf) => cf && cf.type === 'withdrawal')
+        .forEach((cf) => {
+            const date = dayjs.unix(Number(cf.t)).tz(tz).format('YYYY-MM-DD')
+            const amt = Math.abs(Number(cf.amount) || 0)
+            if (amt > 0 && date >= firstDate) wdByDate.set(date, (wdByDate.get(date) || 0) + amt)
+        })
+    // Unified timeline: every traded day AND every withdrawal day gets a point.
+    const allDates = [...new Set([...netByDate.keys(), ...wdByDate.keys()])].sort()
+    let bal = startBal
+    const dates = [], equity = []
+    for (const date of allDates) {
+        bal += (netByDate.get(date) || 0) - (wdByDate.get(date) || 0)
+        dates.push(date)
+        equity.push(Number(bal.toFixed(2)))
+    }
+    return { dates, equity }
+})
+
+const equityChartEl = ref(null)
+let equityChart = null
+function renderEquityChart() {
+    const el = equityChartEl.value
+    const s = equitySeries.value
+    if (!el || !s) return
+    if (!equityChart) equityChart = echarts.init(el)
+    equityChart.setOption({
+        backgroundColor: 'transparent',
+        grid: { left: 58, right: 16, top: 16, bottom: 28 },
+        tooltip: { trigger: 'axis', valueFormatter: (v) => useTwoDecCurrencyFormat(v) },
+        xAxis: { type: 'category', data: s.dates, boundaryGap: false, axisLabel: { color: 'rgba(255,255,255,0.5)' } },
+        yAxis: {
+            type: 'value', scale: true,
+            axisLabel: { color: 'rgba(255,255,255,0.5)', formatter: (v) => useTwoDecCurrencyFormat(v) },
+            splitLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
+        },
+        series: [{
+            name: 'Equity', type: 'line', smooth: true, showSymbol: false, data: s.equity,
+            lineStyle: { color: '#2f9bff', width: 2 }, areaStyle: { color: 'rgba(47,155,255,0.08)' },
+        }],
+    })
+    requestAnimationFrame(() => equityChart && equityChart.resize())
+}
+
+onMounted(() => nextTick(renderEquityChart))
+watch([equitySeries, renderData], () => nextTick(renderEquityChart))
+if (typeof window !== 'undefined') window.addEventListener('resize', () => equityChart && equityChart.resize())
 
 
 </script>
@@ -360,6 +434,14 @@ onBeforeMount(async () => {
                         <!-- ============ LINE 3 : TOTAL CHARTS ============ -->
                         <div class="col-12">
                             <div class="row">
+                                <!-- EQUITY (real balance: start + P&L, drops on withdrawals) -->
+                                <div class="col-12 mb-3" v-if="equitySeries">
+                                    <div class="dailyCard">
+                                        <h6>Equity</h6>
+                                        <div ref="equityChartEl" class="chartClass"></div>
+                                    </div>
+                                </div>
+
                                 <!-- CUMULATIVE P&L -->
                                 <div class="col-12 mb-3">
                                     <div class="dailyCard">

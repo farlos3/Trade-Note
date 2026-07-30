@@ -190,8 +190,9 @@ def push(cfg, xlsx_bytes):
 
 
 def account_financials():
-    """Total deposits & withdrawals from the account's balance-type deals.
-    Deposits are positive balance operations, withdrawals negative."""
+    """Totals AND the individual dated deposits/withdrawals from the account's
+    balance-type deals. Deposits are positive balance ops, withdrawals negative.
+    The dated list lets TradeNote drop the equity curve on the day money left."""
     frm = dt.datetime(2000, 1, 1)
     to = dt.datetime.now() + dt.timedelta(days=2)
     deals = mt5.history_deals_get(frm, to) or []
@@ -199,12 +200,20 @@ def account_financials():
                   if d.type == mt5.DEAL_TYPE_BALANCE and d.profit > 0)
     withdrawal = sum(-float(d.profit) for d in deals
                      if d.type == mt5.DEAL_TYPE_BALANCE and d.profit < 0)
-    return deposit, withdrawal
+    # d.time is a UTC-based unix timestamp (broker server time); keep it raw so the
+    # frontend buckets it in the trade timezone, same as trades.
+    cashflows = [
+        {"t": int(d.time), "amount": float(d.profit),
+         "type": "deposit" if d.profit > 0 else "withdrawal"}
+        for d in deals if d.type == mt5.DEAL_TYPE_BALANCE and d.profit != 0
+    ]
+    return deposit, withdrawal, cashflows
 
 
-def push_account(cfg, ai, deposit, withdrawal):
-    """Send the live account snapshot (balance/deposit/withdrawal/broker) to
-    TradeNote so the Dashboard can show it. Non-fatal: logged and swallowed."""
+def push_account(cfg, ai, deposit, withdrawal, cashflows=None):
+    """Send the live account snapshot (balance/deposit/withdrawal/broker + dated
+    cash flows) to TradeNote so the Dashboard can show it. Non-fatal: logged and
+    swallowed."""
     try:
         url = cfg.get("tradenote", "url").rstrip("/") + "/api/account"
         api_key = cfg.get("tradenote", "api_key")
@@ -215,6 +224,7 @@ def push_account(cfg, ai, deposit, withdrawal):
             "balance": float(ai.balance),
             "deposit": deposit,
             "withdrawal": withdrawal,
+            "cashFlows": cashflows or [],
         }
         r = requests.post(url, headers={"api-key": api_key, "Content-Type": "application/json"},
                           data=json.dumps(body), timeout=30)
@@ -426,8 +436,8 @@ def main():
         # Always refresh the account snapshot (balance/deposit/withdrawal) so the
         # Dashboard stays current even on ticks with no new trades.
         ai = mt5.account_info()
-        deposit, withdrawal = account_financials()
-        push_account(cfg, ai, deposit, withdrawal)
+        deposit, withdrawal, cashflows = account_financials()
+        push_account(cfg, ai, deposit, withdrawal, cashflows)
 
         deals = fetch_deals(frm, to)
         new_deals = [d for d in deals if d.time > last_deal_unix]

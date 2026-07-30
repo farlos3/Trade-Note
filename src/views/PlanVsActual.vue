@@ -3,7 +3,9 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import axios from 'axios'
 import dayjs from 'dayjs'
-import { timeZoneTrade } from '../stores/globals'
+import utc from 'dayjs/plugin/utc.js'; dayjs.extend(utc)
+import timezone from 'dayjs/plugin/timezone.js'; dayjs.extend(timezone)
+import { timeZoneTrade, currentUser } from '../stores/globals'
 import PlanSelector from '../components/PlanSelector.vue'
 import PlanDepositsEditor from '../components/PlanDepositsEditor.vue'
 import FpDate from '../components/FpDate.vue'
@@ -81,34 +83,62 @@ const actual = computed(() => {
 })
 
 /** Real equity curve: your actual balance day by day, stepping by each traded
-   day's real net P&L (real ups/downs — NOT a smoothed average). The Plan line is
-   the target rate compounded over the same trading days, for a like-for-like
-   "where I am vs where the plan said" comparison. Deposits aren't added here —
-   this tracks trading P&L, not cash movements. */
+   day's real net P&L (real ups/downs — NOT a smoothed average). Withdrawals are
+   subtracted on the first traded day on/after their date, so the Equity line
+   drops when you take money out. The Plan line compounds the target rate over the
+   same trading days and drops by the same withdrawals, for a like-for-like "where
+   I am vs where the plan said" comparison. (Deposits still aren't added here —
+   this tracks trading result + the money you pulled from it.) */
 const equity = computed(() => {
     if (!daily.value || !daily.value.length || !(start.value > 0)) return null
-    const rows = [...daily.value].sort((a, b) => (a.date < b.date ? -1 : 1))
     const s = start.value
     const t = target.value
-    let bal = s
+    const tz = timeZoneTrade.value || 'UTC'
+    const accs = (currentUser.value && Array.isArray(currentUser.value.mt5Accounts)) ? currentUser.value.mt5Accounts : []
+    // Net P&L per traded date.
+    const netByDate = new Map()
+    daily.value.forEach((d) => netByDate.set(d.date, (netByDate.get(d.date) || 0) + (Number(d.net) || 0)))
+    const firstDate = [...netByDate.keys()].sort()[0]
+    // Real withdrawals from MT5's dated balance ops (pushed by the sync), summed
+    // per date. A withdrawal on a day with no trades still gets its own point.
+    const wdByDate = new Map()
+    accs.flatMap((a) => (Array.isArray(a.cashFlows) ? a.cashFlows : []))
+        .filter((cf) => cf && cf.type === 'withdrawal')
+        .forEach((cf) => {
+            const date = dayjs.unix(Number(cf.t)).tz(tz).format('YYYY-MM-DD')
+            const amt = Math.abs(Number(cf.amount) || 0)
+            if (amt > 0 && date >= firstDate) wdByDate.set(date, (wdByDate.get(date) || 0) + amt)
+        })
+    // Unified timeline: every traded day AND every withdrawal day gets a point, so
+    // the Equity line drops on the withdrawal day even if you didn't trade it.
+    const allDates = [...new Set([...netByDate.keys(), ...wdByDate.keys()])].sort()
+    let bal = s, planBal = s, withdrawnCum = 0
     const dates = [], actual = [], plan = []
     // Same numbers expressed as profit rather than balance, for the P&L views.
     const cumActual = [], cumPlan = [], dayActual = [], dayPlan = []
-    rows.forEach((d, i) => {
-        const net = Number(d.net) || 0
-        bal += net
-        dates.push(d.date)
+    allDates.forEach((date) => {
+        const isTraded = netByDate.has(date)
+        const net = netByDate.get(date) || 0
+        const wdToday = wdByDate.get(date) || 0
+        withdrawnCum += wdToday
+        bal += net - wdToday
+        dates.push(date)
         actual.push(Number(bal.toFixed(2)))
-        cumActual.push(Number((bal - s).toFixed(2)))
-        dayActual.push(Number(net.toFixed(2)))
+        // Cumulative profit keeps withdrawn money in the numerator (it was profit
+        // you took out), so the P&L view doesn't dip on a withdrawal.
+        cumActual.push(Number((bal - s + withdrawnCum).toFixed(2)))
+        // Daily P&L view is per TRADED day; a withdrawal-only day has no bar (null,
+        // not 0) so the line doesn't dip to zero on it.
+        dayActual.push(isTraded ? Number(net.toFixed(2)) : null)
         if (t != null) {
-            const planBal = s * Math.pow(1 + t / 100, i + 1)
+            // Plan is the pure target pace — compounds on traded days, and does NOT
+            // drop on withdrawals (it shows where the plan says you'd be, not your
+            // cash). Only the actual line reflects money taken out.
+            const dayNeed = isTraded ? planBal * (t / 100) : null
+            if (isTraded) planBal = planBal * (1 + t / 100)
             plan.push(Number(planBal.toFixed(2)))
             cumPlan.push(Number((planBal - s).toFixed(2)))
-            // Profit the plan needs on this specific day: the compounded balance
-            // going into the day, times the daily rate. It grows day by day, so a
-            // flat line here would understate what the plan asks for later on.
-            dayPlan.push(Number((s * Math.pow(1 + t / 100, i) * (t / 100)).toFixed(2)))
+            dayPlan.push(dayNeed == null ? null : Number(dayNeed.toFixed(2)))
         } else {
             plan.push(null); cumPlan.push(null); dayPlan.push(null)
         }
