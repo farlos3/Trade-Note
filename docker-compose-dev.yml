@@ -52,6 +52,9 @@ services:
       # token, separate from a Claude subscription). Leave unset to keep it off.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANALYSIS_MODEL: ${ANALYSIS_MODEL:-}
+      # Per-trade lot at/above which a trade counts as "oversized" in the
+      # Overtrading flag (default 0.1). Set to your own normal size + margin.
+      OVERTRADE_LOT_CAP: ${OVERTRADE_LOT_CAP:-}
       R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
       R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
       R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}

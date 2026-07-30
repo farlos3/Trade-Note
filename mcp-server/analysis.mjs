@@ -155,6 +155,9 @@ const median = (xs) => {
 export function findBehaviorPatterns(trades, opts = {}) {
   const revengeWindowMinutes = opts.revengeWindowMinutes ?? 15
   const tz = opts.tz ?? 'UTC'
+  // Absolute per-trade lot at/above which a trade is "oversized" (a lot bigger
+  // than the trader's normal). Default 0.1; override via opts.overtradeLotCap.
+  const lotCap = num(opts.overtradeLotCap) || 0.1
   const report = {}
 
   // --- Revenge trading: entered soon after closing a losing trade ---
@@ -182,23 +185,52 @@ export function findBehaviorPatterns(trades, opts = {}) {
     examples: revenge.slice(0, 10),
   }
 
-  // --- Overtrading days: trade count well above the personal median ---
+  // --- Overtrading days: trade COUNT or total LOTS well above the personal
+  //     median. Trading more lots than usual on a day counts even if the number
+  //     of trades is normal (bigger size = more risk on the book that day). ---
   const perDay = {}
   for (const t of trades) (perDay[t.dateUnix] ??= []).push(t)
+  const dayVolume = (a) => a.reduce((s, t) => s + (num(t.size) || 0), 0)
   const counts = Object.values(perDay).map((a) => a.length)
+  const volumes = Object.values(perDay).map(dayVolume)
   const medCount = median(counts)
-  const overThreshold = Math.max(medCount * 2, medCount + 3)
+  const medVol = median(volumes)
+  const overThreshold = Math.max(medCount * 2, medCount + 3)  // count trigger
+  const volThreshold = medVol * 2                             // lots trigger
+  let oversizedTotal = 0
   const overDays = Object.entries(perDay)
-    .filter(([, a]) => a.length >= overThreshold && a.length > 1)
-    .map(([dateUnix, a]) => ({
-      date: new Date(Number(dateUnix) * 1000).toISOString().slice(0, 10),
-      trades: a.length,
-      net: round(a.reduce((s, t) => s + t.pnl, 0)),
-    }))
+    .map(([dateUnix, a]) => {
+      const vol = dayVolume(a)
+      const oversized = a.filter((t) => (num(t.size) || 0) >= lotCap).length
+      oversizedTotal += oversized
+      const byCount = a.length >= overThreshold && a.length > 1
+      const byVolume = medVol > 0 && vol >= volThreshold && a.length > 1
+      const byLot = oversized > 0                              // per-trade lot trigger
+      return { dateUnix, a, vol, oversized, byCount, byVolume, byLot }
+    })
+    .filter((d) => d.byCount || d.byVolume || d.byLot)
+    .map((d) => {
+      const reasons = []
+      if (d.byCount) reasons.push('count')
+      if (d.byVolume) reasons.push('lots')
+      if (d.byLot) reasons.push('oversized')
+      return {
+        date: new Date(Number(d.dateUnix) * 1000).toISOString().slice(0, 10),
+        trades: d.a.length,
+        volume: round(d.vol),
+        oversizedTrades: d.oversized,
+        net: round(d.a.reduce((s, t) => s + t.pnl, 0)),
+        reason: reasons.join('+'),
+      }
+    })
     .sort((x, y) => y.trades - x.trades)
   report.overtrading = {
     medianTradesPerDay: medCount,
+    medianLotsPerDay: round(medVol),
     flagThreshold: overThreshold,
+    lotsThreshold: round(volThreshold),
+    lotCap,                                 // per-trade "oversized" threshold
+    oversizedTrades: oversizedTotal,
     flaggedDays: overDays.length,
     netOnFlaggedDays: round(overDays.reduce((s, d) => s + d.net, 0)),
     days: overDays.slice(0, 10),
