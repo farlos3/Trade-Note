@@ -83,12 +83,10 @@ const actual = computed(() => {
 })
 
 /** Real equity curve: your actual balance day by day, stepping by each traded
-   day's real net P&L (real ups/downs — NOT a smoothed average). Withdrawals are
-   subtracted on the first traded day on/after their date, so the Equity line
-   drops when you take money out. The Plan line compounds the target rate over the
-   same trading days and drops by the same withdrawals, for a like-for-like "where
-   I am vs where the plan said" comparison. (Deposits still aren't added here —
-   this tracks trading result + the money you pulled from it.) */
+   day's real net P&L (real ups/downs — NOT a smoothed average). Real withdrawals
+   (MT5 dated balance ops) drop the Equity line on the day money left. The Plan
+   line is the pure target pace over the traded days and does NOT drop on
+   withdrawals. (Deposits still aren't added here.) */
 const equity = computed(() => {
     if (!daily.value || !daily.value.length || !(start.value > 0)) return null
     const s = start.value
@@ -114,8 +112,7 @@ const equity = computed(() => {
     const allDates = [...new Set([...netByDate.keys(), ...wdByDate.keys()])].sort()
     let bal = s, planBal = s, withdrawnCum = 0
     const dates = [], actual = [], plan = []
-    // Same numbers expressed as profit rather than balance, for the P&L views.
-    const cumActual = [], cumPlan = [], dayActual = [], dayPlan = []
+    const cumActual = [], cumPlan = [], dayActual = [], dayPlan = [], withdrawals_ = []
     allDates.forEach((date) => {
         const isTraded = netByDate.has(date)
         const net = netByDate.get(date) || 0
@@ -130,6 +127,7 @@ const equity = computed(() => {
         // Daily P&L view is per TRADED day; a withdrawal-only day has no bar (null,
         // not 0) so the line doesn't dip to zero on it.
         dayActual.push(isTraded ? Number(net.toFixed(2)) : null)
+        withdrawals_.push(Number(wdToday.toFixed(2)))
         if (t != null) {
             // Plan is the pure target pace — compounds on traded days, and does NOT
             // drop on withdrawals (it shows where the plan says you'd be, not your
@@ -143,7 +141,13 @@ const equity = computed(() => {
             plan.push(null); cumPlan.push(null); dayPlan.push(null)
         }
     })
-    return { dates, actual, plan, cumActual, cumPlan, dayActual, dayPlan }
+
+    return {
+        dates, actual, plan, cumActual, cumPlan, dayActual, dayPlan,
+        withdrawals: withdrawals_,
+        totalWithdrawn: Number(withdrawnCum.toFixed(2)),
+        withdrawnOutsideRange: 0,
+    }
 })
 
 /** Same horizon, but compounding at the rate you actually achieved. */
@@ -175,6 +179,9 @@ const INK_MUTED = 'rgba(237, 240, 247, 0.60)'
 // good-vs-bad.
 const WIN_COLOR = '#00CA73'
 const LOSS_COLOR = '#f87171'
+// Withdrawals are neither profit nor loss, so they get their own hue rather than
+// borrowing red -- taking planned profit out is not a bad outcome.
+const WITHDRAW_COLOR = '#c084fc'
 
 const CHART_MODES = [
     { value: 'equity', label: 'Equity', title: 'Equity — your actual trades per day vs plan pace' },
@@ -207,6 +214,29 @@ function renderChart() {
         ? `Plan needs (${fmt(target.value, 2)}%/day)`
         : `Plan (${fmt(target.value, 2)}%/day)`
 
+    /* Vertical marks on the days money left the account. Attached as markLine
+       rather than an extra series so they never enter the legend or the axis
+       scale -- a withdrawal is an annotation on the curve, not a third quantity
+       to compare against. Drawn on the Actual series so they inherit its z. */
+    const wdMarks = eq.withdrawals
+        .map((amt, i) => ({ amt, date: dates[i] }))
+        .filter((w) => w.amt > 0)
+    const withdrawalMarkLine = wdMarks.length
+        ? {
+            silent: true,
+            symbol: 'none',
+            lineStyle: { color: WITHDRAW_COLOR, width: 1, type: 'dotted' },
+            label: {
+                show: true,
+                position: 'insideEndTop',
+                color: WITHDRAW_COLOR,
+                fontSize: 10,
+                formatter: (p) => `−${fmt(p.data.amount, 0)}`,
+            },
+            data: wdMarks.map((w) => ({ xAxis: w.date, amount: w.amt })),
+        }
+        : undefined
+
     const series = []
     if (planData.some((v) => v != null)) {
         series.push({
@@ -232,6 +262,7 @@ function renderChart() {
             })),
             barMaxWidth: 28,
             z: 2,
+            markLine: withdrawalMarkLine,
         })
     } else {
         series.push({
@@ -244,6 +275,7 @@ function renderChart() {
             lineStyle: { color: ACTUAL_COLOR, width: 2 },
             itemStyle: { color: ACTUAL_COLOR, borderColor: SURFACE, borderWidth: 2 },
             areaStyle: { color: 'rgba(245, 158, 11, 0.08)' },
+            markLine: withdrawalMarkLine,
         })
     }
 
@@ -404,7 +436,19 @@ watch([equity, chartMode], async () => {
                         </div>
                         <div class="statSub">target {{ fmt(target, 2) }}% / day</div>
                     </div>
+                    <div class="statTile" v-if="equity && equity.totalWithdrawn > 0">
+                        <div class="statLabel">Withdrawn</div>
+                        <div class="statValue withdrawHi">−{{ fmt(equity.totalWithdrawn) }}</div>
+                        <div class="statSub">
+                            balance {{ fmt(equity.actual[equity.actual.length - 1]) }} · earned {{ fmt(equity.cumActual[equity.cumActual.length - 1]) }}
+                        </div>
+                    </div>
                 </div>
+
+                <p v-if="equity && equity.withdrawnOutsideRange > 0" class="hintLine mb-0">
+                    {{ fmt(equity.withdrawnOutsideRange) }} of withdrawals fall after the last traded day in this
+                    period, so they are not on the curve yet.
+                </p>
 
                 <div v-if="hasChart" class="chartWrap mb-3">
                     <div class="chartHead">
@@ -527,6 +571,12 @@ watch([equity, chartMode], async () => {
     border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 0.5rem;
     padding: 0.6rem 0.4rem 0.4rem;
+}
+
+/* Matches WITHDRAW_COLOR in the chart, so the tile and the marks read as one
+   thing. Not red: a planned withdrawal is not a loss. */
+.withdrawHi {
+    color: #c084fc;
 }
 
 .chartHead {
