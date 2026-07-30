@@ -182,6 +182,7 @@ function renderChart() {
         series.push({
             name: planName,
             type: 'line',
+            smooth: true,
             data: planData,
             showSymbol: false,
             lineStyle: { color: PLAN_COLOR, width: 2, type: 'dashed' },
@@ -206,6 +207,7 @@ function renderChart() {
         series.push({
             name: 'Actual (real trades)',
             type: 'line',
+            smooth: true,
             data: actualData,
             showSymbol: true,
             symbolSize: 6,
