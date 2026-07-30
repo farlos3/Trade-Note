@@ -21,7 +21,7 @@ const pages = [{
 },
 {
     id: "daily",
-    name: "Daily",
+    name: "History",
     icon: "uil uil-signal-alt-3"
 },
 {
@@ -132,7 +132,7 @@ const pages = [{
 ]
 //console.log(" user "+useCheckCurrentUser())
 onMounted(async () => {
-    await getLatestVersion()
+    getLatestVersion()   // fire-and-forget: must not block navigation / tooltip init
     await useInitTooltip()
 })
 
@@ -148,7 +148,15 @@ function logout() {
 
 function getLatestVersion() {
     return new Promise(async (resolve, reject) => {
-        await axios.get("/api/dockerVersion")
+        // Runs on every Nav mount (i.e. every route change). Check the two remote
+        // sources once per browser session and cache the result, so navigating
+        // doesn't re-fire two external calls each time.
+        const cached = sessionStorage.getItem('latestVersion')
+        if (cached) {
+            try { latestVersion.value = JSON.parse(cached) } catch { /* ignore */ }
+            resolve(); return
+        }
+        await axios.get("/api/dockerVersion", { timeout: 4000 })
     .then((response) => {
         //console.log(" -> data " + JSON.stringify(response.data));
         for (const element of response.data.results) { // Use for...of for iteration
@@ -166,11 +174,11 @@ function getLatestVersion() {
         // Always executed
     });
         
-        await axios.get("https://raw.githubusercontent.com/Eleven-Trading/TradeNote/main/package.json")
+        await axios.get("https://raw.githubusercontent.com/Eleven-Trading/TradeNote/main/package.json", { timeout: 4000 })
             .then((response) => {
                 //console.log(" -> data " + JSON.stringify(response.data))
                 latestVersion.value.gitHub = response.data.version
-                
+
             })
             .catch((error) => {
             })
@@ -178,7 +186,7 @@ function getLatestVersion() {
                 // always executed
             })
 
-            console.log(" -> Latest versions " + JSON.stringify(latestVersion.value))
+            try { sessionStorage.setItem('latestVersion', JSON.stringify(latestVersion.value)) } catch { /* ignore */ }
         resolve()
     })
 }

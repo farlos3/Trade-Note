@@ -203,82 +203,76 @@ onBeforeMount(async () => {
             <!-- Ordered so related tiles sit next to each other and stay paired at
                  every breakpoint (6 / 4 / 3 / 2 per row): volume, outcome counts,
                  rates, money per trade, direction, position size. -->
-            <div v-if="hasData" class="row g-2 mb-3 text-center">
-                <div class="col-6 col-lg-3 col-xl-2">
-                    <div class="dailyCard statCard">
-                        <h5 class="titleWithDesc">{{ useThousandFormat(keyStats.trades) }}</h5>
-                        <span class="dashInfoTitle">Total Trades</span>
+            <template v-if="hasData">
+                <!-- Hero stats: the three numbers a trader scans first -->
+                <div class="row g-2 mb-2 text-center">
+                    <div class="col-12 col-md-4">
+                        <div class="dailyCard statCard statCardHero">
+                            <h5 class="titleWithDesc heroValue">{{ useThousandFormat(keyStats.trades) }}</h5>
+                            <span class="dashInfoTitle">Total Trades</span>
+                        </div>
+                    </div>
+                    <div class="col-12 col-md-4">
+                        <div class="dailyCard statCard statCardHero">
+                            <h5 class="titleWithDesc heroValue"
+                                v-bind:class="keyStats.profit > 0 ? 'acctPos' : keyStats.profit < 0 ? 'acctNeg' : ''">
+                                {{ useTwoDecCurrencyFormat(keyStats.profit) }}</h5>
+                            <span class="dashInfoTitle">Profit</span>
+                        </div>
+                    </div>
+                    <div class="col-12 col-md-4">
+                        <div class="dailyCard statCard statCardHero">
+                            <h5 class="titleWithDesc heroValue">{{ keyStats.winRate.toFixed(1) }}%</h5>
+                            <span class="dashInfoTitle">Win Rate</span>
+                        </div>
                     </div>
                 </div>
-                <div class="col-6 col-lg-3 col-xl-2">
-                    <div class="dailyCard statCard">
-                        <h5 class="titleWithDesc"
-                            v-bind:class="keyStats.profit > 0 ? 'acctPos' : keyStats.profit < 0 ? 'acctNeg' : ''">
-                            {{ useTwoDecCurrencyFormat(keyStats.profit) }}</h5>
-                        <span class="dashInfoTitle">Profit</span>
+                <!-- Secondary stats -->
+                <div class="row g-2 mb-3 text-center">
+                    <div class="col-6 col-lg-4 col-xl-2">
+                        <div class="dailyCard statCard statCardSub">
+                            <h5 class="titleWithDesc">{{ tradeStats.avgLength }}</h5>
+                            <span class="dashInfoTitle">Avg. Trade Length</span>
+                        </div>
+                    </div>
+                    <div class="col-6 col-lg-4 col-xl-2">
+                        <div class="dailyCard statCard statCardSub">
+                            <h5 class="titleWithDesc">
+                                {{ keyStats.profitFactor === null ? (keyStats.wins ? '∞' : '-') : keyStats.profitFactor.toFixed(2) }}
+                            </h5>
+                            <span class="dashInfoTitle">Profit Factor</span>
+                        </div>
+                    </div>
+                    <div class="col-6 col-lg-4 col-xl-2">
+                        <div class="dailyCard statCard statCardSub">
+                            <h5 class="titleWithDesc acctPos">
+                                {{ tradeStats.longs ? tradeStats.longsWon + '/' + tradeStats.longs : '-' }}
+                            </h5>
+                            <span class="dashInfoTitle"><i class="uil uil-arrow-up me-1 acctPos"></i>Longs Won</span>
+                        </div>
+                    </div>
+                    <div class="col-6 col-lg-4 col-xl-2">
+                        <div class="dailyCard statCard statCardSub">
+                            <h5 class="titleWithDesc acctPos">
+                                {{ tradeStats.shorts ? tradeStats.shortsWon + '/' + tradeStats.shorts : '-' }}
+                            </h5>
+                            <span class="dashInfoTitle"><i class="uil uil-arrow-down me-1 acctNeg"></i>Shorts Won</span>
+                        </div>
+                    </div>
+                    <div class="col-6 col-lg-4 col-xl-2">
+                        <div class="dailyCard statCard statCardSub">
+                            <h5 class="titleWithDesc">{{ formatLot(tradeStats.minLot) }}</h5>
+                            <span class="dashInfoTitle">Minimum Lot</span>
+                        </div>
+                    </div>
+                    <div class="col-6 col-lg-4 col-xl-2">
+                        <div class="dailyCard statCard statCardSub">
+                            <h5 class="titleWithDesc">{{ formatLot(tradeStats.maxLot) }}</h5>
+                            <span class="dashInfoTitle">Maximum Lot</span>
+                        </div>
                     </div>
                 </div>
-                <div class="col-6 col-lg-3 col-xl-2">
-                    <div class="dailyCard statCard">
-                        <h5 class="titleWithDesc">{{ tradeStats.avgLength }}</h5>
-                        <span class="dashInfoTitle">Avg. Trade Length</span>
-                    </div>
-                </div>
-                <div class="col-6 col-lg-3 col-xl-2">
-                    <div class="dailyCard statCard">
-                        <h5 class="titleWithDesc acctPos">{{ keyStats.wins }}</h5>
-                        <span class="dashInfoTitle">Wins</span>
-                    </div>
-                </div>
-                <div class="col-6 col-lg-3 col-xl-2">
-                    <div class="dailyCard statCard">
-                        <h5 class="titleWithDesc acctNeg">{{ keyStats.losses }}</h5>
-                        <span class="dashInfoTitle">Losses</span>
-                    </div>
-                </div>
-                <div class="col-6 col-lg-3 col-xl-2">
-                    <div class="dailyCard statCard">
-                        <h5 class="titleWithDesc">{{ keyStats.winRate.toFixed(1) }}%</h5>
-                        <span class="dashInfoTitle">Win Rate</span>
-                    </div>
-                </div>
-                <div class="col-6 col-lg-3 col-xl-2">
-                    <div class="dailyCard statCard">
-                        <h5 class="titleWithDesc">
-                            {{ keyStats.profitFactor === null ? (keyStats.wins ? '∞' : '-') : keyStats.profitFactor.toFixed(2) }}
-                        </h5>
-                        <span class="dashInfoTitle">Profit Factor</span>
-                    </div>
-                </div>
-                <div class="col-6 col-lg-3 col-xl-2">
-                    <div class="dailyCard statCard">
-                        <h5 class="titleWithDesc acctPos">
-                            {{ tradeStats.longs ? tradeStats.longsWon + '/' + tradeStats.longs : '-' }}
-                        </h5>
-                        <span class="dashInfoTitle">Longs Won</span>
-                    </div>
-                </div>
-                <div class="col-6 col-lg-3 col-xl-2">
-                    <div class="dailyCard statCard">
-                        <h5 class="titleWithDesc acctPos">
-                            {{ tradeStats.shorts ? tradeStats.shortsWon + '/' + tradeStats.shorts : '-' }}
-                        </h5>
-                        <span class="dashInfoTitle">Shorts Won</span>
-                    </div>
-                </div>
-                <div class="col-6 col-lg-3 col-xl-2">
-                    <div class="dailyCard statCard">
-                        <h5 class="titleWithDesc">{{ formatLot(tradeStats.minLot) }}</h5>
-                        <span class="dashInfoTitle">Minimum Lot</span>
-                    </div>
-                </div>
-                <div class="col-6 col-lg-3 col-xl-2">
-                    <div class="dailyCard statCard">
-                        <h5 class="titleWithDesc">{{ formatLot(tradeStats.maxLot) }}</h5>
-                        <span class="dashInfoTitle">Maximum Lot</span>
-                    </div>
-                </div>
-            </div>
+            </template>
 
             <div v-if="!hasData">
                 <NoData />
@@ -590,6 +584,34 @@ onBeforeMount(async () => {
 </template>
 
 <style scoped>
+/* Hero stat tiles (Total Trades / Profit / Win Rate) — bigger + emphasized. */
+.statCardHero {
+    min-height: 7rem;
+    padding: 1.1rem 1rem;
+    border: 1px solid var(--border-strong);
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.statCardHero .heroValue {
+    font-size: 2.1rem;
+    line-height: 1.1;
+}
+
+.statCardHero .dashInfoTitle {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    opacity: 0.85;
+}
+
+/* Secondary stat tiles — quieter than the hero row. */
+.statCardSub {
+    opacity: 0.9;
+}
+
+.statCardSub .titleWithDesc {
+    font-size: 1.1rem;
+}
+
 .acctCard {
     padding: 1rem 1.25rem;
 }

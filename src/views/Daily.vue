@@ -27,6 +27,48 @@ async function onDayFileChange(event, dateUnixDay) {
     if (event.target) event.target.value = ''
 }
 
+/* History grouping: the per-day cards are unchanged, but a Weekly/Monthly filter
+   inserts a group header (with a P&L + trade-count subtotal) above the first day
+   of each week/month. Subtotals cover the days currently loaded in the list. */
+const historyGroup = ref('daily')   // 'daily' | 'weekly' | 'monthly'
+
+function historyGroupKey(dateUnix) {
+    if (historyGroup.value === 'daily') return null
+    const d = dayjs.unix(dateUnix).tz(timeZoneTrade.value)
+    return historyGroup.value === 'weekly' ? `${d.isoWeekYear()}-W${d.isoWeek()}` : d.format('YYYY-MM')
+}
+
+function historyGroupLabel(dateUnix) {
+    const d = dayjs.unix(dateUnix).tz(timeZoneTrade.value)
+    if (historyGroup.value === 'weekly') return 'Week of ' + d.startOf('isoWeek').format('MMM D, YYYY')
+    return d.format('MMMM YYYY')
+}
+
+// Aggregate loaded days into their week/month buckets once (O(1) lookups below).
+const historyGroups = computed(() => {
+    const m = {}
+    if (historyGroup.value === 'daily') return m
+    const field = amountCase.value + 'Proceeds'
+    for (const t of filteredTrades) {
+        const k = historyGroupKey(t.dateUnix)
+        if (!m[k]) m[k] = { net: 0, trades: 0 }
+        m[k].net += Number(t.pAndL?.[field] || 0)
+        m[k].trades += Number(t.pAndL?.trades || 0)
+    }
+    return m
+})
+
+function historyGroupSubtotal(dateUnix) {
+    return historyGroups.value[historyGroupKey(dateUnix)] || { net: 0, trades: 0 }
+}
+
+// First day of its week/month in the current list order -> render the header.
+function isGroupStart(index) {
+    if (historyGroup.value === 'daily') return false
+    if (index === 0) return true
+    return historyGroupKey(filteredTrades[index - 1].dateUnix) !== historyGroupKey(filteredTrades[index].dateUnix)
+}
+
 /* MODULES */
 import Parse from 'parse/dist/parse.min.js'
 import dayjs from 'dayjs'
@@ -799,8 +841,33 @@ function getOHLC(date, symbol, type) {
             <div class="row">
                 <!-- ============ CARD ============ -->
                 <div class="col-12 col-xl-9">
+                    <!-- History view filter: keep daily cards, group by week/month -->
+                    <div class="histToolbar mt-2 mb-3">
+                        <span class="histToolbarLabel">View by</span>
+                        <div class="histSeg ms-auto" role="group">
+                            <button
+                                v-for="g in [{ id: 'daily', label: 'Daily' }, { id: 'weekly', label: 'Weekly' }, { id: 'monthly', label: 'Monthly' }]"
+                                :key="g.id" type="button"
+                                v-bind:class="['histSegBtn', historyGroup === g.id ? 'active' : '']"
+                                v-on:click="historyGroup = g.id">{{ g.label }}</button>
+                        </div>
+                    </div>
                     <!-- v-show insead of v-if or else init tab does not work cause div is not created until spinner is false-->
-                    <div v-for="(itemTrade, index) in filteredTrades" class="row mt-2">
+                    <div v-for="(itemTrade, index) in filteredTrades" class="row mt-3">
+                        <div v-if="isGroupStart(index)" class="col-12 mb-2">
+                            <div class="histGroupHead"
+                                v-bind:class="historyGroupSubtotal(itemTrade.dateUnix).net >= 0 ? 'histPos' : 'histNeg'">
+                                <div class="histGroupLabel">
+                                    <i class="uil uil-calendar-alt me-2"></i>{{ historyGroupLabel(itemTrade.dateUnix) }}
+                                </div>
+                                <div class="histGroupStats">
+                                    <span class="histGroupPnl">{{
+                                        useTwoDecCurrencyFormat(historyGroupSubtotal(itemTrade.dateUnix).net) }}</span>
+                                    <span class="histGroupTrades">{{ historyGroupSubtotal(itemTrade.dateUnix).trades }}
+                                        trades</span>
+                                </div>
+                            </div>
+                        </div>
                         <div class="col-12">
                             <div class="dailyCard">
                                 <div class="row">
@@ -1500,3 +1567,118 @@ function getOHLC(date, symbol, type) {
     </div>
 
 </template>
+
+<style scoped>
+/* History view-by toolbar */
+.histToolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.5rem;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.histToolbarLabel {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.5;
+    font-weight: 600;
+}
+
+/* Segmented control (Daily / Weekly / Monthly) — matches the dark theme accent */
+.histSeg {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 0.45rem;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.histSegBtn {
+    border: 0;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.6);
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.2rem 0.7rem;
+    border-radius: 0.35rem;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.histSegBtn:hover {
+    color: rgba(255, 255, 255, 0.92);
+}
+
+.histSegBtn.active {
+    background: var(--accent, #2f9bff);
+    color: #fff;
+}
+
+/* Week/Month group header in the History view */
+.histGroupHead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+    padding: 0.65rem 1rem;
+    border-radius: 0.6rem;
+    background: linear-gradient(90deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.02));
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-left-width: 4px;
+}
+
+.histGroupHead.histPos {
+    border-left-color: #16a34a;
+}
+
+.histGroupHead.histNeg {
+    border-left-color: #dc2626;
+}
+
+.histGroupLabel {
+    display: flex;
+    align-items: center;
+    font-weight: 700;
+    font-size: 1.02rem;
+    color: var(--white-87, rgba(255, 255, 255, 0.87));
+}
+
+.histGroupLabel i {
+    opacity: 0.55;
+}
+
+.histGroupStats {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.histGroupPnl {
+    font-weight: 800;
+    font-size: 1.05rem;
+}
+
+.histGroupHead.histPos .histGroupPnl {
+    color: #16a34a;
+}
+
+.histGroupHead.histNeg .histGroupPnl {
+    color: #dc2626;
+}
+
+.histGroupTrades {
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.15rem 0.6rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.65);
+    white-space: nowrap;
+}
+</style>

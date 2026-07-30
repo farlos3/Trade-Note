@@ -106,7 +106,7 @@ const router = createRouter({
         path: '/daily',
         name: 'daily',
         meta: {
-            title: "Daily",
+            title: "History",
             layout: DashboardLayout
         },
         component: () =>
