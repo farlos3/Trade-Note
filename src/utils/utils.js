@@ -1078,6 +1078,15 @@ export async function useReconcileSelectedAccounts() {
  * so navigating to a specific month still holds within a session.
  */
 export function useReconcileSelectedMonth() {
+    // Heal ONCE per browser session, not on every mount. Running it on each mount
+    // re-snapped the month back to "now" the instant the user paged backwards to a
+    // past month (its start < curStart), so previous-month navigation was
+    // impossible while next still worked. A session-scoped flag keeps the
+    // rollover fix (a returning user lands on the current month) without undoing
+    // deliberate in-session navigation. Reloads (F5) keep sessionStorage, so they
+    // stay on the month being viewed.
+    if (sessionStorage.getItem('monthReconciled')) return
+    sessionStorage.setItem('monthReconciled', '1')
     const curStart = Number(dayjs().tz(timeZoneTrade.value).startOf('month').unix())
     const curEnd = Number(dayjs().tz(timeZoneTrade.value).endOf('month').unix())
     let sm = null
