@@ -23,7 +23,7 @@ Docker image `eleventrading/tradenote` and the included [render.yaml](render.yam
 gitignored; you enter secrets in the Render dashboard).
 
 ```bash
-git add render.yaml .env.example DEPLOY.md docker-compose.yml docker-compose-local.yml
+git add render.yaml .env.example docs/DEPLOY.md docker-compose.yml docker-compose-local.yml
 git commit -m "Add Render deploy config"
 git push
 ```
