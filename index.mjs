@@ -303,7 +303,7 @@ const setupApiRoutes = (app) => {
                     .slice(-15)
                     .reverse()
                     .map(n => ({
-                        date: n.dateUnix ? new Date(n.dateUnix * 1000).toISOString().slice(0, 10) : null,
+                        date: n.dateUnix ? new Date(n.dateUnix * 1000).toLocaleDateString('en-CA', { timeZone: tz }) : null,
                         reason: n.reason || null,
                         note: n.note || null,
                     }))
@@ -315,7 +315,7 @@ const setupApiRoutes = (app) => {
                 meta: { fingerprint },
                 stats,
                 patterns,
-                daily: computeDailyBreakdown(trades), // per-day P&L: plan target vs reality
+                daily: computeDailyBreakdown(trades, tz), // per-day P&L: plan target vs reality
                 notes,
             })
         } catch (error) {
