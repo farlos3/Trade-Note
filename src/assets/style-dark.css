@@ -124,9 +124,13 @@ main .dailyCard {
     color: var(--red-color) !important;
 }
 
+/* Deep green so profitable days read as a calm fill rather than a highlighter,
+   and sit closer to the dark surface around them. Text flips to white with it:
+   at this darkness the old near-black label would be unreadable (this pairing
+   is 5.02:1, over the 4.5:1 AA floor for the small "N trades" line). */
 .greenTradeDiv {
-    background-color: #00CA73;
-    color: #013820;
+    background-color: #15803d;
+    color: #ffffff;
     border-radius: var(--radius-sm);
 }
 

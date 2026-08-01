@@ -189,12 +189,12 @@ async function monthLastNext(param) {
     color: #ffffff;
 }
 
-/* Coloured P&L cells use dark text: white is low-contrast on the bright green /
-   red fills. */
+/* Green fills are deep, so their labels are white; the red fill is still light,
+   so its labels stay near-black. Text colour follows the fill, not the state. */
 .greenTradeDiv .dayNumber,
 .greenTradeDiv .calTrades,
 .greenTradeDiv .calAmount {
-    color: #06281a;
+    color: #ffffff;
 }
 
 .redTradeDiv .dayNumber,
@@ -267,10 +267,11 @@ async function monthLastNext(param) {
     color: var(--white-50, rgba(255, 255, 255, 0.4));
 }
 
+/* Same deep green as the day cells, so the year strip matches the grid above. */
 .yearWin {
-    background-color: #22c55e;
-    border-color: #22c55e;
-    color: #06281a;
+    background-color: #15803d;
+    border-color: #15803d;
+    color: #ffffff;
 }
 
 .yearLoss {
