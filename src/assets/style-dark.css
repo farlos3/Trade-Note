@@ -124,6 +124,9 @@ main .dailyCard {
     color: var(--red-color) !important;
 }
 
+/* Bright green with near-black text: higher contrast than a darker fill with
+   white text (6.11:1 vs 5.02:1), and dark-on-bright reads as a clear win at a
+   glance without leaning on a highlighter-white label. */
 .greenTradeDiv {
     background-color: #00CA73;
     color: #013820;

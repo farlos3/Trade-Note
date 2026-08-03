@@ -5,7 +5,7 @@ import Screenshot from '../components/Screenshot.vue'
 import ReturnToTopButton from '../components/ReturnToTopButton.vue'
 import AddOrderModal from '../components/AddOrderModal.vue'
 import { onBeforeMount } from 'vue'
-import { useInitParse, usePageId, useScreenType, useGetTimeZone, useGetPeriods, useInitPostHog, useCreatedDateFormat, useTimeFormat, useHourMinuteFormat } from '../utils/utils.js'
+import { useInitParse, usePageId, useScreenType, useGetTimeZone, useGetPeriods, useReconcileSelectedDateRange, useInitPostHog, useCreatedDateFormat, useTimeFormat, useHourMinuteFormat } from '../utils/utils.js'
 import { screenType, sideMenuMobileOut, screenshots, pageId, screenshot, selectedScreenshot, selectedScreenshotIndex, getMore } from '../stores/globals'
 import { useSelectedScreenshotFunction } from '../utils/screenshots'
 
@@ -16,7 +16,8 @@ onBeforeMount(async () => {
   usePageId()
   useInitParse()
   useGetTimeZone()
-  useGetPeriods()
+  await useGetPeriods()
+  useReconcileSelectedDateRange()
   useScreenType()
 })
 useInitPostHog()

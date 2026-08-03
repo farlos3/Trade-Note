@@ -307,8 +307,15 @@ export async function useGetTrades(param) {
             let endD = selectedRange.value.end
             //console.log("start D "+startD)
             //console.log("end D "+endD)
-            query.greaterThanOrEqualTo("dateUnix", startD)
-            query.lessThan("dateUnix", endD)
+            // start===0 && end===0 is the "All" period's sentinel for "no date
+            // bound" (see periodRange in useGetPeriods). Passing that straight
+            // into the query as literal bounds asks for dateUnix >= 0 AND < 0,
+            // which no document can ever satisfy -- "All" would silently return
+            // zero trades forever. Skip the date clauses entirely instead.
+            if (!(startD === 0 && endD === 0)) {
+                query.greaterThanOrEqualTo("dateUnix", startD)
+                query.lessThan("dateUnix", endD)
+            }
             query.ascending("dateUnix");
             query.limit(queryLimit.value);
         }

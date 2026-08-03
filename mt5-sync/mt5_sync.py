@@ -388,7 +388,23 @@ def notify_email(cfg, deals, resp, account_info=None):
         log(f"notify: failed to send email: {e}")
 
 
+def parse_args():
+    """--lookback-days / --force exist for RECOVERY runs. The scheduled every-minute
+    sync uses the config's small window and the watermark, which is right for steady
+    state but means a day that was stored wrong can never be revisited once it falls
+    out of that window. Re-importing a wide window rebuilds those days from the
+    broker's own history:  python mt5_sync.py --lookback-days 60 --force"""
+    import argparse
+    p = argparse.ArgumentParser(description="MT5 -> TradeNote sync")
+    p.add_argument("--lookback-days", type=int, default=None,
+                   help="override [sync] lookback_days for this run (recovery)")
+    p.add_argument("--force", action="store_true",
+                   help="push even when no deal is newer than the stored watermark")
+    return p.parse_args()
+
+
 def main():
+    args = parse_args()
     cfg = load_config()
     state = load_state()
 
@@ -417,11 +433,11 @@ def main():
     # We still keep a watermark ("last_deal_unix", the newest deal time pushed) but
     # use it ONLY to detect whether anything new arrived -- so a 1-minute schedule
     # doesn't push (or email) on every tick when nothing has changed.
-    lookback_days = cfg.getint("sync", "lookback_days", fallback=2)
+    lookback_days = args.lookback_days if args.lookback_days is not None else cfg.getint("sync", "lookback_days", fallback=2)
     now = dt.datetime.now()
     frm = now - dt.timedelta(days=lookback_days)
     to = now + dt.timedelta(days=2)
-    last_deal_unix = int(state.get("last_deal_unix", 0))
+    last_deal_unix = 0 if args.force else int(state.get("last_deal_unix", 0))
     log(f"Sync window (sliding): {frm:%Y-%m-%d %H:%M} -> {to:%Y-%m-%d %H:%M}")
 
     # Don't wake a closed terminal. mt5.initialize() would auto-launch MT5 if it's

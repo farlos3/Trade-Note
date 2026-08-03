@@ -1033,11 +1033,34 @@ async function createTrades() {
                  **/
 
                 
+                /* Matching an execution to an already-open position.
+
+                   Symbol + type + strategy alone is too loose for brokers that key
+                   each position separately (MT5 supplies a position_id): every later
+                   execution on the same symbol and side matches the FIRST open
+                   position found, so one position left open acts as a magnet and
+                   swallows every subsequent trade in that direction -- they merge
+                   into it instead of becoming their own trades, and because the
+                   quantities never balance it stays open and keeps absorbing. Seen
+                   in practice: a single open long accumulated 65 executions while 32
+                   real long trades disappeared from the journal (shorts, with no
+                   stale open position, were unaffected).
+
+                   So when the incoming execution carries a position id, require it to
+                   match. A stored position with no id (imported before this was
+                   tracked) is deliberately NOT matched -- it can't be proven to be
+                   the same position, and treating it as different is what stops an
+                   existing magnet from continuing to absorb. Brokers that supply no
+                   position id at all fall back to the original loose match. */
+                const matchesOpenPosition = (x) =>
+                    x.symbol == tempExec.symbol && x.type == tempExec.type && x.strategy == tempExec.strategy
+                    && (tempExec.positionId ? x.positionId == tempExec.positionId : true)
+
                 /* Checking existing open position amongst open positions stored IN PARSE / DATABASE */
-                const existingOpenPositionParseIndex = openPositionsParse.findIndex(x => x.symbol == tempExec.symbol && x.type == tempExec.type && x.strategy == tempExec.strategy)
+                const existingOpenPositionParseIndex = openPositionsParse.findIndex(matchesOpenPosition)
 
                 /* Checking existing open position amongst open positions stored LOCALLT */
-                const existingOpenPositionFileIndex = openPositionsFile.findIndex(x => x.symbol == tempExec.symbol && x.type == tempExec.type && x.strategy == tempExec.strategy)
+                const existingOpenPositionFileIndex = openPositionsFile.findIndex(matchesOpenPosition)
 
                 //checking existing open positions array when importing file
                 if (newTrade == true) {
@@ -1124,6 +1147,12 @@ async function createTrades() {
                     temp7.currency = tempExec.currency;
                     temp7.type = tempExec.type;
                     temp7.side = tempExec.side;
+                    // Carry the broker's position id onto the trade. Without it a
+                    // trade left open can't be told apart from any other open
+                    // position on the same symbol/side when a later import looks
+                    // for something to continue -- see the open-position lookup
+                    // above, which needs this to avoid merging distinct positions.
+                    temp7.positionId = tempExec.positionId || ""
                     if (tempExec.side == "B") {
                         temp7.strategy = "long"
                         //console.log("  --> Symbol " + key2 + " is bought and long")
@@ -2058,6 +2087,31 @@ export async function useUploadTrades(param99, param0) {
                 existingQuery.equalTo("user", { "__type": "Pointer", "className": "_User", "objectId": currentUser.value.objectId })
                 existingQuery.equalTo("dateUnix", Number(param1))
                 const existingDocs = await existingQuery.find({ useMasterKey: true })
+
+                // "The incoming day is authoritative" assumes every sync run sees the
+                // full picture -- but MT5's history_deals_get/positions_get can return
+                // an incomplete list on a given tick (terminal hiccup, reconnect, an API
+                // timing glitch), and destroy-then-create has no memory of what was
+                // there before. Confirmed in practice: a day's trade count silently
+                // dropped (e.g. 19 -> 7) between sync runs with nothing on the user's
+                // end to explain it. Never let this day's trade count go DOWN: if what
+                // we're about to write is skimpier than what's already stored, keep the
+                // existing (more complete) document instead of destroying it. This is a
+                // floor, not a true merge -- a run that's missing some trades AND has a
+                // few genuinely new ones would still lose the new ones here -- but it
+                // stops the observed regression outright, with no risk to the normal
+                // growing-day case (which always has incoming >= existing).
+                if (param2 === "trades" && existingDocs.length) {
+                    const existingCount = (existingDocs[0].get("trades") || []).length
+                    const incomingCount = (trades[param1] || []).length
+                    if (incomingCount < existingCount) {
+                        console.log(` -> Skipping ${dayjs.unix(param1).format("YYYY-MM-DD")}: incoming ${incomingCount} trade(s) < existing ${existingCount}, keeping existing document`)
+                        i++
+                        if (i == numberOfDates) { resolve("resolve") } else { resolve() }
+                        return
+                    }
+                }
+
                 if (existingDocs.length) await ParseNode.Object.destroyAll(existingDocs, { useMasterKey: true })
                 object = new parseObject();
                 object.set("user", { "__type": "Pointer", "className": "_User", "objectId": currentUser.value.objectId })

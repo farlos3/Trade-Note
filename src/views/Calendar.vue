@@ -1,15 +1,25 @@
 <script setup>
-import { onBeforeMount} from 'vue'
+import { onBeforeMount, onMounted, onUnmounted } from 'vue'
 import SpinnerLoadingPage from '../components/SpinnerLoadingPage.vue';
 import NoData from '../components/NoData.vue';
 import Calendar from '../components/Calendar.vue';
 import { spinnerLoadingPage, calendarData, filteredTrades } from '../stores/globals';
-import { useMountCalendar } from '../utils/utils'
+import { useMountCalendar, useRefreshCalendarData } from '../utils/utils'
 
 onBeforeMount(async () => {
     useMountCalendar()
 })
 
+// Same reasoning as Dashboard's poll (see Dashboard.vue): the MT5 sync pushes
+// trades in the background on its own schedule, and a Calendar tab left open
+// otherwise never learns about them.
+let calendarRefreshTimer = null
+onMounted(() => {
+    calendarRefreshTimer = setInterval(useRefreshCalendarData, 60000)
+})
+onUnmounted(() => {
+    if (calendarRefreshTimer) clearInterval(calendarRefreshTimer)
+})
 </script>
 
 <template>
