@@ -12,7 +12,7 @@ import { useCreatedDateFormat, useTwoDecCurrencyFormat, useTimeFormat, useTimeDu
 
 import { useSetupImageUpload, useSaveScreenshot, useGetScreenshots } from '../utils/screenshots';
 
-import { useGetExcursions, useGetTags, useGetAvailableTags, useUpdateAvailableTags, useUpdateTags, useFindHighestIdNumber, useFindHighestIdNumberTradeTags, useUpdateNote, useGetNotes, useGetTagInfo, useCreateAvailableTagsArray, useFilterSuggestions, useTradeTagsChange, useFilterTags, useToggleTagsDropdown, useResetTags, useDailySatisfactionChange } from '../utils/daily';
+import { useGetExcursions, useGetTags, useGetAvailableTags, useUpdateAvailableTags, useUpdateTags, useFindHighestIdNumber, useFindHighestIdNumberTradeTags, useUpdateNote, useGetNotes, useGetTagInfo, useCreateAvailableTagsArray, useFilterSuggestions, useTradeTagsChange, useFilterTags, useToggleTagsDropdown, useResetTags, useDailySatisfactionChange, useSaveDayNote } from '../utils/daily';
 
 import { useCandlestickChart } from '../utils/charts';
 
@@ -114,6 +114,9 @@ const dailyTabs = [{
 
 let tradesModal = null
 let tagsModal = null
+let dayNoteModal = null
+const dayNoteDateUnix = ref(null)
+const dayNoteText = ref('')
 
 let tradeSatisfactionId
 let tradeSatisfaction
@@ -152,7 +155,22 @@ onMounted(async () => {
         const index = caller.dataset.index
         clickTagsModal(index)
     })
+
+    dayNoteModal = new bootstrap.Modal("#dayNoteModal")
+    document.getElementById("dayNoteModal").addEventListener('shown.bs.modal', async (event) => {
+        const caller = event.relatedTarget
+        const index = caller.dataset.index
+        const dateUnix = filteredTrades[index].dateUnix
+        dayNoteDateUnix.value = dateUnix
+        const existing = notes.find((n) => n.tradeId === 'day' && n.dateUnix === dateUnix)
+        dayNoteText.value = (existing && existing.note) || ''
+    })
 })
+
+async function saveDayNote() {
+    await useSaveDayNote(dayNoteDateUnix.value, dayNoteText.value)
+    dayNoteModal.hide()
+}
 
 
 /**************
@@ -889,24 +907,12 @@ function getOHLC(date, symbol, type) {
                                                     data-bs-toggle="modal" data-bs-target="#tagsModal"
                                                     :data-index="index" class="ms-2 uil uil-tag-alt pointerClass"></i>
 
-                                                <!-- Whole-day summary files (PDFs/images across all orders); many per day -->
-                                                <span class="ms-3 txt-small">
-                                                    <span v-for="f in useDayFilesFor(itemTrade.dateUnix)" :key="f.objectId"
-                                                        class="me-2">
-                                                        <a :href="f.url || f.base64" target="_blank" rel="noopener"
-                                                            class="pointerClass" title="Open day summary"><i
-                                                                class="uil uil-file-alt me-1"></i>{{ f.filename }}</a>
-                                                        <i class="uil uil-trash-alt ms-1 pointerClass" title="Delete this file"
-                                                            v-on:click="useDeleteDayFile(f.objectId)"></i>
-                                                    </span>
-                                                    <label class="pointerClass mb-0" title="Upload one or more files summarising the whole day">
-                                                        <i class="uil uil-file-upload-alt me-1"></i>Add day summary
-                                                        <input type="file" multiple accept="application/pdf,.pdf,image/*"
-                                                            class="d-none"
-                                                            @change="onDayFileChange($event, itemTrade.dateUnix)" />
-                                                    </label>
-                                                </span>
-
+                                                <!-- Whole-day note/alarm: manually set, not automatic. Bold/filled bell
+                                                     when a note exists so it stands out at a glance; faint outline
+                                                     when empty. Click either way to open the editor. -->
+                                                <i data-bs-toggle="modal" data-bs-target="#dayNoteModal"
+                                                    :data-index="index" title="Day note"
+                                                    v-bind:class="[notes.some(n => n.tradeId == 'day' && n.dateUnix == itemTrade.dateUnix && n.note && n.note.trim()) ? 'dayNoteBell dayNoteBellSet' : 'dayNoteBell', 'ms-2', 'uil', 'uil-bell', 'pointerClass']"></i>
                                             </div>
                                             <div class="col-12 col-lg-auto ms-auto">P&L({{ selectedGrossNet.charAt(0)
                                                 }}):
@@ -916,6 +922,25 @@ function getOHLC(date, symbol, type) {
                                                     }}</span>
                                             </div>
 
+                                        </div>
+                                        <!-- Whole-day summary files (PDFs/images across all orders); many per day.
+                                             Its own line so a long file list wraps freely without ever pushing
+                                             P&L(g) above off the date row. -->
+                                        <div class="txt-small dayFilesLine">
+                                            <span v-for="f in useDayFilesFor(itemTrade.dateUnix)" :key="f.objectId"
+                                                class="me-2">
+                                                <a :href="f.url || f.base64" target="_blank" rel="noopener"
+                                                    class="pointerClass" title="Open day summary"><i
+                                                        class="uil uil-file-alt me-1"></i>{{ f.filename }}</a>
+                                                <i class="uil uil-trash-alt ms-1 pointerClass" title="Delete this file"
+                                                    v-on:click="useDeleteDayFile(f.objectId)"></i>
+                                            </span>
+                                            <label class="pointerClass mb-0" title="Upload one or more files summarising the whole day">
+                                                <i class="uil uil-file-upload-alt me-1"></i>Add day summary
+                                                <input type="file" multiple accept="application/pdf,.pdf,image/*"
+                                                    class="d-none"
+                                                    @change="onDayFileChange($event, itemTrade.dateUnix)" />
+                                            </label>
                                         </div>
                                         <div>
                                             <span
@@ -1566,9 +1591,44 @@ function getOHLC(date, symbol, type) {
         </div>
     </div>
 
+    <!-- Whole-day note: user-entered, not automatic (see the bell icon above). -->
+    <div class="modal fade" id="dayNoteModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1"
+        aria-labelledby="dayNoteModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="container col mt-4">
+                    <label class="dashInfoTitle mb-1"><i class="uil uil-bell me-1"></i>Day note</label>
+                    <textarea class="form-control" rows="5" v-model="dayNoteText"
+                        placeholder="Anything worth flagging about this whole day..."></textarea>
+                </div>
+                <div class="col text-center mt-4 mb-4">
+                    <button class="btn btn-outline-primary btn-sm" data-bs-dismiss="modal">Close</button>
+                    <button class="btn btn-outline-success btn-sm ms-4" v-on:click="saveDayNote()">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
 </template>
 
 <style scoped>
+.dayFilesLine {
+    margin-top: 0.35rem;
+}
+
+/* Day note bell: faint/outline-weight when empty, bold + amber when a note is
+   set, so a flagged day is obvious scanning down the list. */
+.dayNoteBell {
+    opacity: 0.35;
+}
+
+.dayNoteBellSet {
+    opacity: 1;
+    color: #f59e0b;
+    font-weight: 700;
+    text-shadow: 0 0 6px rgba(245, 158, 11, 0.5);
+}
+
 /* History view-by toolbar */
 .histToolbar {
     display: flex;

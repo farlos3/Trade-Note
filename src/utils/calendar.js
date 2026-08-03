@@ -65,6 +65,11 @@ export async function useLoadCalendar() {
                     let tempData = {}
                     tempData.month = useMonthFormat(param1) // day number of the month
                     tempData.day = element2 // day number of the month
+                    // Needed to look up a whole-day note for this cell (independent of
+                    // whether the day traded -- a note can exist on a no-trade day too).
+                    tempData.dateUnix = element2 != 0
+                        ? dayjs.tz(`${year}-${month}-${element2}`, timeZoneTrade.value).startOf('day').unix()
+                        : null
 
                     //Getting trade that is from the same day
                     //console.log("filtering")

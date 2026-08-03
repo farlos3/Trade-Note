@@ -461,7 +461,19 @@ async function createTempExecutions() {
                 temp2.quantity = parseFloat(tradesData[key].Qty);
                 temp2.price = parseFloat(tradesData[key].Price);
 
-                temp2.execTime = dayjs.tz(formatedDateTD + " " + tradesData[key]['Exec Time'], timeZoneTrade.value).unix()
+                // The MT5 sync writes each deal's time as the broker's own wall-clock
+                // read back in UTC (see mt5_sync.py's build_report_xlsx) specifically so
+                // it survives the host/broker timezone gap untouched -- the digits here
+                // ARE the broker clock, not a time in the trade timezone. Parsing them
+                // as timeZoneTrade would re-shift by that timezone's UTC offset (e.g.
+                // Asia/Bangkok is UTC+7, so a trade closing at true broker-time 14:41
+                // gets stored as 07:41 -- 7 hours off, and close enough to midnight to
+                // land the trade on the wrong calendar day). Every other broker's export
+                // genuinely is in the trade timezone, so only MT5 needs the UTC parse.
+                const execDateTime = formatedDateTD + " " + tradesData[key]['Exec Time']
+                temp2.execTime = selectedBroker.value === 'metaTrader5'
+                    ? dayjs.utc(execDateTime).unix()
+                    : dayjs.tz(execDateTime, timeZoneTrade.value).unix()
                 let tempId = "e" + temp2.execTime + "_" + temp2.symbol.replace(".", "_") + "_" + temp2.type + "_" + temp2.side;
                 // It happens that two or more trades happen at the same (second) time. So we need to differentiated them
                 if (tempId != lastId) {

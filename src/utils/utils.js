@@ -998,7 +998,7 @@ export async function useMountDaily() {
 
 async function fetchCalendarData() {
     await useGetSelectedRange()
-    await useGetFilteredTrades()
+    await Promise.all([useGetFilteredTrades(), useGetNotes()])
     await useLoadCalendar() // if param (true), then its coming from next or filter so we need to get filteredTrades (again)
 }
 
