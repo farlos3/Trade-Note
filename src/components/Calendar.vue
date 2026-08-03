@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { pageId, selectedMonth, selectedPlSatisfaction, amountCase, calendarData, miniCalendarsData, timeZoneTrade, spinnerLoadingPage, filteredTrades } from '../stores/globals';
+import { pageId, selectedMonth, selectedPlSatisfaction, amountCase, calendarData, miniCalendarsData, timeZoneTrade, spinnerLoadingPage, filteredTrades, notes } from '../stores/globals';
 import { useThousandCurrencyFormat, useTwoDecCurrencyFormat, useMountCalendar, useMountDaily } from '../utils/utils';
 import dayjs from 'dayjs'
 import utc from 'dayjs/plugin/utc.js'
@@ -81,7 +81,11 @@ async function monthLastNext(param) {
                 <div v-for="line in calendarData">
                     <div class="row">
                         <div v-show="line[index] != 0"
-                            v-bind:class="[{ 'greenTradeDiv': selectedPlSatisfaction == 'pl' ? line[index].pAndL[amountCase + 'Proceeds'] >= 0 : line[index].satisfaction == true, 'redTradeDiv': selectedPlSatisfaction == 'pl' ? line[index].pAndL[amountCase + 'Proceeds'] < 0 : line[index].satisfaction == false, 'calDivDay': pageId == 'daily', 'calDivDash': pageId == 'calendar' }, 'col']">
+                            v-bind:class="[{ 'greenTradeDiv': selectedPlSatisfaction == 'pl' ? line[index].pAndL[amountCase + 'Proceeds'] >= 0 : line[index].satisfaction == true, 'redTradeDiv': selectedPlSatisfaction == 'pl' ? line[index].pAndL[amountCase + 'Proceeds'] < 0 : line[index].satisfaction == false, 'calDivDay': pageId == 'daily', 'calDivDash': pageId == 'calendar' }, 'col', 'calCellPos']">
+                            <!-- Same whole-day note flag as the History day cards -- a
+                                 note set on this date shows here too. -->
+                            <i v-if="line[index].dateUnix && notes.some(n => n.tradeId === 'day' && n.dateUnix === line[index].dateUnix && n.note && n.note.trim())"
+                                class="uil uil-bell calNoteBell" title="Day note"></i>
                             <p class="mb-1 dayNumber" v-show="line[index].day != 0">{{ line[index].day }}</p>
                             <div v-if="pageId == 'calendar'" class="d-none d-md-block text-center calCellBody">
                                 <p class="calAmount mb-1" v-show="line[index].pAndL[amountCase + 'Proceeds']">
@@ -163,6 +167,21 @@ async function monthLastNext(param) {
 
 .calDivDash .calCellBody {
     width: 100%;
+}
+
+.calCellPos {
+    position: relative;
+}
+
+/* Small badge in the cell's corner -- unobtrusive at the mini-calendar's tiny
+   cell size, still legible on the full Calendar page's larger cells. */
+.calNoteBell {
+    position: absolute;
+    top: 2px;
+    right: 3px;
+    font-size: 0.7rem;
+    color: #f59e0b;
+    text-shadow: 0 0 4px rgba(245, 158, 11, 0.6);
 }
 
 .dayNumber {

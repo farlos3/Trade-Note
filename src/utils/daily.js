@@ -745,6 +745,22 @@ export const useSaveTradeNote = async (tradeId, dateUnix, note) => {
     }
 }
 
+/**
+ * Whole-day note ("something happened this day" flag), independent of any one
+ * trade. Reuses the same `notes` class/upsert as useSaveTradeNote, keyed by
+ * the sentinel tradeId "day" instead of a real trade id -- so it shows up in
+ * AI Analysis's journal-notes feed for free (that endpoint reads every row in
+ * the `notes` class for the date range, regardless of tradeId). Updates the
+ * reactive `notes` array locally so the day card's icon flips state right
+ * away, without waiting for the next useGetNotes() refetch.
+ */
+export const useSaveDayNote = async (dateUnix, note) => {
+    await useSaveTradeNote("day", dateUnix, note)
+    const idx = notes.findIndex((n) => n.tradeId === "day" && n.dateUnix === dateUnix)
+    if (idx !== -1) notes[idx].note = note
+    else notes.push({ tradeId: "day", dateUnix, note, reason: "" })
+}
+
 export const useUpdateNote = async () => {
     console.log("\nUPDATING OR SAVING NOTE IN PARSE DB")
     return new Promise(async (resolve, reject) => {
