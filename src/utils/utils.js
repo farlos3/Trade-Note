@@ -307,6 +307,49 @@ export async function useGetPeriods() {
     });
 }
 
+/**
+ * `selectedDateRange`/`selectedPeriodRange` (the Dashboard's period filter,
+ * e.g. "This Month") are relative presets snapshotted to absolute {start,end}
+ * timestamps and persisted to localStorage -- so like `selectedMonth` (see
+ * useReconcileSelectedMonth, which fixes the same class of bug for
+ * Calendar/History), they never move forward on their own once the period
+ * rolls over. Dashboard reads `selectedDateRange` directly (see
+ * useGetSelectedRange), so a session left running past a month/week boundary
+ * silently keeps showing the old window's trades forever -- looks like a
+ * Dashboard chart or stat tile that "stopped updating", when really it's
+ * filtering out every new trade.
+ *
+ * Call right after useGetPeriods() rebuilds `periodRange` with fresh
+ * "now"-based windows (both run once per app load, in the layout's
+ * onBeforeMount): if the stored preset is a named relative one (not
+ * "custom") and its window has moved, snap to the fresh one. An explicit
+ * custom range is left untouched.
+ *
+ * Also one-time-migrates anyone still parked on "This Month" -- the old
+ * default, before Dashboard's default changed to "All" (an all-time
+ * overview, matching what History/Calendar-style month-scoping is not) --
+ * over to "All". Only that exact stored value is migrated, so a period the
+ * user picked deliberately after this shipped is left alone.
+ */
+export function useReconcileSelectedDateRange() {
+    let stored = null
+    try {
+        stored = JSON.parse(localStorage.getItem('selectedPeriodRange'))
+    } catch (e) {
+        stored = null
+    }
+    if (!stored || !stored.value || stored.value === 'custom') return
+    const migrating = stored.value === 'thisMonth'
+    const targetValue = migrating ? 'all' : stored.value
+    const fresh = periodRange.find((p) => p.value === targetValue)
+    if (!fresh) return
+    if (!migrating && fresh.start === stored.start && fresh.end === stored.end) return
+    selectedPeriodRange.value = fresh
+    selectedDateRange.value = { start: fresh.start, end: fresh.end }
+    localStorage.setItem('selectedPeriodRange', JSON.stringify(fresh))
+    localStorage.setItem('selectedDateRange', JSON.stringify(selectedDateRange.value))
+}
+
 export function useInitShepherd() {
     const tour = new Shepherd.Tour({
         useModalOverlay: true,
@@ -842,6 +885,28 @@ function useMountWithTimeout(work, timeoutMs = 15000) {
     return Promise.race([work(), timeout]).finally(() => clearTimeout(timer))
 }
 
+async function fetchDashboardData() {
+    await useGetSelectedRange()
+    await Promise.all([useGetExcursions(), useGetSatisfactions(), useGetTags(), useGetAvailableTags()])
+    await Promise.all([useGetFilteredTrades()])
+    await useTotalTrades()
+    await useGroupTrades()
+    await useCalculateProfitAnalysis()
+}
+
+function buildDashboardTagGroups() {
+    barChartNegativeTagGroups.value = []
+    availableTags.forEach(element => {
+        let index = Object.keys(groups).indexOf(element.id);
+        if (index != -1) {
+            let temp = {}
+            temp.id = element.id
+            temp.name = element.name
+            barChartNegativeTagGroups.value.push(temp)
+        }
+    });
+}
+
 export async function useMountDashboard() {
     console.log("\MOUNTING DASHBOARD")
     await console.time("  --> Duration mount dashboard");
@@ -850,14 +915,7 @@ export async function useMountDashboard() {
     dashboardIdMounted.value = false
     barChartNegativeTagGroups.value = []
     try {
-        await useMountWithTimeout(async () => {
-            await useGetSelectedRange()
-            await Promise.all([useGetExcursions(), useGetSatisfactions(), useGetTags(), useGetAvailableTags()])
-            await Promise.all([useGetFilteredTrades()])
-            await useTotalTrades()
-            await useGroupTrades()
-            await useCalculateProfitAnalysis()
-        })
+        await useMountWithTimeout(fetchDashboardData)
     } catch (error) {
         useHandleMountError(error)
         return
@@ -867,20 +925,39 @@ export async function useMountDashboard() {
     await (dashboardIdMounted.value = true)
     useInitTab("dashboard")
     useInitTooltip()
-    await availableTags.forEach(element => {
-        let index = Object.keys(groups).indexOf(element.id);
-        if (index != -1) {
-            let temp = {}
-            temp.id = element.id
-            temp.name = element.name
-            barChartNegativeTagGroups.value.push(temp)
-        }
-    });
+    buildDashboardTagGroups()
     await console.timeEnd("  --> Duration mount dashboard");
     if (hasData.value) {
         console.log("\nBUILDING CHARTS")
         await (dashboardChartsMounted.value = true)
         await (renderData.value += 1)
+        await useECharts("init")
+    }
+}
+
+/**
+ * Background refresh for an already-mounted Dashboard: re-pulls trades/stats
+ * on the current selected range and redraws charts, without the full-page
+ * spinner or tab/tooltip re-init that the initial mount does. The MT5 sync
+ * pushes new trades into Mongo in the background on its own schedule, and a
+ * Dashboard tab left open has no other way to learn about them -- it only
+ * ever reflects whatever was loaded at the last mount or filter change (see
+ * Dashboard.vue, which polls this on an interval). Errors are swallowed
+ * rather than routed through useHandleMountError: a dropped background poll
+ * should not yank the user to the login screen the way a real mount failure
+ * does.
+ */
+export async function useRefreshDashboardData() {
+    try {
+        await fetchDashboardData()
+    } catch (error) {
+        console.error("Dashboard background refresh failed:", error)
+        return
+    }
+    buildDashboardTagGroups()
+    if (hasData.value) {
+        dashboardChartsMounted.value = true
+        renderData.value += 1
         await useECharts("init")
     }
 }
@@ -919,16 +996,18 @@ export async function useMountDaily() {
 
 }
 
+async function fetchCalendarData() {
+    await useGetSelectedRange()
+    await useGetFilteredTrades()
+    await useLoadCalendar() // if param (true), then its coming from next or filter so we need to get filteredTrades (again)
+}
+
 export async function useMountCalendar(param) {
     console.log("\MOUNTING CALENDAR")
     await console.time("  --> Duration mount calendar");
     spinnerLoadingPage.value = true
     try {
-        await useMountWithTimeout(async () => {
-            await useGetSelectedRange()
-            await useGetFilteredTrades()
-            await useLoadCalendar() // if param (true), then its coming from next or filter so we need to get filteredTrades (again)
-        })
+        await useMountWithTimeout(fetchCalendarData)
     } catch (error) {
         useHandleMountError(error)
         return
@@ -936,6 +1015,18 @@ export async function useMountCalendar(param) {
         spinnerLoadingPage.value = false
     }
     await console.timeEnd("  --> Duration mount calendar")
+}
+
+/** Background refresh for an already-mounted Calendar page, same idea and
+ * caveats as useRefreshDashboardData: re-pulls trades on the current range
+ * and rebuilds the calendar grid, without the full-page spinner, so a tab
+ * left open picks up trades the MT5 sync pushes in the background. */
+export async function useRefreshCalendarData() {
+    try {
+        await fetchCalendarData()
+    } catch (error) {
+        console.error("Calendar background refresh failed:", error)
+    }
 }
 
 export async function useMountScreenshots() {
@@ -1134,7 +1225,10 @@ export async function useSetValues() {
         if (!localStorage.getItem('selectedBroker')) localStorage.setItem('selectedBroker', "tradeZero")
         selectedBroker.value = localStorage.getItem('selectedBroker')
 
-        if (!localStorage.getItem('selectedDateRange')) localStorage.setItem('selectedDateRange', JSON.stringify({ start: periodRange.filter(element => element.value == 'thisMonth')[0].start, end: periodRange.filter(element => element.value == 'thisMonth')[0].end }))
+        // Dashboard is the all-time overview (History/Calendar are the
+        // month-scoped views), so its default period is "All" -- every trade
+        // from the first to now -- not "This Month".
+        if (!localStorage.getItem('selectedDateRange')) localStorage.setItem('selectedDateRange', JSON.stringify({ start: periodRange.filter(element => element.value == 'all')[0].start, end: periodRange.filter(element => element.value == 'all')[0].end }))
         selectedDateRange.value = JSON.parse(localStorage.getItem('selectedDateRange'))
 
         if (!localStorage.getItem('selectedPeriodRange')) {

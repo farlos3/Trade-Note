@@ -85,8 +85,8 @@ const actual = computed(() => {
 /** Real equity curve: your actual balance day by day, stepping by each traded
    day's real net P&L (real ups/downs — NOT a smoothed average). Real withdrawals
    (MT5 dated balance ops) drop the Equity line on the day money left. The Plan
-   line is the pure target pace over the traded days and does NOT drop on
-   withdrawals. (Deposits still aren't added here.) */
+   line is the pure target pace and does NOT drop on withdrawals. (Deposits
+   still aren't added to it — see the buildProjection call below.) */
 const equity = computed(() => {
     if (!daily.value || !daily.value.length || !(start.value > 0)) return null
     const s = start.value
@@ -110,7 +110,22 @@ const equity = computed(() => {
     // Unified timeline: every traded day AND every withdrawal day gets a point, so
     // the Equity line drops on the withdrawal day even if you didn't trade it.
     const allDates = [...new Set([...netByDate.keys(), ...wdByDate.keys()])].sort()
-    let bal = s, planBal = s, withdrawnCum = 0
+
+    // Plan is a pure continuous compounding curve from the plan's own start
+    // balance/date (see buildProjection: every trading weekday, tiered rate if
+    // configured) — it keeps growing whether or not you actually traded that
+    // day. It must NOT be incremented per traded day, or its value (and shape)
+    // would depend on how often you happened to trade rather than on elapsed
+    // calendar time, which is what "the plan says you'd be at X by date Y"
+    // means. Precomputed once as a date -> day lookup, covering through today.
+    let planByDate = null
+    if (t != null && startDate.value) {
+        const monthsToToday = Math.max(1, dayjs().diff(dayjs(startDate.value), 'month') + 2)
+        const proj = buildProjection(s, t, monthsToToday, [], startDate.value, tiers.value, [])
+        planByDate = new Map(proj.days.map((d) => [d.date, d]))
+    }
+
+    let bal = s, withdrawnCum = 0
     const dates = [], actual = [], plan = []
     const cumActual = [], cumPlan = [], dayActual = [], dayPlan = [], withdrawals_ = []
     allDates.forEach((date) => {
@@ -128,16 +143,15 @@ const equity = computed(() => {
         // not 0) so the line doesn't dip to zero on it.
         dayActual.push(isTraded ? Number(net.toFixed(2)) : null)
         withdrawals_.push(Number(wdToday.toFixed(2)))
-        if (t != null) {
-            // Plan is the pure target pace — compounds on traded days, and does NOT
-            // drop on withdrawals (it shows where the plan says you'd be, not your
-            // cash). Only the actual line reflects money taken out.
-            const dayNeed = isTraded ? planBal * (t / 100) : null
-            if (isTraded) planBal = planBal * (1 + t / 100)
-            plan.push(Number(planBal.toFixed(2)))
-            cumPlan.push(Number((planBal - s).toFixed(2)))
-            dayPlan.push(dayNeed == null ? null : Number(dayNeed.toFixed(2)))
+
+        const planDay = planByDate ? planByDate.get(date) : null
+        if (planDay) {
+            plan.push(Number(planDay.closing.toFixed(2)))
+            cumPlan.push(Number((planDay.closing - s).toFixed(2)))
+            dayPlan.push(Number(planDay.profit.toFixed(2)))
         } else {
+            // No plan value for this date -- before the plan's start date, or a
+            // withdrawal landed on a market-closed weekend.
             plan.push(null); cumPlan.push(null); dayPlan.push(null)
         }
     })
@@ -242,9 +256,17 @@ function renderChart() {
         series.push({
             name: planName,
             type: 'line',
-            smooth: true,
+            // Not smoothed, unlike Actual below: each point is already an exact
+            // compounding calculation (planBal * (1 + pct/100) per traded day,
+            // see buildProjection-equivalent loop above) with no noise to
+            // visually smooth over. Bezier-interpolating it would only distort
+            // the true exponential shape with overshoot between points.
             data: planData,
             showSymbol: false,
+            // A date with no plan value (before the plan's start date, or a
+            // weekend the market is closed) is null, not 0 -- connectNulls draws
+            // a straight line across that gap instead of breaking the line.
+            connectNulls: true,
             lineStyle: { color: PLAN_COLOR, width: 2, type: 'dashed' },
             itemStyle: { color: PLAN_COLOR, borderColor: SURFACE, borderWidth: 2 },
             z: 3,

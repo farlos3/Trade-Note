@@ -546,6 +546,13 @@ export function useLineBarChart(param) {
             axisLabel: {
                 interval: 1000,
             },
+            // Same tight margins as the Equity chart above it (Dashboard.vue's
+            // renderEquityChart) so both charts fill their identical 400px
+            // container to the same degree -- without this, echarts' default
+            // grid margins leave far more empty space here, making the line
+            // look squeezed into a smaller area than Equity even though the
+            // two cards are the same height.
+            grid: { left: 58, right: 16, top: 16, bottom: 28 },
             xAxis: {
                 type: 'category',
                 data: chartXAxis,

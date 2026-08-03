@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeMount, onMounted, ref, watch, nextTick } from 'vue'
+import { computed, onBeforeMount, onMounted, onUnmounted, ref, watch, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
 import utc from 'dayjs/plugin/utc.js'; dayjs.extend(utc)
@@ -7,7 +7,7 @@ import timezone from 'dayjs/plugin/timezone.js'; dayjs.extend(timezone)
 import SpinnerLoadingPage from '../components/SpinnerLoadingPage.vue';
 import Filters from '../components/Filters.vue'
 import { selectedDashTab, spinnerLoadingPage, dashboardIdMounted, totals, amountCase, amountCapital, profitAnalysis, renderData, selectedRatio, dashboardChartsMounted, hasData, satisfactionArray, availableTags, groups, barChartNegativeTagGroups, currentUser, filteredTrades, timeZoneTrade } from '../stores/globals';
-import { useThousandCurrencyFormat, useTwoDecCurrencyFormat, useXDecCurrencyFormat, useMountDashboard, useThousandFormat, useXDecFormat } from '../utils/utils';
+import { useThousandCurrencyFormat, useTwoDecCurrencyFormat, useXDecCurrencyFormat, useMountDashboard, useRefreshDashboardData, useThousandFormat, useXDecFormat } from '../utils/utils';
 import { activePlan } from '../utils/planStore'
 import { numOrNull } from '../utils/planMath'
 import NoData from '../components/NoData.vue';
@@ -154,6 +154,12 @@ const ratioCompute = computed(() => {
     return ratio
 })
 
+// The MT5 sync pushes new trades in the background on its own schedule (every
+// ~1 minute); a Dashboard tab left open otherwise never learns about them and
+// sits frozen on whatever loaded at the last mount. Poll on the same cadence
+// so the charts and stat tiles pick up new trades without a manual refresh.
+let dashboardRefreshTimer = null
+
 onBeforeMount(async () => {
     barChartNegativeTagGroups.length = 0
     await useMountDashboard()
@@ -230,6 +236,13 @@ function renderEquityChart() {
 }
 
 onMounted(() => nextTick(renderEquityChart))
+
+onMounted(() => {
+    dashboardRefreshTimer = setInterval(useRefreshDashboardData, 60000)
+})
+onUnmounted(() => {
+    if (dashboardRefreshTimer) clearInterval(dashboardRefreshTimer)
+})
 watch([equitySeries, renderData], () => nextTick(renderEquityChart))
 if (typeof window !== 'undefined') window.addEventListener('resize', () => equityChart && equityChart.resize())
 
