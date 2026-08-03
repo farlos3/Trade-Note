@@ -23,8 +23,8 @@ dayjs.extend(customParseFormat)
 const days = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]
 
 // Year-at-a-glance summary. On the Calendar page filteredTrades already spans
-// Jan 1 -> end of the selected month (see useGetSelectedRange), so aggregate it
-// per month for the selected year plus a year total.
+// the full calendar year (see useGetSelectedRange), independent of which month
+// the grid above is showing, so aggregate it per month plus a year total.
 const yearSummary = computed(() => {
     const year = dayjs(selectedMonth.value.start * 1000).tz(timeZoneTrade.value).year()
     const key = amountCase.value + 'Proceeds'
@@ -224,11 +224,11 @@ async function monthLastNext(param) {
 }
 
 .ySumPos {
-    color: #16a34a;
+    color: #00CA73;
 }
 
 .ySumNeg {
-    color: #dc2626;
+    color: var(--red-color);
 }
 
 .yearGrid {
@@ -268,15 +268,30 @@ async function monthLastNext(param) {
 }
 
 .yearWin {
-    background-color: #22c55e;
-    border-color: #22c55e;
-    color: #06281a;
+    background-color: #00CA73;
+    border-color: #00CA73;
+    color: #013820;
 }
 
 .yearLoss {
-    background-color: #ef4444;
-    border-color: #ef4444;
-    color: #ffffff;
+    background-color: var(--red-color);
+    border-color: var(--red-color);
+    color: #350f0d;
+}
+
+/* Dark text on the bright green/red fills, matching the daily grid cells
+   (.greenTradeDiv/.redTradeDiv) -- explicit on each child so nothing else
+   in the cascade can win white back. */
+.yearWin .yearMonth,
+.yearWin .yearAmount,
+.yearWin .yearTrades {
+    color: #013820;
+}
+
+.yearLoss .yearMonth,
+.yearLoss .yearAmount,
+.yearLoss .yearTrades {
+    color: #350f0d;
 }
 
 .yearMonth {

@@ -1011,9 +1011,12 @@ export function useGetSelectedRange() {
         if (pageId.value == "dashboard") {
             selectedRange.value = selectedDateRange.value
         } else if (pageId.value == "calendar") {
+            // Full calendar year, not just up through the viewed month -- the
+            // year-at-a-glance summary aggregates every month of the year and
+            // must not miss months that come after the one shown in the grid.
             selectedRange.value = {}
             selectedRange.value.start = dayjs.unix(selectedMonth.value.start).tz(timeZoneTrade.value).startOf('year').unix()
-            selectedRange.value.end = selectedMonth.value.end
+            selectedRange.value.end = dayjs.unix(selectedMonth.value.start).tz(timeZoneTrade.value).endOf('year').unix()
             //console.log("SelectedRange "+JSON.stringify(selectedRange.value))
         }
         else {
