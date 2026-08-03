@@ -178,7 +178,7 @@ const INK_MUTED = 'rgba(237, 240, 247, 0.60)'
 // message. The line charts stay blue/amber so plan-vs-actual never reads as
 // good-vs-bad.
 const WIN_COLOR = '#00CA73'
-const LOSS_COLOR = '#f87171'
+const LOSS_COLOR = '#F6465D'
 // Withdrawals are neither profit nor loss, so they get their own hue rather than
 // borrowing red -- taking planned profit out is not a bad outcome.
 const WITHDRAW_COLOR = '#c084fc'
