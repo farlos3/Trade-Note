@@ -1,7 +1,8 @@
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue';
+import { onMounted, onUnmounted, ref, computed } from 'vue';
 import { useToggleMobileMenu } from '../utils/utils.js'
 import { useInitShepherd, useInitTooltip } from "../utils/utils.js";
+import { usePipSize, useDefaultContractSize } from '../utils/addOrder.js'
 import { pageId, currentUser, renderProfile, screenType, latestVersion } from "../stores/globals"
 import { version } from '../../package.json';
 
@@ -154,6 +155,30 @@ function triggerBellShake() {
     bellShakeTimeout = setTimeout(() => { bellShaking.value = false }, 1000)
 }
 
+// Position-size calculator, embedded in the same check-in modal: lot size = how much
+// you're willing to lose (balance x risk%) divided by what the stop-loss actually costs
+// per lot (pip size x contract size x SL pips). Symbol/risk% persist across opens like a
+// setting; balance re-syncs from the latest MT5 snapshot and SL pips resets each open.
+const riskCalcBalance = ref('')
+const riskCalcRiskPercent = ref(5)
+const riskCalcSymbol = ref('XAUUSDr')
+const riskCalcSlPips = ref('')
+
+function prefillRiskCalcBalance() {
+    const accts = (currentUser.value && Array.isArray(currentUser.value.mt5Accounts)) ? currentUser.value.mt5Accounts : []
+    if (accts.length && accts[0].balance != null) riskCalcBalance.value = accts[0].balance
+}
+
+const riskCalcSuggestedLot = computed(() => {
+    const balance = parseFloat(riskCalcBalance.value)
+    const riskPercent = parseFloat(riskCalcRiskPercent.value)
+    const slPips = parseFloat(riskCalcSlPips.value)
+    if (!balance || !riskPercent || !slPips) return null
+    const pipValuePerLot = useDefaultContractSize(riskCalcSymbol.value) * usePipSize(riskCalcSymbol.value)
+    const riskAmount = balance * (riskPercent / 100)
+    return riskAmount / (slPips * pipValuePerLot)
+})
+
 //console.log(" user "+useCheckCurrentUser())
 onMounted(async () => {
     getLatestVersion()   // fire-and-forget: must not block navigation / tooltip init
@@ -165,6 +190,8 @@ onMounted(async () => {
     riskCheckModalEl.addEventListener('shown.bs.modal', () => {
         riskCheckLot.value = ''
         riskCheckState.value = null
+        riskCalcSlPips.value = ''
+        prefillRiskCalcBalance()
     })
     riskCheckModalEl.addEventListener('hidden.bs.modal', () => {
         const parts = []
@@ -309,6 +336,37 @@ function getLatestVersion() {
                 <div class="modal-content">
                     <div class="container col mt-4">
                         <label class="dashInfoTitle mb-3"><i class="uil uil-bell me-1"></i>Risk check-in</label>
+
+                        <div class="mb-3 p-2 riskCalcBox">
+                            <label class="txt-small fw-bold mb-2 d-block">Position size calculator</label>
+                            <div class="row g-2">
+                                <div class="col-6">
+                                    <label class="form-label txt-x-small mb-1">Balance ($)</label>
+                                    <input type="number" step="0.01" class="form-control form-control-sm"
+                                        v-model="riskCalcBalance" />
+                                </div>
+                                <div class="col-6">
+                                    <label class="form-label txt-x-small mb-1">Risk %</label>
+                                    <input type="number" step="0.1" min="0" class="form-control form-control-sm"
+                                        v-model="riskCalcRiskPercent" />
+                                </div>
+                                <div class="col-6">
+                                    <label class="form-label txt-x-small mb-1">Symbol</label>
+                                    <input type="text" class="form-control form-control-sm" v-model="riskCalcSymbol" />
+                                </div>
+                                <div class="col-6">
+                                    <label class="form-label txt-x-small mb-1">Stop-loss (pips)</label>
+                                    <input type="number" step="1" min="0" class="form-control form-control-sm"
+                                        v-model="riskCalcSlPips" placeholder="e.g. 200" />
+                                </div>
+                            </div>
+                            <div class="mt-2 txt-small" v-if="riskCalcSuggestedLot !== null">
+                                Suggested lot size: <strong>{{ riskCalcSuggestedLot.toFixed(2) }}</strong>
+                                <button type="button" class="btn btn-outline-primary btn-sm ms-2"
+                                    v-on:click="riskCheckLot = riskCalcSuggestedLot.toFixed(2)">Use this</button>
+                            </div>
+                        </div>
+
                         <div class="mb-3">
                             <label class="form-label txt-small">What lot size do you feel comfortable with right
                                 now?</label>
@@ -346,6 +404,12 @@ function getLatestVersion() {
 </template>
 
 <style scoped>
+.riskCalcBox {
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 0.5rem;
+    background: rgba(255, 255, 255, 0.03);
+}
+
 .navBellWrap {
     display: flex;
     align-items: center;

@@ -750,7 +750,20 @@ const startIndex = async () => {
                 const proxy = new Proxy.createProxyServer({
                     target: { host: 'localhost', port: PROXY_PORT },
                 });
-    
+
+                // http-proxy emits 'error' on a failed connection (e.g. the brief window
+                // before Vite's own listener is up, or if Vite restarts). An EventEmitter
+                // with no 'error' listener throws on that event by default, which crashes
+                // this whole process -- Express, Parse Server, the Mongo connection, all of
+                // it -- for what should just be "tell the browser to retry". Handle it.
+                proxy.on('error', (err, req, res) => {
+                    console.error(' -> Vite dev proxy error: ' + err.message)
+                    if (res && !res.headersSent && typeof res.writeHead === 'function') {
+                        res.writeHead(502, { 'Content-Type': 'text/plain' })
+                        res.end('Dev server is starting, please retry in a moment.')
+                    }
+                });
+
                 // Middleware to handle API routes first (do not pass to Vite)
                 app.use('/api/*', (req, res, next) => {
                     // Handle API routes here
