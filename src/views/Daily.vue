@@ -12,7 +12,7 @@ import { useCreatedDateFormat, useTwoDecCurrencyFormat, useTimeFormat, useTimeDu
 
 import { useSetupImageUpload, useSaveScreenshot, useGetScreenshots } from '../utils/screenshots';
 
-import { useGetExcursions, useGetTags, useGetAvailableTags, useUpdateAvailableTags, useUpdateTags, useFindHighestIdNumber, useFindHighestIdNumberTradeTags, useUpdateNote, useGetNotes, useGetTagInfo, useCreateAvailableTagsArray, useFilterSuggestions, useTradeTagsChange, useFilterTags, useToggleTagsDropdown, useResetTags, useDailySatisfactionChange, useSaveDayNote } from '../utils/daily';
+import { useGetExcursions, useGetTags, useGetAvailableTags, useUpdateAvailableTags, useUpdateTags, useFindHighestIdNumber, useFindHighestIdNumberTradeTags, useUpdateNote, useGetNotes, useGetTagInfo, useCreateAvailableTagsArray, useFilterSuggestions, useTradeTagsChange, useFilterTags, useToggleTagsDropdown, useResetTags, useDailySatisfactionChange, useSaveDayNote, useSaveWeekNote } from '../utils/daily';
 
 import { useCandlestickChart } from '../utils/charts';
 
@@ -118,6 +118,32 @@ let dayNoteModal = null
 const dayNoteDateUnix = ref(null)
 const dayNoteText = ref('')
 
+// Week note: single fixed target (the real current ISO week), not per-list-item like day notes.
+let weekNoteModal = null
+const weekNoteText = ref('')
+const weekNoteDateUnix = computed(() => dayjs().tz(timeZoneTrade.value).startOf('isoWeek').unix())
+const weekNoteExisting = computed(() => {
+    const existing = notes.find((n) => n.tradeId === 'week' && n.dateUnix === weekNoteDateUnix.value)
+    return (existing && existing.note) || ''
+})
+const weekNoteHasContent = computed(() => !!weekNoteExisting.value.trim())
+
+// Display-only highlighting for the week note preview (raw text in DB/textarea stays untouched):
+// red/bold on loss figures, green/bold on gain figures, amber/bold on the named risk callouts.
+const WEEK_NOTE_HIGHLIGHT_KEYWORDS = ['Lot Size เกินกำหนด', 'Oversize', 'Revenge Trade', 'สรุป:', 'แพ้ตัวเอง', 'คุมไซส์ คุมอารมณ์']
+function escapeHtml(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+const weekNoteHighlighted = computed(() => {
+    let html = escapeHtml(weekNoteExisting.value)
+    for (const kw of WEEK_NOTE_HIGHLIGHT_KEYWORDS) {
+        html = html.split(escapeHtml(kw)).join(`<strong class="wnHi wnHiWarn">${escapeHtml(kw)}</strong>`)
+    }
+    html = html.replace(/-\$[\d,]+\.\d{2}/g, (m) => `<strong class="wnHi wnHiLoss">${m}</strong>`)
+    html = html.replace(/\+\$[\d,]+\.\d{2}/g, (m) => `<strong class="wnHi wnHiGain">${m}</strong>`)
+    return html
+})
+
 let tradeSatisfactionId
 let tradeSatisfaction
 let tradeSatisfactionDateUnix
@@ -165,11 +191,21 @@ onMounted(async () => {
         const existing = notes.find((n) => n.tradeId === 'day' && n.dateUnix === dateUnix)
         dayNoteText.value = (existing && existing.note) || ''
     })
+
+    weekNoteModal = new bootstrap.Modal("#weekNoteModal")
+    document.getElementById("weekNoteModal").addEventListener('shown.bs.modal', async () => {
+        weekNoteText.value = weekNoteExisting.value
+    })
 })
 
 async function saveDayNote() {
     await useSaveDayNote(dayNoteDateUnix.value, dayNoteText.value)
     dayNoteModal.hide()
+}
+
+async function saveWeekNote() {
+    await useSaveWeekNote(weekNoteDateUnix.value, weekNoteText.value)
+    weekNoteModal.hide()
 }
 
 
@@ -1264,6 +1300,17 @@ function getOHLC(date, symbol, type) {
                             <Calendar />
                         </div>
                     </div>
+                    <!-- Week note: single note for the current ISO week (Mon-Sun), independent of day notes. -->
+                    <div class="dailyCard weekNoteCard mt-2 text-start" data-bs-toggle="modal"
+                        data-bs-target="#weekNoteModal" title="Week note">
+                        <div class="d-flex align-items-center justify-content-between">
+                            <label class="dashInfoTitle mb-0 pointerClass"><i class="uil uil-bell me-1"></i>Week
+                                note</label>
+                            <i v-bind:class="[weekNoteHasContent ? 'dayNoteBell dayNoteBellSet' : 'dayNoteBell', 'uil', 'uil-edit-alt', 'pointerClass']"></i>
+                        </div>
+                        <p class="txt-small mb-0 mt-2 weekNoteText" v-if="weekNoteHasContent" v-html="weekNoteHighlighted"></p>
+                        <p class="txt-small mb-0 mt-2 text-secondary" v-else>No note yet for this week.</p>
+                    </div>
                 </div>
             </div>
 
@@ -1609,9 +1656,54 @@ function getOHLC(date, symbol, type) {
         </div>
     </div>
 
+    <!-- Whole-week note: user-entered summary/callout for the current ISO week. -->
+    <div class="modal fade" id="weekNoteModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1"
+        aria-labelledby="weekNoteModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="container col mt-4">
+                    <label class="dashInfoTitle mb-1"><i class="uil uil-bell me-1"></i>Week note</label>
+                    <textarea class="form-control" rows="16" v-model="weekNoteText"
+                        placeholder="Anything worth flagging about this whole week..."></textarea>
+                </div>
+                <div class="col text-center mt-4 mb-4">
+                    <button class="btn btn-outline-primary btn-sm" data-bs-dismiss="modal">Close</button>
+                    <button class="btn btn-outline-success btn-sm ms-4" v-on:click="saveWeekNote()">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
 </template>
 
 <style scoped>
+.weekNoteCard {
+    padding: 0.75rem 1rem;
+    cursor: pointer;
+}
+
+.weekNoteText {
+    white-space: pre-wrap;
+    max-height: 28rem;
+    overflow-y: auto;
+}
+
+:deep(.wnHi) {
+    font-weight: 700;
+}
+
+:deep(.wnHiLoss) {
+    color: #ef4444;
+}
+
+:deep(.wnHiGain) {
+    color: #22c55e;
+}
+
+:deep(.wnHiWarn) {
+    color: #f59e0b;
+}
+
 .dayFilesLine {
     margin-top: 0.35rem;
 }

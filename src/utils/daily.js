@@ -729,6 +729,7 @@ export const useSaveTradeNote = async (tradeId, dateUnix, note) => {
     const query = new Parse.Query(parseObject);
     query.equalTo("user", Parse.User.current())
     query.equalTo("tradeId", tradeId)
+    query.equalTo("dateUnix", dateUnix)
     const existing = await query.first();
     if (existing) {
         existing.set("note", note)
@@ -759,6 +760,18 @@ export const useSaveDayNote = async (dateUnix, note) => {
     const idx = notes.findIndex((n) => n.tradeId === "day" && n.dateUnix === dateUnix)
     if (idx !== -1) notes[idx].note = note
     else notes.push({ tradeId: "day", dateUnix, note, reason: "" })
+}
+
+/**
+ * Whole-week note, same pattern as useSaveDayNote but keyed by the sentinel
+ * tradeId "week" and dateUnix = start of the ISO week (Monday), so it never
+ * collides with a same-date day note (different tradeId).
+ */
+export const useSaveWeekNote = async (dateUnix, note) => {
+    await useSaveTradeNote("week", dateUnix, note)
+    const idx = notes.findIndex((n) => n.tradeId === "week" && n.dateUnix === dateUnix)
+    if (idx !== -1) notes[idx].note = note
+    else notes.push({ tradeId: "week", dateUnix, note, reason: "" })
 }
 
 export const useUpdateNote = async () => {
