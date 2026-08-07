@@ -22,6 +22,13 @@ Keep it updated when structure changes.
 - **Dev stack.** `docker-compose-dev.yml` → `tradenote_app` (:8080) + `tradenote_mongo`
   (:27017). App connects over the compose network at `mongo:27017`; host tools use
   `localhost:27017`.
+- **dev vs prod mode.** `NODE_ENV` in `docker-compose-dev.yml` defaults to `dev`
+  (Vite dev server + hot-reload, but every page load re-fetches ~90 unbundled
+  modules — slow navigation, since nav links are plain `<a href>` full reloads).
+  For day-to-day *use*, run prod instead — bundled, hash-cached, far faster:
+  `NODE_ENV=prod docker compose -f docker-compose-dev.yml up -d`
+  In prod mode source edits need a rebuild to appear: `npm run rebuild`
+  (≈10s). Switch back with the same `up -d` minus the `NODE_ENV=prod`.
 
 ## Secrets — never commit
 

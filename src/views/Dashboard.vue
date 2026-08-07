@@ -172,9 +172,10 @@ onBeforeMount(async () => {
 })
 
 /* Real-balance equity curve: starts at the plan's starting balance, steps by each
-   traded day's net P&L, and drops when money is withdrawn (using the plan's dated
-   withdrawals — the only dated source we have). Only shown when a start balance is
-   set; without it there is no baseline to plot. */
+   traded day's net P&L, drops when money is withdrawn and rises when money is
+   deposited (both from MT5's dated cashFlows, pushed by the sync — the same
+   source and pattern PlanVsActual.vue uses for its withdrawal-aware Equity line).
+   Only shown when a start balance is set; without it there is no baseline to plot. */
 const equitySeries = computed(() => {
     const startBal = numOrNull(activePlan.value && activePlan.value.startBalance)
     if (!startBal || startBal <= 0 || !filteredTrades.length) return null
@@ -187,28 +188,43 @@ const equitySeries = computed(() => {
         netByDate.set(date, (netByDate.get(date) || 0) + Number(t.pAndL && t.pAndL[field] || 0))
     })
     const firstDate = [...netByDate.keys()].sort()[0]
-    // Withdrawal total per date, from MT5's dated balance ops (pushed by the sync)
-    // — so the curve drops on the day money actually left, even a day with no trades.
-    const wdByDate = new Map()
-    mt5Accounts.value
-        .flatMap((a) => (Array.isArray(a.cashFlows) ? a.cashFlows : []))
-        .filter((cf) => cf && cf.type === 'withdrawal')
-        .forEach((cf) => {
-            const date = dayjs.unix(Number(cf.t)).tz(tz).format('YYYY-MM-DD')
-            const amt = Math.abs(Number(cf.amount) || 0)
-            if (amt > 0 && date >= firstDate) wdByDate.set(date, (wdByDate.get(date) || 0) + amt)
-        })
-    // Unified timeline: every traded day AND every withdrawal day gets a point.
-    const allDates = [...new Set([...netByDate.keys(), ...wdByDate.keys()])].sort()
+    // Cash-flow totals per date, from MT5's dated balance ops (pushed by the sync)
+    // — so the curve moves on the day money actually left or landed, even a day
+    // with no trades.
+    const cashFlows = mt5Accounts.value.flatMap((a) => (Array.isArray(a.cashFlows) ? a.cashFlows : []))
+    const sumByDate = (type) => {
+        const m = new Map()
+        cashFlows
+            .filter((cf) => cf && cf.type === type)
+            .forEach((cf) => {
+                const date = dayjs.unix(Number(cf.t)).tz(tz).format('YYYY-MM-DD')
+                const amt = Math.abs(Number(cf.amount) || 0)
+                if (amt > 0 && date >= firstDate) m.set(date, (m.get(date) || 0) + amt)
+            })
+        return m
+    }
+    const wdByDate = sumByDate('withdrawal')
+    const depByDate = sumByDate('deposit')
+    // Unified timeline: every traded day AND every cash-flow day gets a point.
+    const allDates = [...new Set([...netByDate.keys(), ...wdByDate.keys(), ...depByDate.keys()])].sort()
     let bal = startBal
-    const dates = [], equity = []
+    const dates = [], equity = [], deposits = [], withdrawals = []
     for (const date of allDates) {
-        bal += (netByDate.get(date) || 0) - (wdByDate.get(date) || 0)
+        const dep = depByDate.get(date) || 0
+        const wd = wdByDate.get(date) || 0
+        bal += (netByDate.get(date) || 0) + dep - wd
         dates.push(date)
         equity.push(Number(bal.toFixed(2)))
+        deposits.push(Number(dep.toFixed(2)))
+        withdrawals.push(Number(wd.toFixed(2)))
     }
-    return { dates, equity }
+    return { dates, equity, deposits, withdrawals }
 })
+
+// Same hues PlanVsActual.vue uses for its cash-flow annotations: neither is a
+// profit/loss so neither borrows the win/loss red-green.
+const DEPOSIT_COLOR = '#00CA73'
+const WITHDRAW_COLOR = '#c084fc'
 
 const equityChartEl = ref(null)
 let equityChart = null
@@ -217,6 +233,28 @@ function renderEquityChart() {
     const s = equitySeries.value
     if (!el || !s) return
     if (!equityChart) equityChart = echarts.init(el)
+
+    /* Vertical marks on the days money moved, same treatment as PlanVsActual.vue:
+       a markLine (not an extra series) so cash flows never enter the legend or
+       the axis scale -- they're an annotation on the Equity curve, not a third
+       quantity to compare against. */
+    const marks = []
+    s.deposits.forEach((amt, i) => {
+        if (amt > 0) marks.push({
+            xAxis: s.dates[i], amount: amt,
+            lineStyle: { color: DEPOSIT_COLOR }, label: { color: DEPOSIT_COLOR, formatter: () => `+${useTwoDecCurrencyFormat(amt)}` },
+        })
+    })
+    s.withdrawals.forEach((amt, i) => {
+        if (amt > 0) marks.push({
+            xAxis: s.dates[i], amount: amt,
+            lineStyle: { color: WITHDRAW_COLOR }, label: { color: WITHDRAW_COLOR, formatter: () => `-${useTwoDecCurrencyFormat(amt)}` },
+        })
+    })
+    const cashFlowMarkLine = marks.length
+        ? { silent: true, symbol: 'none', lineStyle: { width: 1, type: 'dotted' }, label: { show: true, position: 'insideEndTop', fontSize: 10 }, data: marks }
+        : undefined
+
     equityChart.setOption({
         backgroundColor: 'transparent',
         grid: { left: 58, right: 16, top: 16, bottom: 28 },
@@ -230,6 +268,7 @@ function renderEquityChart() {
         series: [{
             name: 'Equity', type: 'line', smooth: true, showSymbol: false, data: s.equity,
             lineStyle: { color: '#2f9bff', width: 2 }, areaStyle: { color: 'rgba(47,155,255,0.08)' },
+            markLine: cashFlowMarkLine,
         }],
     })
     requestAnimationFrame(() => equityChart && equityChart.resize())

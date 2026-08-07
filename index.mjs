@@ -1,4 +1,5 @@
 import express from 'express';
+import compression from 'compression';
 import { ParseServer } from 'parse-server'
 //var ParseDashboard = require('parse-dashboard');
 import ParseNode from 'parse/node.js'
@@ -71,6 +72,12 @@ console.log(' -> Database URI ' + hiddenDatabaseURI)
 let tradenoteDatabase = process.env.TRADENOTE_DATABASE
 
 var app = express();
+// Gzip every response, including the dev-mode Vite proxy's (it pipes into the same
+// res.write/res.end this middleware patches). Vite's dev server sends module code
+// completely uncompressed -- e.g. echarts alone is a 2.6MB transfer on every full
+// page load that imports it (Dashboard.vue, PlanVsActual.vue), since this app
+// reloads the document on every nav instead of routing client-side.
+app.use(compression());
 app.use(express.json({ limit: '30mb' }));
 
 const port = process.env.TRADENOTE_PORT;
@@ -812,11 +819,27 @@ const startIndex = async () => {
                 // Set up API routes for production
                 setupApiRoutes(app);
     
-                // Serve static files from 'dist' folder
+                // Everything under /assets is content-hashed by Vite (e.g.
+                // vendor-echarts-Ch0r4Mt-.js), so a given URL's bytes can never
+                // change -- a new build emits a new filename. Serve it immutable
+                // for a year. Without this express.static defaults to max-age=0,
+                // which makes the browser revalidate the whole ~800KB payload on
+                // every navigation; since this app full-reloads the document on
+                // each nav, that was a round-trip per asset, every single time.
+                app.use('/assets', express.static(path.resolve('dist', 'assets'), {
+                    immutable: true,
+                    maxAge: '1y',
+                }));
+
+                // Everything else in dist (favicon, etc.) with default caching.
                 app.use(express.static('dist'));
-    
-                // Fallback for SPA
+
+                // Fallback for SPA. index.html must NOT be cached: it is the only
+                // file whose name is stable, and it is what points at the newest
+                // hashed asset names -- caching it would pin the browser to an old
+                // build's assets after a rebuild.
                 app.get('*', (req, res) => {
+                    res.setHeader('Cache-Control', 'no-cache');
                     res.sendFile(path.resolve('dist', 'index.html'));
                 });
                 console.log(" -> Running prod server");
