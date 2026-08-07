@@ -178,6 +178,25 @@ const equity = computed(() => {
     }
 })
 
+/* Headline figures pulled out of the equity series so the template reads as
+   labels, not index arithmetic. `earned` is trading P&L only — it deliberately
+   equals actual.totalNet, which is why the two are never shown as separate
+   tiles. */
+const balanceNow = computed(() =>
+    equity.value ? equity.value.actual[equity.value.actual.length - 1] : null)
+const earnedNow = computed(() =>
+    equity.value ? equity.value.cumActual[equity.value.cumActual.length - 1] : null)
+const hasCashFlow = computed(() =>
+    !!equity.value && (equity.value.totalDeposited > 0 || equity.value.totalWithdrawn > 0))
+const netCashFlow = computed(() =>
+    equity.value ? equity.value.totalDeposited - equity.value.totalWithdrawn : 0)
+
+/* How many tiles actually render. Two of them are conditional, so the desktop
+   grid takes its column count from this instead of a hard-coded 6 -- otherwise a
+   plan with no daily target (5 tiles) would leave one empty column track. */
+const statTileCount = computed(() =>
+    4 + (target.value != null ? 1 : 0) + (hasCashFlow.value ? 1 : 0))
+
 /** Same horizon, but compounding at the rate you actually achieved. */
 const actualProjection = computed(() =>
     actual.value?.pctPerDay != null && start.value > 0 && months.value
@@ -253,14 +272,21 @@ function renderChart() {
         if (amt > 0) cashMarks.push({
             xAxis: dates[i], amount: amt,
             lineStyle: { color: WITHDRAW_COLOR },
-            label: { color: WITHDRAW_COLOR, formatter: () => `−${fmt(amt, 0)}` },
+            label: { color: WITHDRAW_COLOR, formatter: () => `Withdrawal −${fmt(amt, 0)}` },
         })
     })
     eq.deposits.forEach((amt, i) => {
         if (amt > 0) cashMarks.push({
             xAxis: dates[i], amount: amt,
             lineStyle: { color: DEPOSIT_COLOR },
-            label: { color: DEPOSIT_COLOR, formatter: () => `+${fmt(amt, 0)}` },
+            // A deposit near/above the starting principal, landing right after a
+            // losing stretch, reads as re-funding a blown account rather than a
+            // routine top-up -- label it that way instead of a bare "+302" a
+            // reader has to interpret themselves.
+            label: {
+                color: DEPOSIT_COLOR,
+                formatter: () => (amt >= start.value * 0.8 ? `Account reset +${fmt(amt, 0)}` : `Deposit +${fmt(amt, 0)}`),
+            },
         })
     })
     const withdrawalMarkLine = cashMarks.length
@@ -452,11 +478,19 @@ watch([equity, chartMode], async () => {
             <div v-else-if="!actual" class="hintLine">No trades in the selected period — nothing to compare against yet.</div>
             <div v-else-if="!(start > 0)" class="hintLine">Enter a starting balance above to express your results as % per day.</div>
             <template v-else>
-                <div class="statGrid my-3">
+                <!-- Six tiles, deliberately. Seven never split evenly across a row,
+                     so the last one was left alone and stretched the full width.
+                     Two merges got there without dropping a number: Principal folded
+                     under Balance (which was previously only visible inside a
+                     subtitle), and Deposited/Withdrawn became one Cash flow tile —
+                     they are the same category and had carried identical subtitles.
+                     "Earned" is not a tile because it is the same value as the net
+                     under Avg P&L / day. -->
+                <div class="statGrid my-3" :style="{ '--stat-tiles': statTileCount }">
                     <div class="statTile">
-                        <div class="statLabel">Principal</div>
-                        <div class="statValue">{{ fmt(start, 2) }}</div>
-                        <div class="statSub">starting balance</div>
+                        <div class="statLabel">Balance</div>
+                        <div class="statValue">{{ balanceNow == null ? fmt(start, 2) : fmt(balanceNow) }}</div>
+                        <div class="statSub">principal {{ fmt(start, 2) }}</div>
                     </div>
                     <div class="statTile">
                         <div class="statLabel">Days traded</div>
@@ -466,7 +500,7 @@ watch([equity, chartMode], async () => {
                     <div class="statTile">
                         <div class="statLabel">Avg P&amp;L / day</div>
                         <div class="statValue" v-bind:class="pnlClass(actual.avgDailyNet)">{{ fmt(actual.avgDailyNet) }}</div>
-                        <div class="statSub">net {{ fmt(actual.totalNet) }}</div>
+                        <div class="statSub">earned {{ fmt(actual.totalNet) }}</div>
                     </div>
                     <div class="statTile">
                         <div class="statLabel">Actual % per day</div>
@@ -480,21 +514,15 @@ watch([equity, chartMode], async () => {
                         </div>
                         <div class="statSub">target {{ fmt(target, 2) }}% / day</div>
                     </div>
-                    <div class="statTile" v-if="equity && equity.totalWithdrawn > 0">
-                        <div class="statLabel">Withdrawn</div>
-                        <div class="statValue withdrawHi">−{{ fmt(equity.totalWithdrawn) }}</div>
-                        <div class="statSub">
-                            balance {{ fmt(equity.actual[equity.actual.length - 1]) }} · earned {{ fmt(equity.cumActual[equity.cumActual.length - 1]) }}
-                        </div>
-                    </div>
-                    <!-- Money you put IN. Kept separate from "earned" so a top-up after
+                    <!-- Money moved in/out. Kept out of "earned" so a top-up after
                          blowing the account never reads as trading profit. -->
-                    <div class="statTile" v-if="equity && equity.totalDeposited > 0">
-                        <div class="statLabel">Deposited</div>
-                        <div class="statValue depositHi">+{{ fmt(equity.totalDeposited) }}</div>
-                        <div class="statSub">
-                            balance {{ fmt(equity.actual[equity.actual.length - 1]) }} · earned {{ fmt(equity.cumActual[equity.cumActual.length - 1]) }}
+                    <div class="statTile" v-if="hasCashFlow">
+                        <div class="statLabel">Cash flow</div>
+                        <div class="statValue cashFlowValue">
+                            <span v-if="equity.totalDeposited > 0" class="depositHi">+{{ fmt(equity.totalDeposited, 0) }}</span>
+                            <span v-if="equity.totalWithdrawn > 0" class="withdrawHi">−{{ fmt(equity.totalWithdrawn, 0) }}</span>
                         </div>
+                        <div class="statSub">net {{ netCashFlow >= 0 ? '+' : '−' }}{{ fmt(Math.abs(netCashFlow)) }}</div>
                     </div>
                 </div>
 
@@ -538,12 +566,33 @@ watch([equity, chartMode], async () => {
 </template>
 
 <style scoped>
+/* Fixed column counts, each a divisor of the six tiles, so every row comes out
+   full: 6 across on desktop, 3 on tablet, 2 on phone. Content-driven wrapping
+   was the problem before -- auto-fit and flex-wrap both pick whatever number
+   happens to fit, and at some widths that leaves the last tile on its own. Flex
+   then stretches it across the whole row (a wide box with one small number in
+   the corner); grid instead leaves that span empty. Choosing the counts removes
+   the case rather than trading one artifact for the other. */
 .statGrid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.75rem;
 }
 
+@media (min-width: 640px) {
+    .statGrid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+
+@media (min-width: 1040px) {
+    .statGrid {
+        grid-template-columns: repeat(var(--stat-tiles, 6), minmax(0, 1fr));
+    }
+}
+
+/* Width comes from the grid track, so no flex-basis or max-width here -- adding
+   either would fight the column definition and reintroduce the leftover strip. */
 .statTile {
     background-color: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.06);
@@ -562,6 +611,17 @@ watch([equity, chartMode], async () => {
     font-size: 1.35rem;
     font-weight: 700;
     margin-top: 0.15rem;
+}
+
+/* Two signed amounts in one value slot. Wraps rather than overflowing when the
+   tile is narrow, and steps down a little so "+481 −70" still fits beside the
+   single-number tiles on the same row. */
+.cashFlowValue {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.4rem;
+    font-size: 1.15rem;
 }
 
 .statSub {
