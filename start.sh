@@ -134,11 +134,47 @@ if [[ "$SKIP_DOCKER" -eq 0 ]]; then
 
   # 3. --- Wait for the app ---
   section "Waiting for TradeNote at $APP_URL"
+
+  wait_for_app() {
+    local tries="${1:-40}"
+    for _ in $(seq 1 "$tries"); do
+      curl -sS -o /dev/null --max-time 5 "$APP_URL" 2>/dev/null && return 0
+      sleep 3
+    done
+    return 1
+  }
+
   ready=0
-  for _ in $(seq 1 40); do
-    if curl -sS -o /dev/null --max-time 5 "$APP_URL" 2>/dev/null; then ready=1; break; fi
-    sleep 3
-  done
+  wait_for_app && ready=1
+
+  # A dependency added to package.json is the usual reason the app won't boot,
+  # and it has a specific cause: the compose file mounts /app/node_modules as an
+  # ANONYMOUS volume. That volume is filled once, from the image, the first time
+  # the container is created -- and then never refreshed. Rebuilding the image
+  # installs the new package into the image, but the container keeps mounting the
+  # stale volume over it, so node exits at import time with ERR_MODULE_NOT_FOUND
+  # and the container restart-loops. Recreating the service with renewed
+  # anonymous volumes is what actually fixes it.
+  #
+  # --renew-anon-volumes is scoped to the tradenote service, so the mongo
+  # service's NAMED volume (mongo_data, holding every trade) is not touched.
+  # `down -v` would wipe it and must never be used for this.
+  # Logs are captured into a variable rather than piped straight into grep: with
+  # `set -o pipefail`, `grep -q` exits at the first match and closes the pipe,
+  # docker compose dies of SIGPIPE, and pipefail reports that failure as the
+  # pipeline's status -- so the test reads false exactly when it matched.
+  applogs=""
+  if [[ "$ready" -eq 0 ]]; then
+    applogs="$(docker compose -f "$COMPOSE_FILE" logs --tail 80 tradenote 2>/dev/null || true)"
+  fi
+  if [[ -n "$applogs" ]] && grep -qE "ERR_MODULE_NOT_FOUND|Cannot find package" <<<"$applogs"; then
+    missing="$(grep -oE "Cannot find package '[^']+'" <<<"$applogs" | tail -n1 | sed -E "s/.*'([^']+)'.*/\1/")"
+    warn "App failed to start: ${missing:+package \"$missing\" missing — }the container's node_modules volume is older than the image. Recreating it (mongo and its data are untouched)."
+    if docker compose -f "$COMPOSE_FILE" up -d --force-recreate --renew-anon-volumes tradenote; then
+      wait_for_app && ready=1
+    fi
+  fi
+
   if [[ "$ready" -eq 1 ]]; then
     printf '\033[32mTradeNote is up at %s\033[0m\n' "$APP_URL"
   else
