@@ -3,6 +3,7 @@ import { onMounted, onUnmounted, ref, computed } from 'vue';
 import { useToggleMobileMenu } from '../utils/utils.js'
 import { useInitShepherd, useInitTooltip } from "../utils/utils.js";
 import { usePipSize, useDefaultContractSize } from '../utils/addOrder.js'
+import { routeComponentLoaders } from '../router/index.js'
 import { pageId, currentUser, renderProfile, screenType, latestVersion } from "../stores/globals"
 import { version } from '../../package.json';
 
@@ -131,6 +132,32 @@ const pages = [{
     icon: "uil uil-shopping-cart"
 }
 ]
+
+// Every SideMenu link is a plain <a href> full-page reload, not client-side routing
+// (this app intentionally keeps full reloads -- see CLAUDE.md history), so there is
+// no SPA transition to prefetch on. What we CAN do: warm the browser's HTTP cache for
+// the other pages' lazy-loaded chunks from the CURRENT page, at idle priority so it
+// never competes with this page's own render/data fetches. A reload discards the JS
+// module registry but not the HTTP cache, so the next real navigation to one of these
+// still gets a cache hit instead of a fresh fetch+transform.
+const MAIN_NAV_PATHS = ['/dashboard', '/daily', '/calendar', '/analysis', '/plan', '/plan-vs-actual', '/diary', '/screenshots', '/playbook']
+
+function prefetchOtherPages() {
+    const run = () => {
+        const currentPath = window.location.pathname
+        for (const path of MAIN_NAV_PATHS) {
+            if (path === currentPath) continue
+            const loadComponent = routeComponentLoaders[path]
+            if (loadComponent) loadComponent().catch(() => { /* best-effort warmup */ })
+        }
+    }
+    if (typeof window.requestIdleCallback === 'function') {
+        window.requestIdleCallback(run, { timeout: 3000 })
+    } else {
+        setTimeout(run, 1500)
+    }
+}
+
 // Risk-check bell: shakes on its own every 15 min as a passive nudge (no popup/toast).
 // Clicking it opens a quick lot-size / emotional-state check-in, answers are not saved.
 const bellShaking = ref(false)
@@ -182,6 +209,7 @@ const riskCalcSuggestedLot = computed(() => {
 //console.log(" user "+useCheckCurrentUser())
 onMounted(async () => {
     getLatestVersion()   // fire-and-forget: must not block navigation / tooltip init
+    prefetchOtherPages() // idle-priority, must not block navigation / tooltip init either
     await useInitTooltip()
 
     bellShakeInterval = setInterval(triggerBellShake, BELL_SHAKE_INTERVAL_MS)

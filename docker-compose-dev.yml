@@ -39,7 +39,12 @@ services:
       # ...but keep the image's node_modules (host has none)
       - /app/node_modules
     environment:
-      NODE_ENV: dev
+      # dev  = Vite dev server, hot-reload, but every page load re-fetches ~90
+      #        unbundled modules (slow navigation).
+      # prod = serves the pre-built dist/ (bundled, minified, hash-cached) -- much
+      #        faster, but source edits need `npx vite build` to show up.
+      # Override per run:  NODE_ENV=prod docker compose -f docker-compose-dev.yml up -d
+      NODE_ENV: ${NODE_ENV:-dev}
       MONGO_URI: ${MONGO_URI}
       TRADENOTE_DATABASE: ${TRADENOTE_DATABASE}
       APP_ID: ${APP_ID}

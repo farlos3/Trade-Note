@@ -29,10 +29,7 @@ import axios from 'axios'
 })();
 
 
-const router = createRouter({
-    history: createWebHistory(
-        import.meta.env.BASE_URL),
-    routes: [{
+const routes = [{
         path: '/',
         name: 'login',
         meta: {
@@ -233,8 +230,23 @@ const router = createRouter({
         component: () =>
             import('../views/CheckoutSuccess.vue')
     }
-    ]
+]
+
+const router = createRouter({
+    history: createWebHistory(
+        import.meta.env.BASE_URL),
+    routes
 })
+
+// Path -> lazy component loader, reusing the exact same import() functions passed
+// to the router above (no separate hardcoded list to drift out of sync). Every nav
+// link in this app is a plain <a href> full-page reload (see SideMenu.vue), not
+// client-side routing, so there's no SPA route-transition to prefetch on -- but the
+// browser's HTTP cache survives a reload, so warming these chunks from the CURRENT
+// page (see Nav.vue's prefetchOtherPages) still pays off on the next real navigation.
+export const routeComponentLoaders = Object.fromEntries(
+    routes.filter((r) => r.meta && r.meta.layout === DashboardLayout).map((r) => [r.path, r.component])
+)
 
 router.beforeEach((to, from, next) => {
     // Get the page title from the route meta data that we have defined

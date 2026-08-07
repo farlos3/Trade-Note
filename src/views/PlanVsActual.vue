@@ -83,10 +83,11 @@ const actual = computed(() => {
 })
 
 /** Real equity curve: your actual balance day by day, stepping by each traded
-   day's real net P&L (real ups/downs — NOT a smoothed average). Real withdrawals
-   (MT5 dated balance ops) drop the Equity line on the day money left. The Plan
-   line is the pure target pace and does NOT drop on withdrawals. (Deposits
-   still aren't added to it — see the buildProjection call below.) */
+   day's real net P&L (real ups/downs — NOT a smoothed average). Real MT5 cash
+   flows move it too: a withdrawal drops the line on the day money left, a deposit
+   lifts it on the day money landed — so topping the account back up after blowing
+   it reads as new capital, not as a winning day. The Plan line is the pure target
+   pace and does NOT move on either (see the buildProjection call below). */
 const equity = computed(() => {
     if (!daily.value || !daily.value.length || !(start.value > 0)) return null
     const s = start.value
@@ -97,19 +98,25 @@ const equity = computed(() => {
     const netByDate = new Map()
     daily.value.forEach((d) => netByDate.set(d.date, (netByDate.get(d.date) || 0) + (Number(d.net) || 0)))
     const firstDate = [...netByDate.keys()].sort()[0]
-    // Real withdrawals from MT5's dated balance ops (pushed by the sync), summed
-    // per date. A withdrawal on a day with no trades still gets its own point.
-    const wdByDate = new Map()
-    accs.flatMap((a) => (Array.isArray(a.cashFlows) ? a.cashFlows : []))
-        .filter((cf) => cf && cf.type === 'withdrawal')
-        .forEach((cf) => {
-            const date = dayjs.unix(Number(cf.t)).tz(tz).format('YYYY-MM-DD')
-            const amt = Math.abs(Number(cf.amount) || 0)
-            if (amt > 0 && date >= firstDate) wdByDate.set(date, (wdByDate.get(date) || 0) + amt)
-        })
-    // Unified timeline: every traded day AND every withdrawal day gets a point, so
-    // the Equity line drops on the withdrawal day even if you didn't trade it.
-    const allDates = [...new Set([...netByDate.keys(), ...wdByDate.keys()])].sort()
+    // Real cash flows from MT5's dated balance ops (pushed by the sync), summed
+    // per date. A cash flow on a day with no trades still gets its own point.
+    const cashFlows = accs.flatMap((a) => (Array.isArray(a.cashFlows) ? a.cashFlows : []))
+    const sumByDate = (type) => {
+        const m = new Map()
+        cashFlows
+            .filter((cf) => cf && cf.type === type)
+            .forEach((cf) => {
+                const date = dayjs.unix(Number(cf.t)).tz(tz).format('YYYY-MM-DD')
+                const amt = Math.abs(Number(cf.amount) || 0)
+                if (amt > 0 && date >= firstDate) m.set(date, (m.get(date) || 0) + amt)
+            })
+        return m
+    }
+    const wdByDate = sumByDate('withdrawal')
+    const depByDate = sumByDate('deposit')
+    // Unified timeline: every traded day AND every cash-flow day gets a point, so
+    // the Equity line moves on that day even if you didn't trade it.
+    const allDates = [...new Set([...netByDate.keys(), ...wdByDate.keys(), ...depByDate.keys()])].sort()
 
     // Plan is a pure continuous compounding curve from the plan's own start
     // balance/date (see buildProjection: every trading weekday, tiered rate if
@@ -125,24 +132,29 @@ const equity = computed(() => {
         planByDate = new Map(proj.days.map((d) => [d.date, d]))
     }
 
-    let bal = s, withdrawnCum = 0
+    let bal = s, withdrawnCum = 0, depositedCum = 0
     const dates = [], actual = [], plan = []
-    const cumActual = [], cumPlan = [], dayActual = [], dayPlan = [], withdrawals_ = []
+    const cumActual = [], cumPlan = [], dayActual = [], dayPlan = [], withdrawals_ = [], deposits_ = []
     allDates.forEach((date) => {
         const isTraded = netByDate.has(date)
         const net = netByDate.get(date) || 0
         const wdToday = wdByDate.get(date) || 0
+        const depToday = depByDate.get(date) || 0
         withdrawnCum += wdToday
-        bal += net - wdToday
+        depositedCum += depToday
+        bal += net + depToday - wdToday
         dates.push(date)
         actual.push(Number(bal.toFixed(2)))
-        // Cumulative profit keeps withdrawn money in the numerator (it was profit
-        // you took out), so the P&L view doesn't dip on a withdrawal.
-        cumActual.push(Number((bal - s + withdrawnCum).toFixed(2)))
-        // Daily P&L view is per TRADED day; a withdrawal-only day has no bar (null,
+        // Cumulative profit = what TRADING earned, so it tracks neither cash flow:
+        // withdrawn money is added back (it was profit you took out) and deposited
+        // money is subtracted back out (new capital is not a gain). Without the
+        // deposit term, topping up a blown account would show as a giant fake win.
+        cumActual.push(Number((bal - s + withdrawnCum - depositedCum).toFixed(2)))
+        // Daily P&L view is per TRADED day; a cash-flow-only day has no bar (null,
         // not 0) so the line doesn't dip to zero on it.
         dayActual.push(isTraded ? Number(net.toFixed(2)) : null)
         withdrawals_.push(Number(wdToday.toFixed(2)))
+        deposits_.push(Number(depToday.toFixed(2)))
 
         const planDay = planByDate ? planByDate.get(date) : null
         if (planDay) {
@@ -159,7 +171,9 @@ const equity = computed(() => {
     return {
         dates, actual, plan, cumActual, cumPlan, dayActual, dayPlan,
         withdrawals: withdrawals_,
+        deposits: deposits_,
         totalWithdrawn: Number(withdrawnCum.toFixed(2)),
+        totalDeposited: Number(depositedCum.toFixed(2)),
         withdrawnOutsideRange: 0,
     }
 })
@@ -193,9 +207,11 @@ const INK_MUTED = 'rgba(237, 240, 247, 0.60)'
 // good-vs-bad.
 const WIN_COLOR = '#00CA73'
 const LOSS_COLOR = '#F6465D'
-// Withdrawals are neither profit nor loss, so they get their own hue rather than
-// borrowing red -- taking planned profit out is not a bad outcome.
+// Cash flows are neither profit nor loss, so they get their own hues rather than
+// borrowing red/green -- taking planned profit out is not a bad outcome, and
+// topping the account up is not a win.
 const WITHDRAW_COLOR = '#c084fc'
+const DEPOSIT_COLOR = '#38bdf8'
 
 const CHART_MODES = [
     { value: 'equity', label: 'Equity', title: 'Equity — your actual trades per day vs plan pace' },
@@ -228,26 +244,32 @@ function renderChart() {
         ? `Plan needs (${fmt(target.value, 2)}%/day)`
         : `Plan (${fmt(target.value, 2)}%/day)`
 
-    /* Vertical marks on the days money left the account. Attached as markLine
+    /* Vertical marks on the days money moved in or out. Attached as markLine
        rather than an extra series so they never enter the legend or the axis
-       scale -- a withdrawal is an annotation on the curve, not a third quantity
+       scale -- a cash flow is an annotation on the curve, not a third quantity
        to compare against. Drawn on the Actual series so they inherit its z. */
-    const wdMarks = eq.withdrawals
-        .map((amt, i) => ({ amt, date: dates[i] }))
-        .filter((w) => w.amt > 0)
-    const withdrawalMarkLine = wdMarks.length
+    const cashMarks = []
+    eq.withdrawals.forEach((amt, i) => {
+        if (amt > 0) cashMarks.push({
+            xAxis: dates[i], amount: amt,
+            lineStyle: { color: WITHDRAW_COLOR },
+            label: { color: WITHDRAW_COLOR, formatter: () => `−${fmt(amt, 0)}` },
+        })
+    })
+    eq.deposits.forEach((amt, i) => {
+        if (amt > 0) cashMarks.push({
+            xAxis: dates[i], amount: amt,
+            lineStyle: { color: DEPOSIT_COLOR },
+            label: { color: DEPOSIT_COLOR, formatter: () => `+${fmt(amt, 0)}` },
+        })
+    })
+    const withdrawalMarkLine = cashMarks.length
         ? {
             silent: true,
             symbol: 'none',
-            lineStyle: { color: WITHDRAW_COLOR, width: 1, type: 'dotted' },
-            label: {
-                show: true,
-                position: 'insideEndTop',
-                color: WITHDRAW_COLOR,
-                fontSize: 10,
-                formatter: (p) => `−${fmt(p.data.amount, 0)}`,
-            },
-            data: wdMarks.map((w) => ({ xAxis: w.date, amount: w.amt })),
+            lineStyle: { width: 1, type: 'dotted' },
+            label: { show: true, position: 'insideEndTop', fontSize: 10 },
+            data: cashMarks,
         }
         : undefined
 
@@ -465,6 +487,15 @@ watch([equity, chartMode], async () => {
                             balance {{ fmt(equity.actual[equity.actual.length - 1]) }} · earned {{ fmt(equity.cumActual[equity.cumActual.length - 1]) }}
                         </div>
                     </div>
+                    <!-- Money you put IN. Kept separate from "earned" so a top-up after
+                         blowing the account never reads as trading profit. -->
+                    <div class="statTile" v-if="equity && equity.totalDeposited > 0">
+                        <div class="statLabel">Deposited</div>
+                        <div class="statValue depositHi">+{{ fmt(equity.totalDeposited) }}</div>
+                        <div class="statSub">
+                            balance {{ fmt(equity.actual[equity.actual.length - 1]) }} · earned {{ fmt(equity.cumActual[equity.cumActual.length - 1]) }}
+                        </div>
+                    </div>
                 </div>
 
                 <p v-if="equity && equity.withdrawnOutsideRange > 0" class="hintLine mb-0">
@@ -599,6 +630,11 @@ watch([equity, chartMode], async () => {
    thing. Not red: a planned withdrawal is not a loss. */
 .withdrawHi {
     color: #c084fc;
+}
+
+/* Matches DEPOSIT_COLOR. Not green: new capital is not a win. */
+.depositHi {
+    color: #38bdf8;
 }
 
 .chartHead {
