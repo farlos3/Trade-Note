@@ -177,8 +177,7 @@ onBeforeMount(async () => {
    source and pattern PlanVsActual.vue uses for its withdrawal-aware Equity line).
    Only shown when a start balance is set; without it there is no baseline to plot. */
 const equitySeries = computed(() => {
-    const startBal = numOrNull(activePlan.value && activePlan.value.startBalance)
-    if (!startBal || startBal <= 0 || !filteredTrades.length) return null
+    if (!filteredTrades.length) return null
     const field = amountCase.value + 'Proceeds'
     const tz = timeZoneTrade.value || 'UTC'
     // Net P&L per traded date.
@@ -207,16 +206,45 @@ const equitySeries = computed(() => {
     const depByDate = sumByDate('deposit')
     // Unified timeline: every traded day AND every cash-flow day gets a point.
     const allDates = [...new Set([...netByDate.keys(), ...wdByDate.keys(), ...depByDate.keys()])].sort()
-    let bal = startBal
-    const dates = [], equity = [], deposits = [], withdrawals = []
+    if (!allDates.length) return null
+
+    const dates = [], deposits = [], withdrawals = [], deltas = []
     for (const date of allDates) {
         const dep = depByDate.get(date) || 0
         const wd = wdByDate.get(date) || 0
-        bal += (netByDate.get(date) || 0) + dep - wd
         dates.push(date)
-        equity.push(Number(bal.toFixed(2)))
         deposits.push(Number(dep.toFixed(2)))
         withdrawals.push(Number(wd.toFixed(2)))
+        deltas.push((netByDate.get(date) || 0) + dep - wd)
+    }
+
+    /* Anchor on the balance MT5 actually reports and walk BACKWARD, rather than
+       adding everything up forward from the plan's startBalance.
+       Forward-from-startBalance double-counts: startBalance is normally the money
+       you funded the account with, and those same funding deposits are also in
+       cashFlows -- so they got added twice and the curve ended far above the real
+       balance (measured: ~486 charted vs 188.56 actual). Anchoring at the newest
+       point makes the right-hand end always equal the broker's number by
+       construction, and any drift between the journal and the broker (swap,
+       commission, a trade that never imported) lands in the distant past instead
+       of corrupting today's figure. Falls back to the old forward walk only when
+       no MT5 balance is available. */
+    const liveBalance = mt5Accounts.value.length ? Number(mt5Accounts.value[0].balance) : null
+    const equity = new Array(allDates.length)
+    if (Number.isFinite(liveBalance)) {
+        let bal = liveBalance
+        for (let i = allDates.length - 1; i >= 0; i--) {
+            equity[i] = Number(bal.toFixed(2))
+            bal -= deltas[i]
+        }
+    } else {
+        const startBal = numOrNull(activePlan.value && activePlan.value.startBalance)
+        if (!startBal || startBal <= 0) return null
+        let bal = startBal
+        for (let i = 0; i < allDates.length; i++) {
+            bal += deltas[i]
+            equity[i] = Number(bal.toFixed(2))
+        }
     }
     return { dates, equity, deposits, withdrawals }
 })
