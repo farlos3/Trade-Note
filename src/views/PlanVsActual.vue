@@ -114,59 +114,108 @@ const equity = computed(() => {
     }
     const wdByDate = sumByDate('withdrawal')
     const depByDate = sumByDate('deposit')
-    // Unified timeline: every traded day AND every cash-flow day gets a point, so
-    // the Equity line moves on that day even if you didn't trade it.
-    const allDates = [...new Set([...netByDate.keys(), ...wdByDate.keys(), ...depByDate.keys()])].sort()
-
-    // Plan is a pure continuous compounding curve from the plan's own start
-    // balance/date (see buildProjection: every trading weekday, tiered rate if
-    // configured) — it keeps growing whether or not you actually traded that
-    // day. It must NOT be incremented per traded day, or its value (and shape)
-    // would depend on how often you happened to trade rather than on elapsed
-    // calendar time, which is what "the plan says you'd be at X by date Y"
-    // means. Precomputed once as a date -> day lookup, covering through today.
-    let planByDate = null
-    if (t != null && startDate.value) {
-        const monthsToToday = Math.max(1, dayjs().diff(dayjs(startDate.value), 'month') + 2)
-        const proj = buildProjection(s, t, monthsToToday, [], startDate.value, tiers.value, [])
-        planByDate = new Map(proj.days.map((d) => [d.date, d]))
+    // EVERY calendar day between the first and last event -- weekends and holidays
+    // included. A traded-days-only axis squeezes a 3-day weekend into the same gap
+    // as an overnight, so distance along the axis wouldn't mean elapsed time and a
+    // "straight" line wouldn't actually be straight in time. Filling the calendar
+    // makes the axis real time, which is what the linear Plan line below needs.
+    const eventDates = [...new Set([...netByDate.keys(), ...wdByDate.keys(), ...depByDate.keys()])].sort()
+    const allDates = []
+    if (eventDates.length) {
+        const last = dayjs(eventDates[eventDates.length - 1])
+        for (let d = dayjs(eventDates[0]); !d.isAfter(last, 'day'); d = d.add(1, 'day')) {
+            allDates.push(d.format('YYYY-MM-DD'))
+        }
     }
 
-    let bal = s, withdrawnCum = 0, depositedCum = 0
-    const dates = [], actual = [], plan = []
+    // Plan drawn as ONE straight line spanning the whole chart. Its endpoints still
+    // come from the real compounding target (so where the plan says you should end
+    // up stays honest), but the path between them is linear -- readable at a glance,
+    // and defined on every day including ones the market is closed. Previously this
+    // was the raw compounding curve, which only existed on trading weekdays inside
+    // the projection window, so the line started late, ended early and broke on
+    // weekends.
+    let planFirst = null, planLast = null, planSlope = 0
+    if (t != null && startDate.value && allDates.length) {
+        const monthsToToday = Math.max(1, dayjs().diff(dayjs(startDate.value), 'month') + 2)
+        const proj = buildProjection(s, t, monthsToToday, [], startDate.value, tiers.value, [])
+        const days = proj.days || []
+        // Plan value on a date, extended past both ends of the projection: before
+        // the plan starts nothing has compounded yet (= start balance); after the
+        // last projected day, hold the final value.
+        const planAt = (date) => {
+            if (!days.length || date < days[0].date) return s
+            let best = days[0]
+            for (const d of days) {
+                if (d.date > date) break
+                best = d
+            }
+            return best.closing
+        }
+        planFirst = planAt(allDates[0])
+        planLast = planAt(allDates[allDates.length - 1])
+        planSlope = allDates.length > 1 ? (planLast - planFirst) / (allDates.length - 1) : 0
+    }
+
+    let withdrawnCum = 0, depositedCum = 0, netCum = 0
+    const dates = [], plan = [], deltas = []
     const cumActual = [], cumPlan = [], dayActual = [], dayPlan = [], withdrawals_ = [], deposits_ = []
-    allDates.forEach((date) => {
+    allDates.forEach((date, i) => {
         const isTraded = netByDate.has(date)
         const net = netByDate.get(date) || 0
         const wdToday = wdByDate.get(date) || 0
         const depToday = depByDate.get(date) || 0
         withdrawnCum += wdToday
         depositedCum += depToday
-        bal += net + depToday - wdToday
+        netCum += net
         dates.push(date)
-        actual.push(Number(bal.toFixed(2)))
-        // Cumulative profit = what TRADING earned, so it tracks neither cash flow:
-        // withdrawn money is added back (it was profit you took out) and deposited
-        // money is subtracted back out (new capital is not a gain). Without the
-        // deposit term, topping up a blown account would show as a giant fake win.
-        cumActual.push(Number((bal - s + withdrawnCum - depositedCum).toFixed(2)))
-        // Daily P&L view is per TRADED day; a cash-flow-only day has no bar (null,
-        // not 0) so the line doesn't dip to zero on it.
+        // On a day with no trade and no cash flow this is 0, so the balance simply
+        // carries forward -- a flat segment across the closed market.
+        deltas.push(net + depToday - wdToday)
+        // Cumulative profit is what TRADING earned, so it tracks neither cash flow:
+        // it is just the running sum of net P&L. Deposits are new capital, not a
+        // gain -- without this, topping up a blown account would show as a huge win.
+        cumActual.push(Number(netCum.toFixed(2)))
+        // Daily P&L view is per TRADED day; a day with no trade has no bar (null,
+        // not 0) so the line doesn't dip to zero across weekends.
         dayActual.push(isTraded ? Number(net.toFixed(2)) : null)
         withdrawals_.push(Number(wdToday.toFixed(2)))
         deposits_.push(Number(depToday.toFixed(2)))
 
-        const planDay = planByDate ? planByDate.get(date) : null
-        if (planDay) {
-            plan.push(Number(planDay.closing.toFixed(2)))
-            cumPlan.push(Number((planDay.closing - s).toFixed(2)))
-            dayPlan.push(Number(planDay.profit.toFixed(2)))
+        if (planFirst != null) {
+            const p = planFirst + planSlope * i
+            plan.push(Number(p.toFixed(2)))
+            cumPlan.push(Number((p - s).toFixed(2)))
+            // A linear plan needs the same profit every day, which is exactly the
+            // slope -- so the Daily view compares against a flat target line.
+            dayPlan.push(Number(planSlope.toFixed(2)))
         } else {
-            // No plan value for this date -- before the plan's start date, or a
-            // withdrawal landed on a market-closed weekend.
             plan.push(null); cumPlan.push(null); dayPlan.push(null)
         }
     })
+
+    /* Actual equity anchored on the balance MT5 actually reports, walked BACKWARD.
+       Adding up forward from the plan's startBalance double-counts, because
+       startBalance is normally the money you funded the account with and those same
+       funding deposits are also in cashFlows -- measured: ~486 charted vs 188.56
+       real. Anchoring at the newest point makes today's value right by construction
+       and pushes any journal-vs-broker drift into the distant past. Without a live
+       MT5 balance there is nothing truer to anchor to, so fall back to startBalance. */
+    const liveBalance = accs.length ? Number(accs[0].balance) : null
+    const actual = new Array(allDates.length)
+    if (Number.isFinite(liveBalance)) {
+        let bal = liveBalance
+        for (let i = allDates.length - 1; i >= 0; i--) {
+            actual[i] = Number(bal.toFixed(2))
+            bal -= deltas[i]
+        }
+    } else {
+        let bal = s
+        for (let i = 0; i < allDates.length; i++) {
+            bal += deltas[i]
+            actual[i] = Number(bal.toFixed(2))
+        }
+    }
 
     return {
         dates, actual, plan, cumActual, cumPlan, dayActual, dayPlan,
@@ -176,6 +225,38 @@ const equity = computed(() => {
         totalDeposited: Number(depositedCum.toFixed(2)),
         withdrawnOutsideRange: 0,
     }
+})
+
+/* Breakeven: how far the account still is from the money actually put into it,
+   and how long earning that back takes at the pace being traded now.
+   "Breakeven" here means the balance climbing back to your NET CONTRIBUTION
+   (everything deposited minus everything withdrawn) -- not to some past peak,
+   which was never your money to begin with. Read straight off MT5's own cash
+   flows so it stays right regardless of how the plan's startBalance is set. */
+const breakeven = computed(() => {
+    const accs = (currentUser.value && Array.isArray(currentUser.value.mt5Accounts)) ? currentUser.value.mt5Accounts : []
+    if (!accs.length) return null
+    const balance = Number(accs[0].balance)
+    if (!Number.isFinite(balance)) return null
+    const flows = accs.flatMap((a) => (Array.isArray(a.cashFlows) ? a.cashFlows : []))
+    const sum = (type) => flows
+        .filter((f) => f && f.type === type)
+        .reduce((acc, f) => acc + Math.abs(Number(f.amount) || 0), 0)
+    const deposited = sum('deposit')
+    const withdrawn = sum('withdrawal')
+    const netIn = deposited - withdrawn
+    const gap = netIn - balance          // > 0 means still under water
+    const avgPerDay = actual.value && actual.value.avgDailyNet != null ? actual.value.avgDailyNet : null
+    // Only meaningful while you're actually making money: at a losing average the
+    // gap never closes, so report null and let the UI say so rather than print a
+    // negative or infinite "days to go".
+    const daysAtCurrentPace = (gap > 0 && avgPerDay > 0) ? gap / avgPerDay : null
+    // At the plan's target the balance compounds, so solve balance*(1+t/100)^n = netIn.
+    const t = target.value
+    const daysAtPlan = (gap > 0 && balance > 0 && t > 0)
+        ? Math.log(netIn / balance) / Math.log(1 + t / 100)
+        : null
+    return { deposited, withdrawn, netIn, balance, gap, avgPerDay, daysAtCurrentPace, daysAtPlan }
 })
 
 /** Same horizon, but compounding at the rate you actually achieved. */
@@ -503,6 +584,58 @@ watch([equity, chartMode], async () => {
                     period, so they are not on the curve yet.
                 </p>
 
+                <!-- How far from getting the deposited money back, and how long that takes. -->
+                <div v-if="breakeven" class="breakevenBox mb-3">
+                    <div class="breakevenHead">
+                        <span class="breakevenTitle">
+                            <i class="uil uil-scales me-1"></i>Back to breakeven
+                        </span>
+                        <span v-if="breakeven.gap > 0" class="breakevenGap">
+                            need <strong>{{ fmt(breakeven.gap) }}</strong> more
+                        </span>
+                        <span v-else class="breakevenGapOk">
+                            above breakeven by <strong>{{ fmt(-breakeven.gap) }}</strong>
+                        </span>
+                    </div>
+
+                    <div class="breakevenRows">
+                        <div class="beRow">
+                            <span class="beLabel">Deposited</span>
+                            <span class="beVal depositHi">+{{ fmt(breakeven.deposited) }}</span>
+                        </div>
+                        <div class="beRow">
+                            <span class="beLabel">Withdrawn</span>
+                            <span class="beVal withdrawHi">−{{ fmt(breakeven.withdrawn) }}</span>
+                        </div>
+                        <div class="beRow beRowStrong">
+                            <span class="beLabel">Your money in (net)</span>
+                            <span class="beVal">{{ fmt(breakeven.netIn) }}</span>
+                        </div>
+                        <div class="beRow">
+                            <span class="beLabel">Balance now</span>
+                            <span class="beVal" v-bind:class="pnlClass(breakeven.balance - breakeven.netIn)">
+                                {{ fmt(breakeven.balance) }}
+                            </span>
+                        </div>
+                    </div>
+
+                    <div v-if="breakeven.gap > 0" class="beProjection">
+                        <div v-if="breakeven.daysAtCurrentPace != null" class="beProjLine">
+                            At your current pace ({{ fmt(breakeven.avgPerDay) }}/traded day) that is
+                            <strong>{{ Math.ceil(breakeven.daysAtCurrentPace) }}</strong> more trading day(s).
+                        </div>
+                        <div v-else class="beProjLine beProjWarn">
+                            <i class="uil uil-exclamation-triangle me-1"></i>
+                            Your average is {{ fmt(breakeven.avgPerDay) }} per traded day — losing, so at this pace
+                            the gap never closes. It widens.
+                        </div>
+                        <div v-if="breakeven.daysAtPlan != null" class="beProjLine beProjPlan">
+                            Hitting your {{ fmt(target, 2) }}%/day target instead:
+                            <strong>{{ Math.ceil(breakeven.daysAtPlan) }}</strong> trading day(s).
+                        </div>
+                    </div>
+                </div>
+
                 <div v-if="hasChart" class="chartWrap mb-3">
                     <div class="chartHead">
                         <div class="chartTitle">{{ chartTitle }}</div>
@@ -634,6 +767,88 @@ watch([equity, chartMode], async () => {
 
 /* Matches DEPOSIT_COLOR. Not green: new capital is not a win. */
 .depositHi {
+    color: #38bdf8;
+}
+
+.breakevenBox {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 0.6rem;
+    background: rgba(255, 255, 255, 0.03);
+    padding: 0.85rem 1rem;
+}
+
+.breakevenHead {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.6rem;
+}
+
+.breakevenTitle {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.6;
+}
+
+.breakevenGap {
+    font-size: 0.95rem;
+    color: #F6465D;
+}
+
+.breakevenGapOk {
+    font-size: 0.95rem;
+    color: #00CA73;
+}
+
+.breakevenRows {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 0.35rem 1.25rem;
+}
+
+.beRow {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+}
+
+.beRowStrong {
+    font-weight: 700;
+}
+
+.beLabel {
+    color: var(--white-60);
+}
+
+.beVal {
+    font-variant-numeric: tabular-nums;
+}
+
+.beProjection {
+    margin-top: 0.7rem;
+    padding-top: 0.6rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.beProjLine {
+    font-size: 0.85rem;
+    color: var(--white-70);
+}
+
+.beProjLine+.beProjLine {
+    margin-top: 0.25rem;
+}
+
+.beProjWarn {
+    color: #F6465D;
+}
+
+.beProjPlan {
     color: #38bdf8;
 }
 
