@@ -21,8 +21,15 @@
 #               nowhere else, so on macOS/Linux 4a is the only data source.
 #   4c backup   push the result back to R2 for the next start.
 #
+# The app is served BUNDLED by default (NODE_ENV=prod inside the container): the
+# frontend is built to dist/ and served hash-cached, which is far faster to use
+# because every nav link in this app is a full page reload. Pass --hot for the
+# Vite dev server instead when you are editing frontend code. Note this is a
+# different axis from --mode, which picks the compose file / image.
+#
 # Usage:
-#   ./start.sh                # full run, dev hot-reload
+#   ./start.sh                # full run, bundled app (fast)
+#   ./start.sh --hot          # Vite dev server + hot-reload, for development
 #   ./start.sh --mode prod    # published image
 #   ./start.sh --ip-only      # just refresh the Atlas IP whitelist
 #   ./start.sh --skip-sync    # don't read MetaTrader 5
@@ -31,12 +38,18 @@
 set -o pipefail
 
 MODE="dev"
+# NODE_ENV handed to the container. Only docker-compose-dev.yml reads it
+# (`NODE_ENV: ${NODE_ENV:-dev}`); the other compose files pin their own.
+APP_ENV="prod"
 UPDATE_IP=0; SKIP_DOCKER=0; SKIP_SYNC=0; IP_ONLY=0; SKIP_RESTORE=0; SKIP_BACKUP=0
 
 usage() {
   cat <<'EOF'
 Usage: ./start.sh [options]
   --mode dev|local|prod   compose file to use (default: dev)
+  --hot                   run the Vite dev server (hot-reload) instead of the
+                          bundled build. Slower to navigate — use while editing
+                          frontend code. Default is the bundled build.
   --update-ip             whitelist this machine's public IP in Atlas before starting.
                           Only needed if the Atlas Network Access list is NOT 0.0.0.0/0.
   --ip-only               only refresh the Atlas IP whitelist, then exit
@@ -55,6 +68,7 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --mode)        MODE="${2:-}"; shift 2;;
+    --hot)         APP_ENV="dev"; shift;;
     --update-ip)   UPDATE_IP=1; shift;;
     --ip-only)     IP_ONLY=1; UPDATE_IP=1; shift;;
     --skip-ip)     UPDATE_IP=0; shift;;   # kept for compatibility (now the default)
@@ -84,12 +98,17 @@ read_env() {
   printf '%s' "$val"
 }
 
+# SUPPORTS_APP_ENV: whether the compose file takes NODE_ENV from the environment.
+# Only the dev one does; the others pin their own, so --hot is meaningless there.
 case "$MODE" in
-  dev)   COMPOSE_FILE="docker-compose-dev.yml";   BUILD=1;;
-  local) COMPOSE_FILE="docker-compose-local.yml"; BUILD=1;;
-  prod)  COMPOSE_FILE="docker-compose.yml";       BUILD=0;;
+  dev)   COMPOSE_FILE="docker-compose-dev.yml";   BUILD=1; SUPPORTS_APP_ENV=1;;
+  local) COMPOSE_FILE="docker-compose-local.yml"; BUILD=1; SUPPORTS_APP_ENV=0;;
+  prod)  COMPOSE_FILE="docker-compose.yml";       BUILD=0; SUPPORTS_APP_ENV=0;;
   *) echo "Invalid --mode: $MODE (use dev|local|prod)" >&2; exit 64;;
 esac
+if [[ "$SUPPORTS_APP_ENV" -eq 0 ]]; then
+  APP_ENV=""   # leave the compose file's own NODE_ENV alone
+fi
 
 PORT="$(read_env TRADENOTE_PORT)"; [[ -n "$PORT" ]] || PORT="8080"
 APP_URL="http://localhost:$PORT"
@@ -126,23 +145,82 @@ if [[ "$SKIP_DOCKER" -eq 0 ]]; then
 
   compose_cmd=(docker compose -f "$COMPOSE_FILE" up -d)
   [[ "$BUILD" -eq 1 ]] && compose_cmd+=(--build)
-  echo "${compose_cmd[*]}"
-  if ! "${compose_cmd[@]}"; then
+  echo "${APP_ENV:+NODE_ENV=$APP_ENV }${compose_cmd[*]}"
+  # Exported rather than prefixed so it reaches compose's variable substitution.
+  if ! NODE_ENV="$APP_ENV" "${compose_cmd[@]}"; then
     echo "ERROR: docker compose failed." >&2
     exit 1
   fi
 
   # 3. --- Wait for the app ---
   section "Waiting for TradeNote at $APP_URL"
+
+  # Judge readiness by the HTTP status, NOT by curl's exit code: curl under Git
+  # Bash on Windows routinely exits 23 ("client returned ERROR on write") even on a
+  # perfectly good 200, which made this warn "did not respond" on every single run
+  # while the app was in fact up. Any three-digit status means something is
+  # listening and answering; only 000 means nothing is there yet.
+  wait_for_app() {
+    local tries="${1:-40}" code
+    for _ in $(seq 1 "$tries"); do
+      code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$APP_URL" 2>/dev/null || true)"
+      [[ -n "$code" && "$code" != "000" ]] && return 0
+      sleep 3
+    done
+    return 1
+  }
+
   ready=0
-  for _ in $(seq 1 40); do
-    if curl -sS -o /dev/null --max-time 5 "$APP_URL" 2>/dev/null; then ready=1; break; fi
-    sleep 3
-  done
+  wait_for_app && ready=1
+
+  # A dependency added to package.json is the usual reason the app won't boot,
+  # and it has a specific cause: the compose file mounts /app/node_modules as an
+  # ANONYMOUS volume. That volume is filled once, from the image, the first time
+  # the container is created -- and then never refreshed. Rebuilding the image
+  # installs the new package into the image, but the container keeps mounting the
+  # stale volume over it, so node exits at import time with ERR_MODULE_NOT_FOUND
+  # and the container restart-loops. Recreating the service with renewed
+  # anonymous volumes is what actually fixes it.
+  #
+  # --renew-anon-volumes is scoped to the tradenote service, so the mongo
+  # service's NAMED volume (mongo_data, holding every trade) is not touched.
+  # `down -v` would wipe it and must never be used for this.
+  # Logs are captured into a variable rather than piped straight into grep: with
+  # `set -o pipefail`, `grep -q` exits at the first match and closes the pipe,
+  # docker compose dies of SIGPIPE, and pipefail reports that failure as the
+  # pipeline's status -- so the test reads false exactly when it matched.
+  applogs=""
+  if [[ "$ready" -eq 0 ]]; then
+    applogs="$(docker compose -f "$COMPOSE_FILE" logs --tail 80 tradenote 2>/dev/null || true)"
+  fi
+  if [[ -n "$applogs" ]] && grep -qE "ERR_MODULE_NOT_FOUND|Cannot find package" <<<"$applogs"; then
+    missing="$(grep -oE "Cannot find package '[^']+'" <<<"$applogs" | tail -n1 | sed -E "s/.*'([^']+)'.*/\1/")"
+    warn "App failed to start: ${missing:+package \"$missing\" missing — }the container's node_modules volume is older than the image. Recreating it (mongo and its data are untouched)."
+    if docker compose -f "$COMPOSE_FILE" up -d --force-recreate --renew-anon-volumes tradenote; then
+      wait_for_app && ready=1
+    fi
+  fi
+
   if [[ "$ready" -eq 1 ]]; then
     printf '\033[32mTradeNote is up at %s\033[0m\n' "$APP_URL"
   else
     warn "TradeNote did not respond within ~2 min. Check logs: docker compose -f $COMPOSE_FILE logs -f tradenote"
+  fi
+
+  # Bundled mode serves dist/, so dist/ has to exist and match the current source
+  # -- otherwise the app serves a stale build, or nothing at all on a fresh clone.
+  # Built inside the container because that is where node_modules lives (the host
+  # has none; the compose file mounts an anonymous volume over it).
+  # Deliberately AFTER the readiness check: vite build is CPU-heavy, and running it
+  # while the container is still booting starved the server enough that the wait
+  # above timed out and cried wolf on an app that was actually fine.
+  if [[ "$APP_ENV" == "prod" ]]; then
+    section "Building the frontend bundle (dist/)"
+    if docker compose -f "$COMPOSE_FILE" exec -T tradenote npx vite build >/dev/null 2>&1; then
+      printf '\033[32mBundle built.\033[0m\n'
+    else
+      warn "Frontend build failed — the app will serve the previous dist/ (or nothing if this is a first run). Re-run manually to see the error: npm run rebuild"
+    fi
   fi
 fi
 
@@ -291,5 +369,10 @@ fi
 
 section "Done"
 echo "App:   $APP_URL"
+if [[ "$APP_ENV" == "prod" ]]; then
+  printf '\033[90mMode:  bundled (fast). Frontend edits need a rebuild: npm run rebuild  |  hot-reload instead: ./start.sh --hot\033[0m\n'
+elif [[ "$APP_ENV" == "dev" ]]; then
+  printf '\033[90mMode:  Vite dev server (hot-reload). Navigation is slower; drop --hot for the bundled build.\033[0m\n'
+fi
 printf '\033[90mLogs:  docker compose -f %s logs -f tradenote\033[0m\n' "$COMPOSE_FILE"
 printf '\033[90mIP:    only needed if Atlas Network Access is not 0.0.0.0/0  ->  ./start.sh --update-ip\033[0m\n'
