@@ -98,6 +98,14 @@ class NativeBackend:
     def positions_get(self):
         return mt5.positions_get()
 
+    def balance_deals(self):
+        """Every deposit/withdrawal the account has ever had. The native package
+        can query the real history, so this is simply an unbounded window."""
+        frm = dt.datetime(2000, 1, 1)
+        to = dt.datetime.now() + dt.timedelta(days=2)
+        deals = mt5.history_deals_get(frm, to) or []
+        return [d for d in deals if d.type == DEAL_TYPE_BALANCE and d.profit != 0]
+
     def shutdown(self):
         mt5.shutdown()
 
@@ -218,6 +226,30 @@ class BridgeBackend:
     def positions_get(self):
         return [_Obj({"ticket": t, "identifier": t})
                 for t in (self._data or {}).get("open_positions", [])]
+
+    def balance_deals(self):
+        """Deposits/withdrawals over the account's whole life.
+
+        The EA exports these separately from `deals` precisely because `deals` is
+        windowed to LookbackDays: filtering that window would report only the most
+        recent top-up as the lifetime total. An EA built before `balance_ops`
+        existed won't have the key -- fall back to the window and say so, rather
+        than silently under-reporting."""
+        data = self._data or {}
+        ops = data.get("balance_ops")
+        if ops is None:
+            log("Bridge file has no 'balance_ops' -- deposit/withdrawal totals cover "
+                "only the EA's LookbackDays window. Recompile TradeNoteExport.mq5 (F7) "
+                "and re-attach it to pick up the full history.")
+            return [d for d in self.history_deals_get(dt.datetime(2000, 1, 1),
+                                                      dt.datetime.now() + dt.timedelta(days=2))
+                    if d.type == DEAL_TYPE_BALANCE and d.profit != 0]
+        return [_Obj({
+            "time": int(o.get("time", 0)),
+            "type": DEAL_TYPE_BALANCE,
+            "profit": float(o.get("profit", 0) or 0),
+            "comment": o.get("comment", ""),
+        }) for o in ops if float(o.get("profit", 0) or 0) != 0]
 
     def shutdown(self):
         self._data = None
@@ -414,22 +446,18 @@ def account_financials(backend):
     balance-type deals. Deposits are positive balance ops, withdrawals negative.
     The dated list lets TradeNote drop the equity curve on the day money left.
 
-    Note for the bridge backend: this asks for all history since 2000, but the EA
-    only exports its own LookbackDays window, so cash flows older than that window
-    are not visible. Raise LookbackDays on the EA if you need the full history."""
-    frm = dt.datetime(2000, 1, 1)
-    to = dt.datetime.now() + dt.timedelta(days=2)
-    deals = backend.history_deals_get(frm, to) or []
-    deposit = sum(float(d.profit) for d in deals
-                  if d.type == DEAL_TYPE_BALANCE and d.profit > 0)
-    withdrawal = sum(-float(d.profit) for d in deals
-                     if d.type == DEAL_TYPE_BALANCE and d.profit < 0)
+    These are LIFETIME totals, so they come from backend.balance_deals() rather
+    than the sliding trade window -- filtering the window would report only the
+    most recent deposit as the total ever paid in."""
+    deals = backend.balance_deals() or []
+    deposit = sum(float(d.profit) for d in deals if d.profit > 0)
+    withdrawal = sum(-float(d.profit) for d in deals if d.profit < 0)
     # d.time is a UTC-based unix timestamp (broker server time); keep it raw so the
     # frontend buckets it in the trade timezone, same as trades.
     cashflows = [
         {"t": int(d.time), "amount": float(d.profit),
          "type": "deposit" if d.profit > 0 else "withdrawal"}
-        for d in deals if d.type == DEAL_TYPE_BALANCE and d.profit != 0
+        for d in deals if d.profit != 0
     ]
     return deposit, withdrawal, cashflows
 
@@ -676,11 +704,29 @@ def main():
 
     connect(cfg, backend)
     try:
-        # Always refresh the account snapshot (balance/deposit/withdrawal) so the
-        # Dashboard stays current even on ticks with no new trades.
+        # Refresh the account snapshot (balance/deposit/withdrawal) so the
+        # Dashboard stays current even on ticks with no new trades -- but only
+        # when it actually differs from what was pushed last time.
+        #
+        # Pushing unconditionally rewrote the _User document on every run. On a
+        # one-minute schedule that meant the database "changed" every minute even
+        # while idle, which defeats change-detection elsewhere (the scheduled R2
+        # backup would upload every couple of minutes forever) for no benefit.
         ai = backend.account_info()
         deposit, withdrawal, cashflows = account_financials(backend)
-        push_account(cfg, ai, deposit, withdrawal, cashflows)
+        account_sig = json.dumps({
+            "login": getattr(ai, "login", None),
+            "balance": round(float(getattr(ai, "balance", 0) or 0), 2),
+            "deposit": round(deposit, 2),
+            "withdrawal": round(withdrawal, 2),
+            "cashflows": sorted((int(c["t"]), round(float(c["amount"]), 2)) for c in cashflows),
+        }, sort_keys=True)
+        if args.force or account_sig != state.get("last_account_sig"):
+            push_account(cfg, ai, deposit, withdrawal, cashflows)
+            state["last_account_sig"] = account_sig
+            save_state(state)
+        else:
+            log("Account snapshot unchanged -- not re-pushing.")
 
         deals = fetch_deals(backend, frm, to)
         new_deals = [d for d in deals if d.time > last_deal_unix]

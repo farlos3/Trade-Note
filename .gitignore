@@ -36,3 +36,6 @@ backup/pre-restore/
 
 # Sync log written by the scheduled agent
 mt5-sync/logs/
+
+# Backup log written by the scheduled agent
+backup/logs/
