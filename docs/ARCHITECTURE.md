@@ -16,7 +16,7 @@ changes.
   documents; trades are stored as **per-day documents** (one doc per calendar day).
 - **Object storage** — Cloudflare R2 (S3 API): trade screenshots, day-summary files,
   playbooks, and DB backups (parquet).
-- **MT5 sync** — `mt5-sync/mt5_sync.py`, Windows-only, pulls deals from MetaTrader 5
+- **MT5 sync** — `mt5-sync/mt5_sync.py`, Windows **and** macOS, pulls deals from MetaTrader 5
   and pushes them into TradeNote every minute (Windows Scheduled Task).
 - **MCP server** — `mcp-server/`, exposes trade stats / behavior patterns to Claude
   (Desktop / Code) over MCP.
@@ -146,8 +146,21 @@ changes.
 
 | File | Purpose |
 |------|---------|
-| `mt5-sync/mt5_sync.py` | Windows-only. Reads MT5 deals, maps to trades, buckets by trade tz, computes account financials (deposits/withdrawals as dated `cashFlows`), pushes to `POST /api/account` + trade import. Email notify is commented out. |
-| `mt5-sync/config.example.ini` | Template (login, server, TradeNote URL). Real `config.ini` + `state.json` gitignored. |
+| `mt5-sync/mt5_sync.py` | Reads MT5 deals, maps to trades, buckets by trade tz, computes account financials (deposits/withdrawals as dated `cashFlows`), pushes to `POST /api/account` + trade import. Email notify is commented out. Two interchangeable backends (`pick_backend`), see below. |
+| `mt5-sync/mql5/TradeNoteExport.mq5` | Read-only Expert Advisor. Runs inside the terminal and writes deals + account + open positions + balance ops to `<data folder>/MQL5/Files/tradenote_deals.json` every 15s and on each `OnTrade`. Temp-file-then-rename, so a reader never sees a partial write. |
+| `mt5-sync/install-ea.sh` | Copies the EA into every MT5 `MQL5/Experts` folder found — normal, portable, and macOS Wine-bottle layouts. Compiling (F7) stays manual: MetaEditor's headless `/compile` does not work under MT5-for-Mac's Wine build. |
+| `mt5-sync/config.example.ini` | Template (backend, login, server, TradeNote URL). Real `config.ini` + `state.json` gitignored. |
+| `mt5-sync/templates/` | Chart templates (`.tpl`) exported from MT5, so the same chart setup restores on any machine. |
+
+**Backends.** `NativeBackend` uses the `MetaTrader5` package — a Windows-only
+wheel bound to `terminal64.dll`, so it cannot exist on macOS. `BridgeBackend`
+reads the EA's JSON instead and works everywhere; it is what makes the sync run
+on the Mac. Both expose the same methods (`account_info`, `history_deals_get`,
+`positions_get`, …), so everything downstream is backend-agnostic. `import
+MetaTrader5` is optional and the `DEAL_TYPE_*` enum values are defined locally,
+otherwise importing the module would fail outright off Windows. The bridge treats
+a file older than `BRIDGE_STALE_SECONDS` (90s) as "terminal not running", so a
+closed terminal is never pushed as a zero-balance account.
 
 ## `backup/` + `scripts/`
 

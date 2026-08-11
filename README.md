@@ -50,9 +50,10 @@ and backups go to your own R2 bucket.
 ## Requirements
 
 - **Docker Desktop** (runs the app + local MongoDB)
-- **Windows** with **MetaTrader 5** installed — for the automatic sync
-  (the `MetaTrader5` Python package is Windows-only; see *macOS* below)
-- **Python 3** with `pip install MetaTrader5 openpyxl requests` — for the sync
+- **MetaTrader 5** on the same machine — for the automatic sync. Works on
+  **Windows and macOS** (macOS needs a one-time EA install, see *macOS* below)
+- **Python 3** — `pip install openpyxl requests`, plus `MetaTrader5` on Windows
+  (that package is a Windows-only wheel and is not needed on macOS)
 - A `.env` file (copy from [`.env.example`](.env.example))
 
 ## Quick start
@@ -65,17 +66,35 @@ and backups go to your own R2 bucket.
 ```
 ```bash
 # macOS / Linux
-./start.sh --skip-sync      # MT5 sync is Windows-only (see below)
+./start.sh                  # same thing, MT5 sync included
+./start.sh --hot            # Vite dev server instead of the bundled build
 ```
 
 `start.ps1` / `start.sh` will:
 1. Start the app **and local MongoDB** in Docker.
 2. Wait until the web app answers.
-3. **Launch the MetaTrader 5 terminal** (Windows, if not already open).
-4. Run the MT5 → TradeNote sync once.
+3. **Restore the latest R2 backup** into MongoDB (so a start always begins from
+   the backup, including when MT5 won't open).
+4. **Launch the MetaTrader 5 terminal** if it isn't already open — on either
+   platform.
+5. Run the MT5 → TradeNote sync once, layering new trades on top.
+6. **Push the result back to R2** for the next start.
 
 Then open **http://localhost:8080**. With `TRADENOTE_AUTO_LOGIN=true` you land
 straight on the dashboard.
+
+### Stopping
+
+```bash
+./stop.sh                   # back up to R2, then stop the containers
+```
+
+Use this rather than stopping Docker directly. `start.sh` restores from R2 first
+and that **drops the local collections**, so anything journalled during a session
+(notes, tags, screenshots) has to reach R2 before the next start. This is what
+makes the Windows → Mac hand-off safe: sync on Windows, `./stop.sh`, then
+`./start.sh` on the Mac and the day's work is there. The backup refuses to run on
+an empty or unreadable database, so a broken session can never wipe the snapshot.
 
 ## MetaTrader 5 auto-sync
 
@@ -132,14 +151,28 @@ Requires `pip install pymongo pyarrow boto3` and `R2_ACCOUNT_ID` + `R2_BUCKET`
 
 ## macOS
 
-The TradeNote app itself is cross-platform and runs on macOS via Docker
-(`./start.sh --skip-sync`). The **MetaTrader 5 auto-sync is Windows-only** — the
-`MetaTrader5` Python package has no macOS build. On a Mac, either:
+Everything runs on macOS, sync included — it just reaches MT5 a different way.
+The `MetaTrader5` Python package is a Windows-only wheel bound to
+`terminal64.dll`, so instead of Python reaching into the terminal, an MQL5 Expert
+Advisor runs *inside* it (MQL5 works on every platform, including the Wine build
+MT5 for Mac ships) and writes the data out as JSON for the sync to read.
 
-- Import trades manually: export a **Trade History Report (XLSX)** from MT5 and
-  upload it on the **Imports** page (broker = MetaTrader 5), or
-- Run `mt5_sync.py` on a Windows machine/VM that has MT5 open and point its
-  `url` at this instance.
+One-time setup:
+
+```bash
+./mt5-sync/install-ea.sh    # copies the EA into MT5's Experts folder
+```
+
+Then in MT5: **F4** → open `Experts/TradeNoteExport.mq5` → **F7** to compile →
+right-click Navigator → Refresh → drag **TradeNoteExport** onto any chart and
+tick **Allow Algo Trading**. A 🙂 in the chart corner means it's running. After
+that `./start.sh` works exactly as it does on Windows.
+
+Full details, including how the sync detects a closed terminal, are in
+[`mt5-sync/README.md`](mt5-sync/README.md).
+
+Manual import still works as a fallback: export a **Trade History Report (XLSX)**
+from MT5 and upload it on the **Imports** page (broker = MetaTrader 5).
 
 ## Credits & license
 

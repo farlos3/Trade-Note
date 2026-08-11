@@ -1,4 +1,7 @@
 .env
+# Timestamped .env backups hold the same secrets as .env itself.
+# Deliberately not `.env.*`, which would also cover the tracked .env.example.
+.env.*.bak
 vendor
 node_modules
 .DS_Store
@@ -30,3 +33,6 @@ _atlasdump/
 
 # Pre-restore safety dumps of the local database
 backup/pre-restore/
+
+# Sync log written by the scheduled agent
+mt5-sync/logs/
