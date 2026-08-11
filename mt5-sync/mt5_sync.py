@@ -19,14 +19,19 @@ import os
 import smtplib
 import subprocess
 import sys
+import time
 from email.message import EmailMessage
 
 import requests
 
+# Optional: the MetaTrader5 package is a Windows-only wheel bound to
+# terminal64.dll, so it simply cannot be installed on macOS or Linux. Its absence
+# is not fatal -- the bridge backend below reads the same data from a file the
+# TradeNoteExport EA writes from inside the terminal, which works everywhere.
 try:
     import MetaTrader5 as mt5
 except ImportError:
-    sys.exit("MetaTrader5 package missing. Run: pip install MetaTrader5 openpyxl requests")
+    mt5 = None
 
 import openpyxl
 
@@ -34,10 +39,204 @@ import openpyxl
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.ini")
 STATE_PATH = os.path.join(HERE, "state.json")
+BRIDGE_FILENAME = "tradenote_deals.json"
+# How old the EA's file may be before the terminal counts as not running. The EA
+# rewrites every 15s by default, so a minute of silence means it stopped.
+BRIDGE_STALE_SECONDS = 90
+
+# MT5 enum values, hard-coded so the rest of this file compares against them
+# without needing the MetaTrader5 module imported. These are fixed parts of the
+# MQL5 API (ENUM_DEAL_TYPE / ENUM_DEAL_ENTRY) and are what the EA writes out.
+DEAL_TYPE_BUY = 0
+DEAL_TYPE_SELL = 1
+DEAL_TYPE_BALANCE = 2
+DEAL_ENTRY_IN = 0
+DEAL_ENTRY_OUT = 1
 
 
 def log(msg):
     print(f"[{dt.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Backends
+#
+# Two ways to reach MT5, exposing the same handful of methods the rest of this
+# file already calls on the MetaTrader5 module, so nothing downstream changes:
+#
+#   NativeBackend  Windows only. The MetaTrader5 package talking to the terminal
+#                  directly. Unchanged behaviour.
+#   BridgeBackend  Any platform. Reads the JSON that mql5/TradeNoteExport.mq5
+#                  writes from inside the terminal. This is what makes macOS
+#                  work at all: the Python package cannot be installed there, so
+#                  the terminal pushes data out instead of Python reaching in.
+# ---------------------------------------------------------------------------
+
+class _Obj:
+    """Attribute view over a dict, so bridge rows read like MetaTrader5's named
+    tuples (d.time, d.type, d.profit, ...) and the existing code is agnostic."""
+
+    def __init__(self, data):
+        self.__dict__.update(data)
+
+
+class NativeBackend:
+    name = "MetaTrader5 package"
+
+    def initialize(self, **kwargs):
+        return mt5.initialize(**kwargs)
+
+    def last_error(self):
+        return mt5.last_error()
+
+    def account_info(self):
+        return mt5.account_info()
+
+    def history_deals_get(self, frm, to):
+        return mt5.history_deals_get(frm, to)
+
+    def positions_get(self):
+        return mt5.positions_get()
+
+    def shutdown(self):
+        mt5.shutdown()
+
+    def terminal_running(self):
+        return mt5_terminal_running()
+
+
+class BridgeBackend:
+    """Reads the EA's JSON export. Everything is served from the one file, so it
+    is loaded once per run and then answered from memory."""
+
+    name = "TradeNoteExport EA bridge file"
+
+    def __init__(self, path=""):
+        self._path = path
+        self._data = None
+
+    # -- discovery ---------------------------------------------------------
+    @staticmethod
+    def discover():
+        """Find the EA's output file.
+
+        Covers the layouts MT5 actually uses:
+          - normal install: %APPDATA%/MetaQuotes/Terminal/<hash>/MQL5/Files
+          - portable install (portable.txt): the data folder moves into the
+            program folder, so MQL5/Files sits beside terminal64.exe and nothing
+            lands under APPDATA at all
+          - macOS: either of those, nested inside MT5's Wine bottle
+          - the shared Terminal/Common/Files, if the EA is set to use it
+
+        Newest mtime wins, so a live terminal beats a stale leftover copy."""
+        import glob
+
+        home = os.path.expanduser("~")
+        patterns = []
+
+        roots = []
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            roots.append(appdata)
+        roots += [
+            os.path.join(home, "Library", "Application Support", "*", "drive_c",
+                         "users", "*", "AppData", "Roaming"),
+            os.path.join(home, ".wine", "drive_c", "users", "*", "AppData", "Roaming"),
+        ]
+        for root in roots:
+            for tail in (("Terminal", "Common", "Files"), ("Terminal", "*", "MQL5", "Files")):
+                patterns.append(os.path.join(root, "MetaQuotes", *tail, BRIDGE_FILENAME))
+
+        # Portable installs: MQL5/Files lives under the program folder.
+        for progs in (r"C:\Program Files", r"C:\Program Files (x86)",
+                      os.path.join(home, "Library", "Application Support", "*",
+                                   "drive_c", "Program Files"),
+                      os.path.join(home, "Library", "Application Support", "*",
+                                   "drive_c", "Program Files (x86)"),
+                      os.path.join(home, ".wine", "drive_c", "Program Files")):
+            patterns.append(os.path.join(progs, "*", "MQL5", "Files", BRIDGE_FILENAME))
+
+        matches = []
+        for pattern in patterns:
+            matches.extend(glob.glob(pattern))
+        return max(matches, key=os.path.getmtime) if matches else ""
+
+    # -- MetaTrader5-shaped API -------------------------------------------
+    def initialize(self, **kwargs):
+        if not self._path:
+            self._path = self.discover()
+        if not self._path or not os.path.exists(self._path):
+            return False
+        try:
+            with open(self._path, encoding="utf-8") as f:
+                self._data = json.load(f)
+        except (OSError, ValueError) as e:
+            self._err = f"cannot read {self._path}: {e}"
+            return False
+        return True
+
+    def last_error(self):
+        return getattr(self, "_err", f"bridge file not found (looked for {BRIDGE_FILENAME})")
+
+    def account_info(self):
+        a = (self._data or {}).get("account") or {}
+        return _Obj({
+            "login": a.get("login", 0),
+            "server": a.get("server", ""),
+            "currency": a.get("currency", "USD"),
+            "balance": float(a.get("balance", 0) or 0),
+            "equity": float(a.get("equity", 0) or 0),
+        })
+
+    def history_deals_get(self, frm, to):
+        """Same signature as the native call. The EA exports its own window, so
+        this filters that down to the caller's range using the same broker-time
+        stamps the native package returns."""
+        frm_unix = frm.timestamp() if isinstance(frm, dt.datetime) else float(frm)
+        to_unix = to.timestamp() if isinstance(to, dt.datetime) else float(to)
+        out = []
+        for d in (self._data or {}).get("deals", []):
+            t = float(d.get("time", 0))
+            if frm_unix <= t <= to_unix:
+                out.append(_Obj({
+                    "ticket": d.get("ticket", 0),
+                    "time": int(t),
+                    "type": int(d.get("type", -1)),
+                    "entry": int(d.get("entry", -1)),
+                    "symbol": d.get("symbol", ""),
+                    "volume": float(d.get("volume", 0) or 0),
+                    "price": float(d.get("price", 0) or 0),
+                    "position_id": d.get("position_id", 0),
+                    "commission": float(d.get("commission", 0) or 0),
+                    "fee": float(d.get("fee", 0) or 0),
+                    "swap": float(d.get("swap", 0) or 0),
+                    "profit": float(d.get("profit", 0) or 0),
+                    "comment": d.get("comment", ""),
+                }))
+        return out
+
+    def positions_get(self):
+        return [_Obj({"ticket": t, "identifier": t})
+                for t in (self._data or {}).get("open_positions", [])]
+
+    def shutdown(self):
+        self._data = None
+
+    def terminal_running(self):
+        """The file's freshness IS the liveness signal: the EA rewrites it on a
+        timer, so a stale file means the terminal (or the EA) is not running. A
+        closed terminal must not look like an empty account, or the sync would
+        push a snapshot showing zero balance."""
+        if not self._path:
+            self._path = self.discover()
+        if not self._path or not os.path.exists(self._path):
+            return False
+        age = time.time() - os.path.getmtime(self._path)
+        if age > BRIDGE_STALE_SECONDS:
+            log(f"Bridge file is {int(age)}s old (limit {BRIDGE_STALE_SECONDS}s) "
+                "-- MT5 or the TradeNoteExport EA is not running.")
+            return False
+        return True
 
 
 def load_config():
@@ -89,45 +288,66 @@ def mt5_terminal_running():
         return True
 
 
-def connect(cfg):
-    """Attach to the MT5 terminal. Uses credentials if provided, otherwise the
-    already-logged-in terminal session."""
+def pick_backend(cfg):
+    """Native where the MetaTrader5 package exists (Windows), bridge file
+    everywhere else. `[mt5] backend = native|bridge` in config.ini forces one --
+    useful on Windows to test the bridge, or to point at a specific file."""
+    choice = cfg.get("mt5", "backend", fallback="auto").strip().lower()
+    bridge_file = cfg.get("mt5", "bridge_file", fallback="").strip()
+
+    if choice == "native" or (choice in ("", "auto") and mt5 is not None):
+        if mt5 is None:
+            sys.exit("backend=native but the MetaTrader5 package is not installed "
+                     "(it is Windows-only). Use backend=bridge with the "
+                     "TradeNoteExport EA instead -- see mt5-sync/README.md.")
+        return NativeBackend()
+    return BridgeBackend(bridge_file)
+
+
+def connect(cfg, backend):
+    """Attach to MT5. Native: uses credentials if provided, otherwise the
+    already-logged-in terminal session. Bridge: loads the EA's export."""
     login = cfg.get("mt5", "login", fallback="").strip()
     password = cfg.get("mt5", "password", fallback="").strip()
     server = cfg.get("mt5", "server", fallback="").strip()
     path = cfg.get("mt5", "terminal_path", fallback="").strip()
 
     kwargs = {}
-    if path:
-        kwargs["path"] = path
-    if login and password and server:
-        kwargs.update(login=int(login), password=password, server=server)
+    if isinstance(backend, NativeBackend):
+        if path:
+            kwargs["path"] = path
+        if login and password and server:
+            kwargs.update(login=int(login), password=password, server=server)
 
-    ok = mt5.initialize(**kwargs)
+    ok = backend.initialize(**kwargs)
     if not ok:
-        sys.exit(f"mt5.initialize failed: {mt5.last_error()} "
-                 "(open MT5 and log in, or set login/password/server in config.ini)")
-    info = mt5.account_info()
-    log(f"Connected to MT5 account {info.login} @ {info.server} ({info.currency})")
+        if isinstance(backend, NativeBackend):
+            sys.exit(f"mt5.initialize failed: {backend.last_error()} "
+                     "(open MT5 and log in, or set login/password/server in config.ini)")
+        sys.exit(f"Bridge unavailable: {backend.last_error()}. Attach the "
+                 "TradeNoteExport EA to a chart in MT5 (see mt5-sync/README.md), "
+                 "or set [mt5] bridge_file in config.ini.")
+    info = backend.account_info()
+    log(f"Connected via {backend.name}: account {info.login} @ {info.server} ({info.currency})")
     return info
 
 
-def fetch_deals(frm, to):
-    deals = mt5.history_deals_get(frm, to)
+def fetch_deals(backend, frm, to):
+    deals = backend.history_deals_get(frm, to)
     if deals is None:
-        log(f"history_deals_get returned None: {mt5.last_error()}")
+        log(f"history_deals_get returned None: {backend.last_error()}")
         return []
     # Exclude deals belonging to positions that are STILL OPEN. Otherwise the
     # entry deal alone gets imported as an open trade, and when the position later
     # closes the re-import is dropped by TradeNote's dateUnix dedup — so the trade
     # stays stuck "open" and never shows its realised P&L. Import only complete
     # (closed) round-trips.
-    open_positions = mt5.positions_get() or []
+    open_positions = backend.positions_get() or []
     open_ids = {p.ticket for p in open_positions} | {getattr(p, "identifier", p.ticket) for p in open_positions}
     # Keep only actual trade deals (buy/sell) whose position has closed. Skip
     # balance/credit/correction entries too.
     return [d for d in deals
-            if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL)
+            if d.type in (DEAL_TYPE_BUY, DEAL_TYPE_SELL)
             and d.position_id not in open_ids]
 
 
@@ -156,8 +376,8 @@ def build_report_xlsx(account_login, server, deals):
         # not 07.25 04:37 as datetime.fromtimestamp() would render on a UTC+7 box.
         # This keeps TradeNote's dates/times matching the terminal.
         ts = dt.datetime.fromtimestamp(d.time, dt.timezone.utc).strftime("%Y.%m.%d %H:%M:%S")
-        side = "buy" if d.type == mt5.DEAL_TYPE_BUY else "sell"
-        direction = "in" if d.entry == mt5.DEAL_ENTRY_IN else "out"
+        side = "buy" if d.type == DEAL_TYPE_BUY else "sell"
+        direction = "in" if d.entry == DEAL_ENTRY_IN else "out"
         # The "Order" column carries the MT5 position_id, so TradeNote can key each
         # position as its own trade (two overlapping same-symbol positions would
         # otherwise net into one). All deals of one position share position_id.
@@ -189,23 +409,27 @@ def push(cfg, xlsx_bytes):
     return r.text.strip()
 
 
-def account_financials():
+def account_financials(backend):
     """Totals AND the individual dated deposits/withdrawals from the account's
     balance-type deals. Deposits are positive balance ops, withdrawals negative.
-    The dated list lets TradeNote drop the equity curve on the day money left."""
+    The dated list lets TradeNote drop the equity curve on the day money left.
+
+    Note for the bridge backend: this asks for all history since 2000, but the EA
+    only exports its own LookbackDays window, so cash flows older than that window
+    are not visible. Raise LookbackDays on the EA if you need the full history."""
     frm = dt.datetime(2000, 1, 1)
     to = dt.datetime.now() + dt.timedelta(days=2)
-    deals = mt5.history_deals_get(frm, to) or []
+    deals = backend.history_deals_get(frm, to) or []
     deposit = sum(float(d.profit) for d in deals
-                  if d.type == mt5.DEAL_TYPE_BALANCE and d.profit > 0)
+                  if d.type == DEAL_TYPE_BALANCE and d.profit > 0)
     withdrawal = sum(-float(d.profit) for d in deals
-                     if d.type == mt5.DEAL_TYPE_BALANCE and d.profit < 0)
+                     if d.type == DEAL_TYPE_BALANCE and d.profit < 0)
     # d.time is a UTC-based unix timestamp (broker server time); keep it raw so the
     # frontend buckets it in the trade timezone, same as trades.
     cashflows = [
         {"t": int(d.time), "amount": float(d.profit),
          "type": "deposit" if d.profit > 0 else "withdrawal"}
-        for d in deals if d.type == mt5.DEAL_TYPE_BALANCE and d.profit != 0
+        for d in deals if d.type == DEAL_TYPE_BALANCE and d.profit != 0
     ]
     return deposit, withdrawal, cashflows
 
@@ -241,9 +465,9 @@ def _build_email_html(deals, total_profit, account_line, tradenote_url):
     for d in sorted(deals, key=lambda x: x.time):
         # UTC read = broker wall-clock, matching the terminal and TradeNote.
         when = dt.datetime.fromtimestamp(d.time, dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        side = "BUY" if d.type == mt5.DEAL_TYPE_BUY else "SELL"
-        side_color = "#16a34a" if d.type == mt5.DEAL_TYPE_BUY else "#dc2626"
-        leg = "in" if d.entry == mt5.DEAL_ENTRY_IN else ("out" if d.entry == mt5.DEAL_ENTRY_OUT else "—")
+        side = "BUY" if d.type == DEAL_TYPE_BUY else "SELL"
+        side_color = "#16a34a" if d.type == DEAL_TYPE_BUY else "#dc2626"
+        leg = "in" if d.entry == DEAL_ENTRY_IN else ("out" if d.entry == DEAL_ENTRY_OUT else "—")
         p = float(d.profit)
         p_color = "#16a34a" if p > 0 else ("#dc2626" if p < 0 else "#6b7280")
         rows.append(f"""
@@ -440,22 +664,25 @@ def main():
     last_deal_unix = 0 if args.force else int(state.get("last_deal_unix", 0))
     log(f"Sync window (sliding): {frm:%Y-%m-%d %H:%M} -> {to:%Y-%m-%d %H:%M}")
 
+    backend = pick_backend(cfg)
+
     # Don't wake a closed terminal. mt5.initialize() would auto-launch MT5 if it's
     # not running, so a 1-minute schedule kept re-opening it after you closed it.
     # Skip the run instead; syncing resumes automatically once MT5 is open again.
-    if not mt5_terminal_running():
+    # The bridge backend answers this from the export file's age instead.
+    if not backend.terminal_running():
         log("MT5 terminal not running -- skipping (won't auto-launch it).")
         return
 
-    connect(cfg)
+    connect(cfg, backend)
     try:
         # Always refresh the account snapshot (balance/deposit/withdrawal) so the
         # Dashboard stays current even on ticks with no new trades.
-        ai = mt5.account_info()
-        deposit, withdrawal, cashflows = account_financials()
+        ai = backend.account_info()
+        deposit, withdrawal, cashflows = account_financials(backend)
         push_account(cfg, ai, deposit, withdrawal, cashflows)
 
-        deals = fetch_deals(frm, to)
+        deals = fetch_deals(backend, frm, to)
         new_deals = [d for d in deals if d.time > last_deal_unix]
         log(f"Fetched {len(deals)} trade deal(s) in window, {len(new_deals)} new")
         if not new_deals:
@@ -477,7 +704,7 @@ def main():
         # notify_email(cfg, new_deals, resp, ai)
         log("Done.")
     finally:
-        mt5.shutdown()
+        backend.shutdown()
 
 
 if __name__ == "__main__":

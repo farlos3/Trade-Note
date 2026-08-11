@@ -314,15 +314,19 @@ backup_to_r2() {
   bash "$ROOT_DIR/scripts/r2-backup.sh" --compose-file "$COMPOSE_FILE" || true
 }
 
-# --- Windows only: read MetaTrader 5 and add anything newer than the backup ---
-sync_from_mt5() {
+# --- Open the terminal, then read it -----------------------------------------
+# Runs on both platforms now. mt5_sync.py picks how it talks to MT5: the
+# MetaTrader5 package on Windows, or the JSON file the TradeNoteExport EA writes
+# from inside the terminal everywhere else (that package is a Windows-only
+# wheel). Either way the terminal must be OPEN, so bring it up first.
+launch_mt5() {
   section "Launching MetaTrader 5 terminal"
-  # The per-minute sync never auto-opens MT5 (it skips when the terminal is
-  # closed), so starting the project is what brings MT5 up. Override the path
-  # with MT5_TERMINAL_PATH in .env. No-op if MT5 is already running.
-  if tasklist /FI "IMAGENAME eq terminal64.exe" /NH 2>/dev/null | grep -qi "terminal64.exe"; then
-    printf '\033[32mMT5 already running.\033[0m\n'
-  else
+  if command -v tasklist >/dev/null 2>&1; then
+    # --- Windows ---
+    if tasklist /FI "IMAGENAME eq terminal64.exe" /NH 2>/dev/null | grep -qi "terminal64.exe"; then
+      printf '\033[32mMT5 already running.\033[0m\n'
+      return 0
+    fi
     MT5_PATH="$(read_env MT5_TERMINAL_PATH)"
     [[ -n "$MT5_PATH" ]] || MT5_PATH="C:\\Program Files\\MetaTrader 5\\terminal64.exe"
     if [[ -f "/c/Program Files/MetaTrader 5/terminal64.exe" || -f "${MT5_PATH}" ]]; then
@@ -332,11 +336,36 @@ sync_from_mt5() {
     else
       warn "MT5 terminal not found at $MT5_PATH. Set MT5_TERMINAL_PATH in .env, or open MT5 manually."
     fi
+    return 0
   fi
+
+  # --- macOS ---
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    if pgrep -f "MetaTrader 5.app" >/dev/null 2>&1; then
+      printf '\033[32mMT5 already running.\033[0m\n'
+      return 0
+    fi
+    MT5_APP="$(read_env MT5_APP_NAME)"; [[ -n "$MT5_APP" ]] || MT5_APP="MetaTrader 5"
+    # -g: leave it in the background rather than stealing focus mid-startup.
+    if open -ga "$MT5_APP" 2>/dev/null; then
+      printf '\033[32mStarted MT5: %s\033[0m\n' "$MT5_APP"
+      sleep 10   # Wine start-up is slower; give the EA time to write its first export
+    else
+      warn "Could not open \"$MT5_APP\". Set MT5_APP_NAME in .env if the app has a different name, or open MT5 manually."
+    fi
+    return 0
+  fi
+
+  warn "Unsupported platform for auto-launch — open MetaTrader 5 manually."
+  return 0
+}
+
+sync_from_mt5() {
+  launch_mt5
 
   section "Running MT5 -> TradeNote sync (once)"
   if [[ -z "$PY" ]]; then
-    warn "Python not found; skipping MT5 sync. Install Python 3 and: pip install MetaTrader5 openpyxl requests"
+    warn "Python not found; skipping MT5 sync. Install Python 3 and: pip install openpyxl requests"
     return 0
   fi
   local rc=0
@@ -350,14 +379,11 @@ if [[ "$SKIP_RESTORE" -eq 0 ]]; then
   restore_from_r2
 fi
 
-# 4b. Update: newer trades straight from the terminal. `tasklist` exists only on
-# Windows, which is also the only place the MetaTrader5 wheel installs.
+# 4b. Update: newer trades straight from the terminal, on either platform. The
+# sync itself decides how to reach MT5 and skips cleanly when the terminal (or,
+# on macOS, the TradeNoteExport EA) isn't running.
 if [[ "$SKIP_SYNC" -eq 0 ]]; then
-  if command -v tasklist >/dev/null 2>&1; then
-    sync_from_mt5
-  else
-    printf '\033[90mNot on Windows — no local MetaTrader 5 to sync from; the R2 restore above is the data source.\033[0m\n'
-  fi
+  sync_from_mt5
 fi
 
 # 4c. Persist: push the result back to R2 so the next start picks it up. Runs even
