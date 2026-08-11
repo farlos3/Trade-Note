@@ -129,6 +129,33 @@ string BuildJson()
    }
    json += "\n  ],\n";
 
+   // ---- balance operations, FULL account history -------------------------
+   // Deposits and withdrawals must be complete, not windowed: the Dashboard and
+   // Plan vs Actual show lifetime totals, and a 7-day window would report only
+   // the most recent top-up. Re-selecting the whole history is cheap here because
+   // an account has a handful of these, versus thousands of trade deals -- which
+   // is why they are exported separately instead of just widening LookbackDays.
+   json += "  \"balance_ops\": [";
+   bool firstBal = true;
+   if(HistorySelect(0, TimeCurrent() + 2 * 24 * 60 * 60))
+   {
+      int totalBal = HistoryDealsTotal();
+      for(int i = 0; i < totalBal; i++)
+      {
+         ulong ticket = HistoryDealGetTicket(i);
+         if(ticket == 0) continue;
+         if(HistoryDealGetInteger(ticket, DEAL_TYPE) != DEAL_TYPE_BALANCE) continue;
+         double profit = HistoryDealGetDouble(ticket, DEAL_PROFIT);
+         if(profit == 0) continue;
+         if(!firstBal) json += ", ";
+         json += "{\"time\": "   + IntegerToString((long)HistoryDealGetInteger(ticket, DEAL_TIME));
+         json += ", \"profit\": " + Num(profit, 2);
+         json += ", \"comment\": \"" + JsonEscape(HistoryDealGetString(ticket, DEAL_COMMENT)) + "\"}";
+         firstBal = false;
+      }
+   }
+   json += "],\n";
+
    json += "  \"exported_at\": " + IntegerToString((long)TimeCurrent()) + "\n";
    json += "}\n";
    return json;

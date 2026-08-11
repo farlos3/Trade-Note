@@ -302,6 +302,17 @@ restore_from_r2() {
     warn "R2 restore did not complete (exit $rc) — the local database is untouched, see the message above."
   else
     printf '\033[32mRestored — MongoDB now holds %s trade(s).\033[0m\n' "$(count_trades)"
+    # The sync's watermark (mt5-sync/state.json, "newest deal already pushed")
+    # lives on this machine, but the restore just rolled the DATABASE back to
+    # whatever the snapshot held. A watermark left pointing past the restored
+    # data makes the next sync report "Nothing new" and never re-push the trades
+    # the restore dropped -- they simply vanish. Clearing it makes the next run
+    # re-send its whole window; TradeNote dedups by trade date, so re-sending is
+    # free and this is self-healing.
+    if [[ -f "$ROOT_DIR/mt5-sync/state.json" ]]; then
+      rm -f "$ROOT_DIR/mt5-sync/state.json"
+      printf '\033[90mCleared the MT5 sync watermark so the restored window is re-synced.\033[0m\n'
+    fi
   fi
   return 0
 }

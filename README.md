@@ -83,18 +83,35 @@ and backups go to your own R2 bucket.
 Then open **http://localhost:8080**. With `TRADENOTE_AUTO_LOGIN=true` you land
 straight on the dashboard.
 
-### Stopping
+### Keeping R2 current
+
+`start.sh` restores from R2 before anything else, and that **drops the local
+collections** — so anything journalled since the last backup (notes, tags,
+screenshots) is gone at that point. Two things keep R2 ahead of that:
 
 ```bash
-./stop.sh                   # back up to R2, then stop the containers
+./scripts/install-backup-agent.sh              # macOS: check every 2 min, upload on change
+./scripts/install-backup-agent.sh --interval 600   # check every 10 min instead
+./scripts/install-backup-agent.sh --status|--logs|--uninstall
 ```
 
-Use this rather than stopping Docker directly. `start.sh` restores from R2 first
-and that **drops the local collections**, so anything journalled during a session
-(notes, tags, screenshots) has to reach R2 before the next start. This is what
-makes the Windows → Mac hand-off safe: sync on Windows, `./stop.sh`, then
-`./start.sh` on the Mac and the day's work is there. The backup refuses to run on
-an empty or unreadable database, so a broken session can never wipe the snapshot.
+The agent compares a fingerprint of the database (per-collection counts + newest
+`_updated_at`) against the last successful backup and does nothing when they
+match — an idle machine produces no R2 traffic, which is what makes a two-minute
+cadence reasonable. A change reaches R2 within about two minutes of happening.
+
+```bash
+./stop.sh                   # back up to R2, then stop the containers — optional
+```
+
+With the agent installed `stop.sh` is optional: closing the lid costs you at most
+the last couple of minutes. Use it when you want that window closed to zero
+before switching machines. Either way the backup refuses to run on an empty or
+unreadable database, so a broken run can never wipe the snapshot.
+
+This is what makes the Windows → Mac hand-off safe: work on one machine, let the
+agent (or `./stop.sh`) push to R2, then `./start.sh` on the other and the day's
+work is there.
 
 ## MetaTrader 5 auto-sync
 
