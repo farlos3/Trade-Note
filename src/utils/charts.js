@@ -650,7 +650,24 @@ export function usePieChart(param1, param2, param3) { //chart ID, green, red, pa
                 },
             },
 
-            ]
+            ],
+            // Hovering either arc names the slice and its share. Without this the
+            // donut was the one chart that told you nothing on hover -- the centre
+            // label only ever shows the green side.
+            tooltip: {
+                trigger: 'item',
+                backgroundColor: blackbg7,
+                borderColor: blackbg7,
+                textStyle: { color: white87.value },
+                formatter: (params) => {
+                    const isSatisfaction = param1 == "pieChart2"
+                    const names = isSatisfaction
+                        ? ['Satisfied', 'Dissatisfied']
+                        : ['Wins', 'Losses']
+                    const name = names[params.dataIndex] ?? ''
+                    return `${params.marker} ${name}: <b>${useOneDecPercentFormat(params.value)}</b>`
+                },
+            },
         };
         myChart.setOption(option);
         resolve()
@@ -1749,7 +1766,22 @@ export function useScatterChart(param1) { //chart ID, green, red, page
                 itemStyle: {
                     color: '#35C4FE',
                 }
-            }
+            },
+            // 'item' rather than 'axis': points sit at arbitrary times, so there
+            // is no column to snap to and axis mode would highlight the wrong
+            // neighbour. data = [time, P&L per share, P&L, hour, minute, second].
+            tooltip: {
+                trigger: 'item',
+                backgroundColor: blackbg7,
+                borderColor: blackbg7,
+                textStyle: { color: white87.value },
+                formatter: (params) => {
+                    const d = params.data || []
+                    return `<div style="font-weight:700;margin-bottom:4px">${d[0]}</div>`
+                        + `P&amp;L: <b>${useThousandCurrencyFormat(d[2])}</b><br/>`
+                        + `<span style="opacity:.7">per share ${useTwoDecCurrencyFormat(d[1])}</span>`
+                },
+            },
         };
         myChart.setOption(option);
         resolve()
