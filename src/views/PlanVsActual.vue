@@ -322,6 +322,22 @@ const chartMode = ref(localStorage.getItem('planVsActualChartMode') || 'equity')
 if (!CHART_MODES.some((m) => m.value === chartMode.value)) chartMode.value = 'equity'
 watch(chartMode, (v) => localStorage.setItem('planVsActualChartMode', v))
 
+/* Linear squashes a +10 day to nothing next to a -721 one, which is exactly the
+   Daily P&L complaint. Symlog keeps the sign and compresses the extremes so small
+   and large days are readable at once. ECharts' own `type: 'log'` cannot be used:
+   it rejects zero and negative values, and half this data is negative. */
+const Y_SCALES = [
+    { value: 'linear', label: 'Linear' },
+    { value: 'symlog', label: 'Log' },
+]
+const yScale = ref(localStorage.getItem('planVsActualYScale') || 'linear')
+if (!Y_SCALES.some((s2) => s2.value === yScale.value)) yScale.value = 'linear'
+watch(yScale, (v) => localStorage.setItem('planVsActualYScale', v))
+
+// Signed log: sign(v) * log10(1 + |v|). Continuous through zero, unlike log.
+const symlog = (v) => (v == null ? null : Math.sign(v) * Math.log10(1 + Math.abs(v)))
+const symlogInv = (y) => Math.sign(y) * (Math.pow(10, Math.abs(y)) - 1)
+
 const chartTitle = computed(
     () => (CHART_MODES.find((m) => m.value === chartMode.value) || CHART_MODES[0]).title,
 )
@@ -338,8 +354,14 @@ function renderChart() {
     const eq = equity.value
     const dates = eq.dates
     const mode = chartMode.value
-    const planData = mode === 'equity' ? eq.plan : mode === 'cumulative' ? eq.cumPlan : eq.dayPlan
-    const actualData = mode === 'equity' ? eq.actual : mode === 'cumulative' ? eq.cumActual : eq.dayActual
+    const planRaw = mode === 'equity' ? eq.plan : mode === 'cumulative' ? eq.cumPlan : eq.dayPlan
+    const actualRaw = mode === 'equity' ? eq.actual : mode === 'cumulative' ? eq.cumActual : eq.dayActual
+    // Series plot transformed values; every label and tooltip reads the raw ones,
+    // so the numbers on screen are always the real amounts.
+    const useSym = yScale.value === 'symlog'
+    const tx = (arr) => (useSym ? arr.map((v) => (v == null ? null : symlog(v))) : arr)
+    const planData = tx(planRaw)
+    const actualData = tx(actualRaw)
     const planName = mode === 'daily'
         ? `Plan needs (${fmt(target.value, 2)}%/day)`
         : `Plan (${fmt(target.value, 2)}%/day)`
@@ -448,12 +470,22 @@ function renderChart() {
             formatter: (params) => {
                 const i = params[0].dataIndex
                 const head = `<div style="font-weight:700;margin-bottom:4px">${dates[i]}</div>`
-                const lines = params.map(
-                    (p) => `${p.marker} ${p.seriesName}: <b>${fmt(p.value)}</b>`,
-                )
+                // Read the untransformed arrays by index: under a symlog scale
+                // p.value is the compressed number, which is meaningless to show.
+                const rawFor = (p) => {
+                    const src = p.seriesName === planName ? planRaw : actualRaw
+                    const v = src[p.dataIndex]
+                    return v == null ? null : v
+                }
+                const lines = params
+                    .filter((p) => rawFor(p) != null)
+                    .map((p) => `${p.marker} ${p.seriesName}: <b>${fmt(rawFor(p))}</b>`)
                 if (params.length === 2) {
-                    const diff = params[1].value - params[0].value
-                    lines.push(`<span style="opacity:.7">Gap: ${diff >= 0 ? '+' : ''}${fmt(diff)}</span>`)
+                    const a = planRaw[i], b = actualRaw[i]
+                    if (a != null && b != null) {
+                        const diff = b - a
+                        lines.push(`<span style="opacity:.7">Gap: ${diff >= 0 ? '+' : ''}${fmt(diff)}</span>`)
+                    }
                 }
                 return head + lines.join('<br/>')
             },
@@ -473,8 +505,22 @@ function renderChart() {
             axisLine: { show: false },
             axisTick: { show: false },
             splitLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
-            axisLabel: { color: INK_MUTED, fontSize: 10, formatter: (v) => Number(v).toLocaleString() },
+            axisLabel: {
+                color: INK_MUTED,
+                fontSize: 10,
+                // Ticks are positioned in transformed space but must be labelled
+                // with the real amount they represent.
+                formatter: (v) => Math.round(useSym ? symlogInv(v) : v).toLocaleString(),
+            },
         },
+        // Drag or scroll inside the plot to zoom. The point of this on the value
+        // axis: even with symlog, zooming in is the direct way to inspect a
+        // cluster of small days. `filterMode: 'none'` keeps out-of-view points
+        // affecting the line instead of chopping the series.
+        dataZoom: [
+            { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
+            { type: 'inside', yAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: 'shift' },
+        ],
         series,
     }, true)
     chart.resize()
@@ -490,7 +536,7 @@ onBeforeUnmount(() => {
 
 // The canvas only exists once there is something to draw. Switching mode has to
 // re-render too, since the series type and axis change with it.
-watch([equity, chartMode], async () => {
+watch([equity, chartMode, yScale], async () => {
     if (!hasChart.value) {
         if (chart) { chart.dispose(); chart = null }
         return
@@ -667,12 +713,24 @@ watch([equity, chartMode], async () => {
                 <div v-if="hasChart" class="chartWrap mb-3">
                     <div class="chartHead">
                         <div class="chartTitle">{{ chartTitle }}</div>
-                        <div class="chartModes" role="group" aria-label="Chart type">
-                            <button v-for="m in CHART_MODES" :key="m.value" type="button"
-                                :class="['chartModeBtn', { active: chartMode === m.value }]"
-                                :aria-pressed="chartMode === m.value" v-on:click="chartMode = m.value">
-                                {{ m.label }}
-                            </button>
+                        <div class="chartControls">
+                            <div class="chartModes" role="group" aria-label="Chart type">
+                                <button v-for="m in CHART_MODES" :key="m.value" type="button"
+                                    :class="['chartModeBtn', { active: chartMode === m.value }]"
+                                    :aria-pressed="chartMode === m.value" v-on:click="chartMode = m.value">
+                                    {{ m.label }}
+                                </button>
+                            </div>
+                            <div class="chartModes" role="group" aria-label="Value axis scale">
+                                <button v-for="sc in Y_SCALES" :key="sc.value" type="button"
+                                    :class="['chartModeBtn', { active: yScale === sc.value }]"
+                                    :aria-pressed="yScale === sc.value" v-on:click="yScale = sc.value"
+                                    :title="sc.value === 'symlog'
+                                        ? 'Compress the extremes so small days stay readable next to large ones'
+                                        : 'Plain linear value axis'">
+                                    {{ sc.label }}
+                                </button>
+                            </div>
                         </div>
                     </div>
                     <div ref="chartEl" class="chartBox"></div>
@@ -958,9 +1016,19 @@ watch([equity, chartMode], async () => {
     color: #2f9bff;
 }
 
+/* Taller than the old 280px: with a range spanning roughly -700 to +450, height
+   is what gives a +10 day any pixels at all. Scales with the viewport so it
+   doesn't dominate a laptop screen. */
 .chartBox {
     width: 100%;
-    height: 280px;
+    height: clamp(320px, 52vh, 520px);
+}
+
+.chartControls {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
 }
 
 /* Explicit colour, not opacity: opacity would multiply with the inherited
