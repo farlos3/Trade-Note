@@ -1,7 +1,9 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
 import dayjs from 'dayjs'
+import isoWeek from 'dayjs/plugin/isoWeek.js'; dayjs.extend(isoWeek)
+import FpDate from '../components/FpDate.vue'
 import { timeZoneTrade } from '../stores/globals'
 
 /* Behavior analysis from real trades, via the backend. Result is cached per
@@ -24,24 +26,57 @@ function saveCache(obj) {
     try { localStorage.setItem(CACHE_KEY, JSON.stringify(obj)) } catch { /* quota / disabled */ }
 }
 
+/* Calendar-aligned periods, not only rolling windows: "this week" as the week
+   you are actually in is what a review question ("how am I doing this week?")
+   means, and a rolling 7 days answers something else. Both kinds are offered.
+   `custom` reads the two date inputs below. */
 const PERIODS = [
-    { id: '7d', label: '7 days' },
+    { id: 'today', label: 'Today' },
+    { id: 'week', label: 'This week' },
+    { id: 'month', label: 'This month' },
     { id: '30d', label: '30 days' },
     { id: '90d', label: '90 days' },
     { id: 'all', label: 'All' },
+    { id: 'custom', label: 'Custom' },
 ]
+const customFrom = ref(localStorage.getItem('aiAnalysisFrom') || '')
+const customTo = ref(localStorage.getItem('aiAnalysisTo') || '')
+watch(customFrom, (v) => localStorage.setItem('aiAnalysisFrom', v || ''))
+watch(customTo, (v) => localStorage.setItem('aiAnalysisTo', v || ''))
 
+// Weeks start Monday here, matching the isoWeek grouping the rest of the app
+// uses for its weekly buckets.
 function rangeFor(p) {
+    const tomorrow = () => dayjs().add(1, 'day').format('YYYY-MM-DD') // exclusive upper bound
     if (p === 'all') return { from: null, to: null }
-    const days = p === '7d' ? 7 : p === '90d' ? 90 : 30
-    return {
-        from: dayjs().subtract(days, 'day').format('YYYY-MM-DD'),
-        to: dayjs().add(1, 'day').format('YYYY-MM-DD'), // exclusive upper bound = include today
+    if (p === 'today') return { from: dayjs().format('YYYY-MM-DD'), to: tomorrow() }
+    if (p === 'week') return { from: dayjs().startOf('isoWeek').format('YYYY-MM-DD'), to: tomorrow() }
+    if (p === 'month') return { from: dayjs().startOf('month').format('YYYY-MM-DD'), to: tomorrow() }
+    if (p === 'custom') {
+        // A half-filled custom range would silently analyse everything, so treat
+        // a missing end as "up to today" and a missing start as "from the start".
+        return {
+            from: customFrom.value || null,
+            to: customTo.value ? dayjs(customTo.value).add(1, 'day').format('YYYY-MM-DD') : tomorrow(),
+        }
     }
+    const days = p === '90d' ? 90 : 30
+    return { from: dayjs().subtract(days, 'day').format('YYYY-MM-DD'), to: tomorrow() }
+}
+
+/* Cache key. For fixed periods the id is enough, but every custom range is a
+   different question -- keying them all as "custom" would serve one range's
+   answer for another. */
+function cacheKeyFor(p) {
+    if (p !== 'custom') return p
+    const { from, to } = rangeFor(p)
+    return `custom:${from || 'start'}:${to || 'now'}`
 }
 
 async function fetchFingerprint(from, to) {
-    const params = {}
+    // tz matters here too: the server resolves YYYY-MM-DD in the trade timezone,
+    // so omitting it would fingerprint a different range than the one analysed.
+    const params = { tz: timeZoneTrade.value || 'UTC' }
     if (from) params.from = from
     if (to) params.to = to
     const res = await axios.get('/api/analysis/fingerprint', { params })
@@ -51,7 +86,7 @@ async function fetchFingerprint(from, to) {
 // Show whatever is cached for a period immediately, no request. Returns true if
 // a cached result was displayed.
 function showCachedFor(p) {
-    const entry = loadCache()[p]
+    const entry = loadCache()[cacheKeyFor(p)]
     if (entry && entry.data) {
         data.value = entry.data
         cached.value = true
@@ -69,7 +104,8 @@ async function run(force = false) {
     try {
         const { from, to } = rangeFor(period.value)
         const cache = loadCache()
-        const entry = cache[period.value]
+        const ck = cacheKeyFor(period.value)
+        const entry = cache[ck]
 
         let fp = ''
         try { fp = await fetchFingerprint(from, to) } catch { fp = '' }
@@ -88,7 +124,7 @@ async function run(force = false) {
         data.value = res.data
         cached.value = false
         lastUpdated.value = Date.now()
-        cache[period.value] = {
+        cache[ck] = {
             fingerprint: res.data?.meta?.fingerprint || fp,
             data: res.data,
             savedAt: lastUpdated.value,
@@ -101,6 +137,19 @@ async function run(force = false) {
         loading.value = false
     }
 }
+
+/* One sentence naming the exact window in play. Shown next to the button and
+   repeated in the confirm, so an LLM call is never made on a range the user
+   thinks is something else. */
+const rangeSummary = computed(() => {
+    const p = PERIODS.find((x) => x.id === period.value)
+    const { from, to } = rangeFor(period.value)
+    if (!from && !to) return `${p ? p.label : ''} · every trade on record`
+    // `to` is the exclusive upper bound; show the last INCLUDED day instead.
+    const lastDay = to ? dayjs(to).subtract(1, 'day').format('YYYY-MM-DD') : null
+    if (from && lastDay && from === lastDay) return `${p ? p.label : ''} · ${from}`
+    return `${p ? p.label : ''} · ${from || 'start'} to ${lastDay || 'today'}`
+})
 
 const updatedLabel = () => (lastUpdated.value ? dayjs(lastUpdated.value).format('MMM D, HH:mm') : '')
 
@@ -120,19 +169,49 @@ const loadAiCache = () => { try { return JSON.parse(localStorage.getItem(AI_CACH
 const saveAiCache = (o) => { try { localStorage.setItem(AI_CACHE_KEY, JSON.stringify(o)) } catch { /* quota */ } }
 
 function showCachedAiFor(p) {
-    const c = loadAiCache()[p]
+    const c = loadAiCache()[cacheKeyFor(p)]
     aiSummary.value = c && c.summary ? c.summary : ''
     aiProvider.value = (c && c.provider) || ''
     aiError.value = ''
     aiDisabled.value = false
 }
 
+/* Themed confirm. window.confirm() renders a white OS dialog that ignores the
+   dark theme entirely, and cannot be styled — so this is a small in-page modal
+   resolved through a promise, keeping the `if (!confirmed) return` shape. */
+const confirmOpen = ref(false)
+let confirmResolve = null
+
+function askConfirm() {
+    confirmOpen.value = true
+    return new Promise((resolve) => { confirmResolve = resolve })
+}
+
+function closeConfirm(ok) {
+    confirmOpen.value = false
+    if (confirmResolve) { confirmResolve(ok); confirmResolve = null }
+}
+
+// Escape cancels, matching the native dialog it replaces.
+function onConfirmKey(e) {
+    if (confirmOpen.value && e.key === 'Escape') closeConfirm(false)
+}
+onMounted(() => window.addEventListener('keydown', onConfirmKey))
+onBeforeUnmount(() => window.removeEventListener('keydown', onConfirmKey))
+
+const confirmTradeCount = computed(() =>
+    data.value && data.value.stats ? data.value.stats.trades : null)
+
 async function runAI(force = false) {
+    // Confirm first: this is a paid, per-token call, and the range it runs on is
+    // not obvious from the button alone.
+    if (!(await askConfirm())) return
+
     if (!data.value) await run(false)      // need the rule-based data (for the fingerprint)
     if (!data.value) return
     const fp = (data.value.meta && data.value.meta.fingerprint) || ''
     const cache = loadAiCache()
-    const key = period.value
+    const key = cacheKeyFor(period.value)
     aiError.value = ''
     aiDisabled.value = false
     if (!force && cache[key] && cache[key].fingerprint === fp && cache[key].summary) {
@@ -166,6 +245,9 @@ async function runAI(force = false) {
    Bundles the computed data with a ready-to-use prompt so you can paste it into
    Claude Desktop / Code / claude.ai and get the analysis on your subscription. */
 const copied = ref(false)
+// The model is told to emit exactly these, each alone on a line, so they can be
+// styled as headings without parsing Markdown.
+const AI_HEADINGS = ['Verdict', 'Strengths', 'Watch-outs', 'Recommendations']
 const PROVIDER_LABELS = { anthropic: 'Claude', gemini: 'Gemini' }
 const aiProviderLabel = computed(() => PROVIDER_LABELS[aiProvider.value] || 'AI')
 
@@ -218,6 +300,16 @@ onMounted(() => {
 watch(period, (p) => {
     if (!showCachedFor(p)) data.value = null
     showCachedAiFor(p)
+    run(false)
+})
+
+// Editing a custom date changes the range without changing `period`, so the
+// watcher above never fires -- the page would keep showing the previous range's
+// numbers under the new dates.
+watch([customFrom, customTo], () => {
+    if (period.value !== 'custom') return
+    if (!showCachedFor('custom')) data.value = null
+    showCachedAiFor('custom')
     run(false)
 })
 
@@ -359,27 +451,78 @@ const narrative = computed(() => {
 
 <template>
     <div class="analysisPage p-3">
-        <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+        <!-- Themed replacement for window.confirm(), which renders an unstyled
+             white OS dialog. Teleported to body so page stacking contexts can't
+             trap it behind a card. -->
+        <Teleport to="body">
+            <div v-if="confirmOpen" class="cfmBackdrop" v-on:click.self="closeConfirm(false)">
+                <div class="cfmCard" role="dialog" aria-modal="true" aria-labelledby="cfmTitle">
+                    <div class="cfmHead" id="cfmTitle">
+                        <i class="uil uil-brain me-2"></i>Run the AI analysis?
+                    </div>
+                    <div class="cfmBody">
+                        <div class="cfmRow">
+                            <span class="cfmKey">Range</span>
+                            <span class="cfmVal">{{ rangeSummary }}</span>
+                        </div>
+                        <div class="cfmRow" v-if="confirmTradeCount != null">
+                            <span class="cfmKey">Trades</span>
+                            <span class="cfmVal">{{ confirmTradeCount }}</span>
+                        </div>
+                        <p class="cfmNote mb-0">
+                            This sends your computed stats and journal notes to the model. Billed per token.
+                        </p>
+                    </div>
+                    <div class="cfmFoot">
+                        <button type="button" class="btn btn-outline-secondary btn-sm"
+                            v-on:click="closeConfirm(false)">Cancel</button>
+                        <button type="button" class="btn btn-success btn-sm" autofocus
+                            v-on:click="closeConfirm(true)">Analyze</button>
+                    </div>
+                </div>
+            </div>
+        </Teleport>
+
+        <!-- Row 1: what to analyse, and the button that does it — the actions stay
+             together on one line. Row 2 carries the resolved window and freshness,
+             which are read-outs rather than controls. -->
+        <div class="d-flex flex-wrap align-items-center gap-2">
             <div class="btn-group" role="group">
                 <button v-for="p in PERIODS" :key="p.id" type="button"
                     v-bind:class="['btn', 'btn-sm', period === p.id ? 'btn-primary' : 'btn-outline-secondary']"
                     v-on:click="period = p.id">{{ p.label }}</button>
             </div>
+            <!-- Only rendered for the custom period, so the row stays compact for
+                 the one-click ranges that cover most reviews. -->
+            <div v-if="period === 'custom'" class="customRange">
+                <span class="rangeLabel">From</span>
+                <FpDate mode="date" v-model="customFrom" placeholder="start" />
+                <span class="rangeLabel">to</span>
+                <FpDate mode="date" v-model="customTo" placeholder="today" />
+                <button v-if="customFrom || customTo" type="button" class="btn btn-link btn-sm rangeClear"
+                    v-on:click="customFrom = ''; customTo = ''" title="Clear the custom range">clear</button>
+            </div>
             <div class="ms-auto d-flex align-items-center gap-2">
-                <span v-if="lastUpdated" class="txt-small text-secondary">
-                    <i v-if="cached" class="uil uil-check-circle me-1"></i>{{ cached ? 'Cached' : 'Updated' }} · {{
-                        updatedLabel() }}
-                </span>
                 <button type="button" class="btn btn-outline-secondary btn-sm" v-on:click="run(true)"
                     :disabled="loading" title="Refresh data (rule-based)">
                     <i class="uil uil-sync"></i>
                 </button>
                 <button type="button" class="btn btn-success btn-sm" v-on:click="runAI(false)"
-                    :disabled="aiLoading || loading" title="Ask Claude to write the analysis (LLM)">
+                    :disabled="aiLoading || loading" title="Ask the model to write the analysis (billed per token)">
                     <span v-if="aiLoading" class="spinner-border spinner-border-sm me-2" role="status"></span>
                     <i v-else class="uil uil-brain me-1"></i>Analyze behavior
                 </button>
             </div>
+        </div>
+
+        <div class="d-flex flex-wrap align-items-center gap-2 mb-3 toolbarMeta">
+            <span class="rangeSummary" title="The analysis uses exactly this window">
+                <i class="uil uil-calendar-alt me-1"></i>{{ rangeSummary }}
+            </span>
+            <span v-if="lastUpdated" class="ms-auto txt-small text-secondary">
+                <i v-if="cached" class="uil uil-check-circle me-1"></i>{{ cached ? 'Cached' : 'Updated' }} · {{
+                    updatedLabel() }}
+            </span>
         </div>
 
         <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
@@ -489,7 +632,12 @@ const narrative = computed(() => {
                 <div v-if="aiLoading" class="bsAiState mb-3">
                     <span class="spinner-border spinner-border-sm me-2" role="status"></span>Analyzing…
                 </div>
-                <div v-else-if="aiSummary" class="bsAi mb-3">{{ aiSummary }}</div>
+                <div v-else-if="aiSummary" class="bsAi mb-3">
+                    <template v-for="(line, i) in aiSummary.split('\n')" :key="i">
+                        <div v-if="AI_HEADINGS.includes(line.trim())" class="bsAiHead">{{ line }}</div>
+                        <div v-else>{{ line }}</div>
+                    </template>
+                </div>
                 <div v-if="aiDisabled" class="bsHint mb-3">
                     AI analysis needs <code>ANTHROPIC_API_KEY</code> or <code>GEMINI_API_KEY</code> set on the server
                     (billed per token, separate from any Claude or Gemini subscription). The rule-based summary below
@@ -756,6 +904,123 @@ const narrative = computed(() => {
 .bsAiState {
     font-size: 0.85rem;
     opacity: 0.75;
+}
+
+/* FpDate renders a bare .form-control, which is width:100% -- inside a flex
+   toolbar that made each field stretch across the row. Pin them to a date-sized
+   width so the custom range reads as one compact control group. */
+.customRange {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-wrap: nowrap;
+}
+
+.customRange :deep(input) {
+    width: 8.5rem;
+    min-width: 8.5rem;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.8rem;
+    height: auto;
+}
+
+.rangeClear {
+    padding: 0 0.25rem;
+    font-size: 0.75rem;
+    text-decoration: none;
+    opacity: 0.7;
+}
+
+.rangeSummary {
+    font-size: 0.75rem;
+    color: var(--white-60);
+    white-space: nowrap;
+}
+
+.toolbarMeta {
+    margin-top: 0.4rem;
+    min-height: 1.2rem;
+}
+
+/* Confirm modal. Teleported to body, so these rules are NOT scoped-safe by
+   default -- hence the :global() wrappers. */
+:global(.cfmBackdrop) {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+}
+
+:global(.cfmCard) {
+    width: min(420px, 100%);
+    background: var(--black-bg-7, #1b1f2a);
+    border: 1px solid var(--border-strong, rgba(255, 255, 255, 0.14));
+    border-radius: 0.7rem;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+}
+
+:global(.cfmHead) {
+    padding: 0.85rem 1rem;
+    font-weight: 700;
+    color: var(--white-87, rgba(237, 240, 247, 0.92));
+    border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.07));
+}
+
+:global(.cfmBody) {
+    padding: 0.85rem 1rem;
+}
+
+:global(.cfmRow) {
+    display: flex;
+    gap: 0.75rem;
+    font-size: 0.85rem;
+    margin-bottom: 0.35rem;
+}
+
+:global(.cfmKey) {
+    min-width: 4.5rem;
+    color: var(--white-60, rgba(237, 240, 247, 0.6));
+}
+
+:global(.cfmVal) {
+    color: var(--white-87, rgba(237, 240, 247, 0.92));
+    font-weight: 600;
+}
+
+:global(.cfmNote) {
+    margin-top: 0.6rem;
+    font-size: 0.78rem;
+    color: var(--white-60, rgba(237, 240, 247, 0.6));
+    line-height: 1.5;
+}
+
+:global(.cfmFoot) {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+    border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.07));
+}
+
+.rangeLabel {
+    font-size: 0.75rem;
+    opacity: 0.6;
+}
+
+.bsAiHead {
+    font-weight: 700;
+    margin-top: 0.7rem;
+    margin-bottom: 0.1rem;
+    letter-spacing: 0.02em;
+}
+
+.bsAiHead:first-child {
+    margin-top: 0;
 }
 
 .bsAi {

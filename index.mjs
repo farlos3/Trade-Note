@@ -14,6 +14,10 @@ import { currentUser, uploadMfePrices } from './src/stores/globals.js';
 import { useGetTimeZone } from './src/utils/utils.js';
 import { fetchDayDocs, fetchNotes, fetchTradesFingerprint } from './mcp-server/db.mjs';
 import Anthropic from '@anthropic-ai/sdk';
+import dayjs from 'dayjs';
+import dayjsUtc from 'dayjs/plugin/utc.js';
+import dayjsTimezone from 'dayjs/plugin/timezone.js';
+dayjs.extend(dayjsUtc); dayjs.extend(dayjsTimezone);
 import { flattenTrades, computeStats, findBehaviorPatterns, computeDailyBreakdown } from './mcp-server/analysis.mjs';
 import Stripe from 'stripe';
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
@@ -272,9 +276,19 @@ const setupApiRoutes = (app) => {
      * TRADING-BEHAVIOR ANALYSIS (deterministic; reuses mcp-server/analysis.mjs)
      * GET /api/analysis/behavior?from=YYYY-MM-DD&to=YYYY-MM-DD&tz=Asia/Bangkok
      **********************************************/
-    const isoToUnix = (s) => {
+    /* A bare YYYY-MM-DD must be read as midnight in the TRADE timezone, because
+     * that is what a day document's dateUnix is (see CLAUDE.md: day docs bucket by
+     * trade tz, not UTC). Parsing it as UTC midnight shifted every boundary by the
+     * tz offset -- 7 hours for Asia/Bangkok -- so `from` landed 7 hours after the
+     * day actually started and excluded that whole day. Single-day ranges returned
+     * nothing at all; wider ranges silently dropped their first day. */
+    const isoToUnix = (s, tz = 'UTC') => {
         if (!s) return undefined
-        const ms = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(s) ? s + 'T00:00:00Z' : s)
+        if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+            const d = dayjs.tz(s, tz)
+            return d.isValid() ? d.unix() : undefined
+        }
+        const ms = Date.parse(s)
         return Number.isNaN(ms) ? undefined : Math.floor(ms / 1000)
     }
 
@@ -358,8 +372,8 @@ const setupApiRoutes = (app) => {
     app.get('/api/analysis/behavior', async (req, res) => {
         try {
             const tz = req.query.tz || process.env.TRADENOTE_TZ || 'UTC'
-            const fromUnix = isoToUnix(req.query.from)
-            const toUnix = isoToUnix(req.query.to)
+            const fromUnix = isoToUnix(req.query.from, tz)
+            const toUnix = isoToUnix(req.query.to, tz)
             const days = await fetchDayDocs({ fromUnix, toUnix })
             const trades = flattenTrades(days)
             const stats = computeStats(trades, tz)
@@ -409,8 +423,12 @@ const setupApiRoutes = (app) => {
      **********************************************/
     app.get('/api/analysis/fingerprint', async (req, res) => {
         try {
-            const fromUnix = isoToUnix(req.query.from)
-            const toUnix = isoToUnix(req.query.to)
+            // Same tz resolution as the analysis routes, or the fingerprint would
+            // cover a different set of days than the result it is meant to guard,
+            // and the cache would go stale (or refresh) at the wrong moments.
+            const tz = req.query.tz || process.env.TRADENOTE_TZ || 'UTC'
+            const fromUnix = isoToUnix(req.query.from, tz)
+            const toUnix = isoToUnix(req.query.to, tz)
             const fp = await fetchTradesFingerprint({ fromUnix, toUnix })
             res.status(200).json({ fingerprint: `${fp.count}:${fp.lastUpdate}` })
         } catch (error) {
@@ -440,8 +458,8 @@ const setupApiRoutes = (app) => {
                 return res.status(200).json({ disabled: true, reason })
             }
             const tz = req.query.tz || process.env.TRADENOTE_TZ || 'UTC'
-            const fromUnix = isoToUnix(req.query.from)
-            const toUnix = isoToUnix(req.query.to)
+            const fromUnix = isoToUnix(req.query.from, tz)
+            const toUnix = isoToUnix(req.query.to, tz)
             const days = await fetchDayDocs({ fromUnix, toUnix })
             const trades = flattenTrades(days)
             const stats = computeStats(trades, tz)
@@ -461,11 +479,47 @@ const setupApiRoutes = (app) => {
                 notes = raw
                     .filter(n => (n.reason && n.reason.trim()) || (n.note && n.note.trim()))
                     .slice(-15).reverse()
-                    .map(n => ({ date: n.dateUnix ? new Date(n.dateUnix * 1000).toISOString().slice(0, 10) : null, reason: n.reason || null, note: n.note || null }))
+                    // Format in the TRADE timezone, not UTC: toISOString() would
+                    // label a Bangkok-evening note with the previous day, so the
+                    // model would tie a reflection to the wrong trading day.
+                    .map(n => ({ date: n.dateUnix ? new Date(n.dateUnix * 1000).toLocaleDateString('en-CA', { timeZone: tz }) : null, reason: n.reason || null, note: n.note || null }))
             } catch (e) { /* notes optional */ }
 
             const payload = { range: { from: req.query.from || null, to: req.query.to || null }, timezone: tz, stats, patterns, notes }
-            const system = 'You are a trading-performance coach. Analyze the trader\'s behavior from the computed statistics and behavioral flags provided as JSON. Be concise, specific and actionable, in plain English. Ground every claim in the numbers given — never invent data. Structure the reply as: a one-line verdict; Strengths; Watch-outs (revenge trading, overtrading, position-size tilt, holding-time bias, weak entry hours where relevant); and Recommendations. Use short bullet points. Do not restate the raw JSON.'
+            // Plain text, not Markdown: the card renders this with white-space
+            // pre-wrap and no Markdown parser, so asterisks would show literally
+            // (they did). Notes are called out explicitly -- they were already in
+            // the payload but nothing told the model to use them.
+            const system = [
+                'You are a trading-performance coach. Analyse the trader\'s behaviour from the JSON provided:',
+                'computed statistics, behavioural flags, and the trader\'s own journal notes.',
+                '',
+                'Ground every claim in the numbers or the notes given. Never invent data. Be concise, specific and actionable.',
+                'Where the notes describe how a day felt, connect that to what the numbers actually did -- agreement and',
+                'contradiction are both worth saying out loud.',
+                '',
+                'FORMAT: plain text only. No Markdown. Do not use asterisks, underscores, backticks or hash marks anywhere.',
+                'Reply using EXACTLY this skeleton, keeping all four headings, each alone on its line, spelled exactly:',
+                '',
+                'Verdict',
+                '<one sentence>',
+                '',
+                'Strengths',
+                '- <point>',
+                '- <point>',
+                '',
+                'Watch-outs',
+                '- <point>',
+                '- <point>',
+                '',
+                'Recommendations',
+                '- <point>',
+                '- <point>',
+                '',
+                'Every bullet must sit under one of those headings. Do not merge the sections into a single list.',
+                'Cover revenge trading, overtrading, position-size tilt, holding-time bias and weak entry hours where the data supports it.',
+                'Do not restate the raw JSON.',
+                ].join('\n')
 
             const userText = `Here is my trading data. Write the behavior analysis.\n\n${JSON.stringify(payload, null, 2)}`
             const out = await runAnalysisModel(system, userText)
