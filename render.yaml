@@ -32,7 +32,12 @@ services:
     # connection while asleep, so the Live page will be blank until the next
     # request wakes it. Use a paid instance if the live feed must stay hot.
     plan: free
-    healthCheckPath: /api/parseAppId
+    # "/" and not /api/parseAppId: that route is POST-only, and a health check is a
+    # GET. Note the app binds its port BEFORE Parse Server finishes connecting to
+    # Mongo, and only registers routes after -- so if Atlas refuses the connection
+    # (its Network Access list must allow this service) the port answers but every
+    # path 404s, and the failing health check is what surfaces it.
+    healthCheckPath: /
     envVars:
       - key: NODE_ENV
         value: prod           # serve the built dist/, not the Vite dev server
