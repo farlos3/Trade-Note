@@ -108,12 +108,13 @@ const updatedLabel = () => (lastUpdated.value ? dayjs(lastUpdated.value).format(
    Rule-based summary shows by default (free, instant). Clicking asks the server
    to have Claude write a richer analysis; the result is cached per period by the
    same fingerprint, so it only re-calls Claude when an order changes. Needs
-   ANTHROPIC_API_KEY on the server — without it the endpoint reports disabled and
-   the rule-based summary stays. */
+   an ANTHROPIC_API_KEY or GEMINI_API_KEY on the server — without either the
+   endpoint reports disabled and the rule-based summary stays. */
 const aiSummary = ref('')
 const aiLoading = ref(false)
 const aiError = ref('')
 const aiDisabled = ref(false)
+const aiProvider = ref('')   // 'anthropic' | 'gemini', reported by the server
 const AI_CACHE_KEY = 'aiLlmSummaryCache_v1'
 const loadAiCache = () => { try { return JSON.parse(localStorage.getItem(AI_CACHE_KEY) || '{}') } catch { return {} } }
 const saveAiCache = (o) => { try { localStorage.setItem(AI_CACHE_KEY, JSON.stringify(o)) } catch { /* quota */ } }
@@ -121,6 +122,7 @@ const saveAiCache = (o) => { try { localStorage.setItem(AI_CACHE_KEY, JSON.strin
 function showCachedAiFor(p) {
     const c = loadAiCache()[p]
     aiSummary.value = c && c.summary ? c.summary : ''
+    aiProvider.value = (c && c.provider) || ''
     aiError.value = ''
     aiDisabled.value = false
 }
@@ -135,6 +137,9 @@ async function runAI(force = false) {
     aiDisabled.value = false
     if (!force && cache[key] && cache[key].fingerprint === fp && cache[key].summary) {
         aiSummary.value = cache[key].summary          // no new orders -> reuse
+        // Restore the provider too, or the badge would claim whichever provider
+        // happened to answer last instead of the one that wrote this summary.
+        aiProvider.value = cache[key].provider || ''
         return
     }
     aiLoading.value = true
@@ -147,7 +152,8 @@ async function runAI(force = false) {
         if (res.data && res.data.disabled) { aiDisabled.value = true; aiSummary.value = ''; return }
         if (res.data && res.data.refused) { aiError.value = 'The model declined this request.'; return }
         aiSummary.value = (res.data && res.data.summary) || ''
-        cache[key] = { fingerprint: (res.data && res.data.fingerprint) || fp, summary: aiSummary.value }
+        aiProvider.value = (res.data && res.data.provider) || ''
+        cache[key] = { fingerprint: (res.data && res.data.fingerprint) || fp, summary: aiSummary.value, provider: aiProvider.value }
         saveAiCache(cache)
     } catch (e) {
         aiError.value = e?.response?.data?.error || e.message
@@ -160,6 +166,9 @@ async function runAI(force = false) {
    Bundles the computed data with a ready-to-use prompt so you can paste it into
    Claude Desktop / Code / claude.ai and get the analysis on your subscription. */
 const copied = ref(false)
+const PROVIDER_LABELS = { anthropic: 'Claude', gemini: 'Gemini' }
+const aiProviderLabel = computed(() => PROVIDER_LABELS[aiProvider.value] || 'AI')
+
 const CLAUDE_INSTRUCTION = 'You are a trading-performance coach. Analyze the trader\'s behavior from the computed statistics and behavioral flags below. Be concise, specific and actionable, in plain English. Ground every claim in the numbers — never invent data. Structure the reply as: a one-line verdict; Strengths; Watch-outs (revenge trading, overtrading, position-size tilt, holding-time bias, weak entry hours where relevant); and Recommendations. Use short bullet points.'
 
 function claudePayload() {
@@ -465,35 +474,26 @@ const narrative = computed(() => {
                 </div>
             </div>
 
-            <div v-if="data.notes && data.notes.length">
-                <h6 class="sectionTitle">Your recent notes / reasons</h6>
-                <div v-for="(n, i) in data.notes" :key="i" class="noteRow">
-                    <span class="noteDate">{{ n.date }}</span>
-                    <span v-if="n.reason" class="noteReason">Reason: {{ n.reason }}</span>
-                    <span v-if="n.note" class="noteText">{{ n.note }}</span>
-                </div>
-                <p class="txt-small text-muted mt-2">
-                    <i class="uil uil-robot me-1"></i>Want AI to interpret these against your behavior? Ask via Claude Desktop (MCP: <code>get_journal_notes</code>).
-                </p>
-            </div>
-
-            <!-- Behavior summary (bottom). Rule-based read-out always; Claude's
-                 LLM analysis on top once "Analyze behavior" is clicked. -->
+            <!-- Behavior summary, placed above the notes: it is the conclusion the
+                 page exists to deliver, so it should not sit below the raw journal
+                 entries. Rule-based read-out always; Claude's LLM analysis on top once
+                 "Analyze behavior" is clicked. -->
             <div v-if="narrative" class="behaviorSummary mt-3">
                 <div class="d-flex align-items-center mb-2">
                     <i class="uil uil-robot me-2" style="font-size:1.15rem;"></i>
                     <span class="bsTitle">Behavior summary</span>
-                    <span class="bsBadge ms-2">{{ aiSummary ? 'AI · Claude' : 'rule-based' }}</span>
+                    <span class="bsBadge ms-2">{{ aiSummary ? 'AI · ' + aiProviderLabel : 'rule-based' }}</span>
                 </div>
 
                 <!-- Claude (LLM) analysis -->
                 <div v-if="aiLoading" class="bsAiState mb-3">
-                    <span class="spinner-border spinner-border-sm me-2" role="status"></span>Claude is analyzing…
+                    <span class="spinner-border spinner-border-sm me-2" role="status"></span>Analyzing…
                 </div>
                 <div v-else-if="aiSummary" class="bsAi mb-3">{{ aiSummary }}</div>
                 <div v-if="aiDisabled" class="bsHint mb-3">
-                    AI analysis needs <code>ANTHROPIC_API_KEY</code> set on the server (billed per token, separate from a
-                    Claude subscription). The rule-based summary below always works for free.
+                    AI analysis needs <code>ANTHROPIC_API_KEY</code> or <code>GEMINI_API_KEY</code> set on the server
+                    (billed per token, separate from any Claude or Gemini subscription). The rule-based summary below
+                    always works for free.
                 </div>
                 <div v-if="aiError" class="bsHint bsHintErr mb-3">{{ aiError }}</div>
 
@@ -533,6 +533,20 @@ const narrative = computed(() => {
                         <i class="uil uil-download-alt me-1"></i>Download JSON
                     </button>
                 </div>
+            </div>
+
+            <!-- mt-4: the summary above is a bordered card, so the notes need their
+                 own breathing room now that they follow it rather than a table. -->
+            <div v-if="data.notes && data.notes.length" class="mt-4">
+                <h6 class="sectionTitle">Your recent notes / reasons</h6>
+                <div v-for="(n, i) in data.notes" :key="i" class="noteRow">
+                    <span class="noteDate">{{ n.date }}</span>
+                    <span v-if="n.reason" class="noteReason">Reason: {{ n.reason }}</span>
+                    <span v-if="n.note" class="noteText">{{ n.note }}</span>
+                </div>
+                <p class="txt-small text-muted mt-2">
+                    <i class="uil uil-robot me-1"></i>Want AI to interpret these against your behavior? Ask via Claude Desktop (MCP: <code>get_journal_notes</code>).
+                </p>
             </div>
         </template>
     </div>

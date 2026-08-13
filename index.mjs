@@ -278,11 +278,82 @@ const setupApiRoutes = (app) => {
         return Number.isNaN(ms) ? undefined : Math.floor(ms / 1000)
     }
 
-    // Claude (LLM) analysis is optional: only enabled when ANTHROPIC_API_KEY is
-    // set. The SDK reads the key from the environment automatically. Model is
-    // overridable via ANALYSIS_MODEL (e.g. a cheaper model for lower cost).
+    /* LLM analysis is optional and provider-agnostic.
+     *
+     * Set ANTHROPIC_API_KEY, GEMINI_API_KEY, or both. With both present,
+     * AI_PROVIDER (anthropic|gemini) picks the winner; otherwise whichever key
+     * exists is used. No key at all leaves the feature disabled and the client
+     * keeps its free rule-based summary.
+     *
+     * Gemini goes over plain REST rather than @google/genai on purpose: axios is
+     * already a dependency, and adding one means rebuilding the image AND
+     * recreating the container's anonymous node_modules volume, which is a known
+     * footgun in this project (see start.sh's ERR_MODULE_NOT_FOUND recovery).
+     */
     const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic() : null
-    const ANALYSIS_MODEL = process.env.ANALYSIS_MODEL || 'claude-opus-5'
+    const geminiKey = process.env.GEMINI_API_KEY || null
+
+    const AI_PROVIDER = (() => {
+        const want = (process.env.AI_PROVIDER || '').toLowerCase()
+        if (want === 'anthropic') return anthropic ? 'anthropic' : null
+        if (want === 'gemini') return geminiKey ? 'gemini' : null
+        if (anthropic) return 'anthropic'
+        if (geminiKey) return 'gemini'
+        return null
+    })()
+
+    // Default model per provider; ANALYSIS_MODEL overrides either.
+    // Gemini defaults to the cheapest tier (flash-lite), and to the floating
+    // "-latest" alias rather than a pinned version: Google retires pinned models
+    // for new keys ("no longer available to new users"), which is exactly how a
+    // hard-coded gemini-2.5-flash broke here. The alias tracks the current model.
+    const ANALYSIS_MODEL = process.env.ANALYSIS_MODEL
+        || (AI_PROVIDER === 'gemini' ? 'gemini-flash-lite-latest' : 'claude-opus-5')
+
+    if (AI_PROVIDER) {
+        console.log(`\nAI ANALYSIS enabled -> ${AI_PROVIDER} (${ANALYSIS_MODEL})`)
+    } else {
+        console.log("\nAI ANALYSIS not configured -> set ANTHROPIC_API_KEY or GEMINI_API_KEY (rule-based summary still works)")
+    }
+
+    /**
+     * One call, whichever provider is configured. Returns
+     * { summary, model, refused } so the route stays provider-agnostic.
+     */
+    const runAnalysisModel = async (system, userText) => {
+        if (AI_PROVIDER === 'anthropic') {
+            const msg = await anthropic.messages.create({
+                model: ANALYSIS_MODEL,
+                max_tokens: 16000,
+                output_config: { effort: 'medium' },
+                system,
+                messages: [{ role: 'user', content: userText }],
+            })
+            if (msg.stop_reason === 'refusal') return { summary: null, refused: true, model: msg.model }
+            const summary = (msg.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n').trim()
+            return { summary, model: msg.model }
+        }
+
+        // Gemini: the system prompt is its own top-level field, not a message.
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(ANALYSIS_MODEL)}:generateContent`
+        const { data } = await axios.post(url, {
+            systemInstruction: { parts: [{ text: system }] },
+            contents: [{ role: 'user', parts: [{ text: userText }] }],
+            generationConfig: { maxOutputTokens: 8192, temperature: 0.4 },
+        }, {
+            headers: { 'x-goog-api-key': geminiKey, 'Content-Type': 'application/json' },
+            timeout: 120000,
+        })
+        const cand = (data.candidates || [])[0]
+        // SAFETY / RECITATION means the model declined; surface it the same way a
+        // Claude refusal is surfaced instead of returning a confusing empty string.
+        if (cand && cand.finishReason && !['STOP', 'MAX_TOKENS'].includes(cand.finishReason)) {
+            return { summary: null, refused: true, model: ANALYSIS_MODEL }
+        }
+        const summary = ((cand && cand.content && cand.content.parts) || [])
+            .map(p => p.text).filter(Boolean).join('\n').trim()
+        return { summary, model: ANALYSIS_MODEL }
+    }
 
     app.get('/api/analysis/behavior', async (req, res) => {
         try {
@@ -350,15 +421,23 @@ const setupApiRoutes = (app) => {
 
     /**********************************************
      * GET /api/analysis/ai-summary?from=&to=&tz=
-     * Claude (LLM) reads the same computed stats + behavioral flags and writes a
+     * The configured LLM (Claude or Gemini) reads the same computed stats +
+     * behavioral flags and writes a
      * natural-language analysis. Optional: disabled (200 {disabled:true}) when
-     * ANTHROPIC_API_KEY isn't set, so the client falls back to its rule-based
-     * summary. Returns { summary, fingerprint } on success.
+     * no provider key is set, so the client falls back to its rule-based summary.
+     * Returns { summary, fingerprint, model, provider } on success.
      **********************************************/
     app.get('/api/analysis/ai-summary', async (req, res) => {
         try {
-            if (!anthropic) {
-                return res.status(200).json({ disabled: true, reason: 'ANTHROPIC_API_KEY is not set on the server' })
+            if (!AI_PROVIDER) {
+                // An explicit AI_PROVIDER whose key is missing is reported as
+                // exactly that, rather than "no key" -- otherwise the one case
+                // where a key IS present reads as though none were.
+                const want = (process.env.AI_PROVIDER || '').toLowerCase()
+                const reason = want
+                    ? `AI_PROVIDER=${want} but its key is not set on the server`
+                    : 'No AI key on the server — set ANTHROPIC_API_KEY or GEMINI_API_KEY'
+                return res.status(200).json({ disabled: true, reason })
             }
             const tz = req.query.tz || process.env.TRADENOTE_TZ || 'UTC'
             const fromUnix = isoToUnix(req.query.from)
@@ -388,22 +467,28 @@ const setupApiRoutes = (app) => {
             const payload = { range: { from: req.query.from || null, to: req.query.to || null }, timezone: tz, stats, patterns, notes }
             const system = 'You are a trading-performance coach. Analyze the trader\'s behavior from the computed statistics and behavioral flags provided as JSON. Be concise, specific and actionable, in plain English. Ground every claim in the numbers given — never invent data. Structure the reply as: a one-line verdict; Strengths; Watch-outs (revenge trading, overtrading, position-size tilt, holding-time bias, weak entry hours where relevant); and Recommendations. Use short bullet points. Do not restate the raw JSON.'
 
-            const msg = await anthropic.messages.create({
-                model: ANALYSIS_MODEL,
-                max_tokens: 16000,
-                output_config: { effort: 'medium' },
-                system,
-                messages: [{ role: 'user', content: `Here is my trading data. Write the behavior analysis.\n\n${JSON.stringify(payload, null, 2)}` }],
-            })
-
-            if (msg.stop_reason === 'refusal') {
+            const userText = `Here is my trading data. Write the behavior analysis.\n\n${JSON.stringify(payload, null, 2)}`
+            const out = await runAnalysisModel(system, userText)
+            if (out.refused) {
                 return res.status(200).json({ summary: null, refused: true, fingerprint })
             }
-            const summary = (msg.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n').trim()
-            res.status(200).json({ summary, fingerprint, model: msg.model })
+            res.status(200).json({ summary: out.summary, fingerprint, model: out.model, provider: AI_PROVIDER })
         } catch (error) {
-            console.error(' -> AI summary error', error)
-            res.status(500).send({ error: String(error?.message || error) })
+            // Providers put the useful part in the response body; the bare axios
+            // message ("Request failed with status code 400") says nothing about
+            // an invalid key, which is the most likely cause here.
+            const apiMsg = error?.response?.data?.error?.message
+                || error?.response?.data?.error
+                || error?.error?.message
+            const status = error?.response?.status || error?.status
+            let msg = String(apiMsg || error?.message || error)
+            if (status === 400 || status === 401 || status === 403) {
+                msg += ` (${AI_PROVIDER} rejected the request — check the API key`
+                    + (AI_PROVIDER === 'gemini' ? '; Gemini keys from aistudio.google.com start with "AIza"' : '')
+                    + ')'
+            }
+            console.error(' -> AI summary error', status || '', msg)
+            res.status(500).send({ error: msg })
         }
     });
 
