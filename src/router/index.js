@@ -60,6 +60,16 @@ const routes = [{
             import('../views/Dashboard.vue')
     },
     {
+        path: '/live',
+        name: 'live',
+        meta: {
+            title: "Live",
+            layout: DashboardLayout
+        },
+        component: () =>
+            import('../views/Live.vue')
+    },
+    {
         path: '/calendar',
         name: 'calendar',
         meta: {

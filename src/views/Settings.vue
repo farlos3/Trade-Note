@@ -8,6 +8,33 @@ import { useGetAvailableTags } from '../utils/daily';
 import Parse from 'parse/dist/parse.min.js'
 import Sortable from 'sortablejs';
 
+/*********************
+ * CONNECTIONS
+ * Read-only status of what the SERVER is wired to (MT5 / MetaApi / database /
+ * R2). Deliberately not editable here: these are credentials, and saving them
+ * from the browser would mean storing a live trading token and the database
+ * password in MongoDB -- readable back by the logged-in user and copied into
+ * every R2 backup. They stay in .env on the host, which never leaves it.
+ *********************/
+const connections = ref(null)
+const connectionsError = ref(null)
+const connectionsLoading = ref(false)
+
+async function loadConnections() {
+    connectionsLoading.value = true
+    connectionsError.value = null
+    try {
+        const res = await fetch('/api/connections', { cache: 'no-store' })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        connections.value = await res.json()
+    } catch (e) {
+        connectionsError.value = e.message
+        connections.value = null
+    } finally {
+        connectionsLoading.value = false
+    }
+}
+
 let profileAvatar = null
 let polygonKey = null
 let databentoKey = null
@@ -40,6 +67,7 @@ onBeforeMount(async () => {
 
 onMounted(async () => {
     await useInitTooltip()
+    loadConnections()
 })
 
 /* PROFILE */
@@ -500,6 +528,125 @@ const updateAPIS = async () => {
     <div class="row mt-2">
         <div class="row justify-content-md-center">
             <div class="col-12 col-md-8">
+                <!--=============== Connections ===============-->
+                <div class="row align-items-center">
+                    <p class="fs-5 fw-bold mb-1">Connections</p>
+                    <p class="connHint">
+                        Configured in <code>.env</code> on the server and connected automatically at
+                        startup. Shown here read-only — tokens and the database password are never sent
+                        to the browser, so they can't leak into the R2 backups.
+                    </p>
+
+                    <div v-if="connectionsError" class="connCard connBad">
+                        Could not read connection status: {{ connectionsError }}
+                    </div>
+
+                    <div v-else-if="connections" class="connGrid">
+                        <!-- MT5 -->
+                        <div class="connCard">
+                            <div class="connHead">
+                                <span class="connName">MT5 feed</span>
+                                <span class="connPill"
+                                    v-bind:class="connections.mt5.liveFeed.connected ? 'ok' : 'off'">
+                                    {{ connections.mt5.liveFeed.connected ? 'live' : 'no data' }}
+                                </span>
+                            </div>
+                            <div class="connRow">
+                                <span>Source</span>
+                                <b>{{ connections.mt5.source === 'metaapi' ? 'MetaApi (cloud)' : 'Local terminal' }}</b>
+                            </div>
+                            <div class="connRow" v-if="connections.mt5.liveFeed.login">
+                                <span>Account</span><b>{{ connections.mt5.liveFeed.login }}</b>
+                            </div>
+                            <div class="connRow">
+                                <span>Open positions</span><b>{{ connections.mt5.liveFeed.positions }}</b>
+                            </div>
+                            <div class="connRow" v-if="connections.mt5.liveFeed.ageSeconds !== null">
+                                <span>Last update</span><b>{{ connections.mt5.liveFeed.ageSeconds }}s ago</b>
+                            </div>
+                            <div class="connNote" v-if="connections.mt5.source !== 'metaapi'">
+                                Needs MetaTrader 5 open on a Windows host running
+                                <code>mt5-sync/mt5_live.py</code>. Set <code>MT5_SOURCE=metaapi</code> to
+                                use the cloud instead.
+                            </div>
+                        </div>
+
+                        <!-- MetaApi -->
+                        <div class="connCard">
+                            <div class="connHead">
+                                <span class="connName">MetaApi</span>
+                                <span class="connPill"
+                                    v-bind:class="!connections.metaapi.tokenConfigured ? 'off'
+                                        : connections.metaapi.account && connections.metaapi.account.state === 'DEPLOYED' ? 'ok' : 'warn'">
+                                    {{ !connections.metaapi.tokenConfigured ? 'not set'
+                                        : (connections.metaapi.account && (connections.metaapi.account.state || 'error')) || '…' }}
+                                </span>
+                            </div>
+                            <div class="connRow">
+                                <span>Token</span>
+                                <b>{{ connections.metaapi.tokenConfigured ? 'configured' : 'missing' }}</b>
+                            </div>
+                            <div class="connRow" v-if="connections.metaapi.accountId">
+                                <span>Account id</span><b class="connMono">{{ connections.metaapi.accountId }}</b>
+                            </div>
+                            <div class="connRow" v-if="connections.metaapi.account && connections.metaapi.account.login">
+                                <span>Broker</span><b>{{ connections.metaapi.account.server }}</b>
+                            </div>
+                            <div class="connNote connWarnText"
+                                v-if="connections.metaapi.account && connections.metaapi.account.state === 'UNDEPLOYED'">
+                                Account is undeployed — deploy it on metaapi.cloud before it can stream
+                                (billable).
+                            </div>
+                            <div class="connNote" v-else-if="!connections.metaapi.tokenConfigured">
+                                Set <code>METAAPI_ACCESS_TOKEN</code> and <code>METAAPI_ACCOUNT_ID</code>
+                                in <code>.env</code>.
+                            </div>
+                        </div>
+
+                        <!-- Database -->
+                        <div class="connCard">
+                            <div class="connHead">
+                                <span class="connName">Database</span>
+                                <span class="connPill" v-bind:class="connections.database.isAtlas ? 'ok' : 'warn'">
+                                    {{ connections.database.isAtlas ? 'Atlas' : 'local' }}
+                                </span>
+                            </div>
+                            <div class="connRow">
+                                <span>Host</span><b class="connMono">{{ connections.database.host || '—' }}</b>
+                            </div>
+                            <div class="connRow"><span>Database</span><b>{{ connections.database.name }}</b></div>
+                            <div class="connNote" v-if="!connections.database.isAtlas">
+                                Running on a local MongoDB container — only reachable from this machine.
+                                Point <code>MONGO_URI</code> at an Atlas <code>mongodb+srv://</code> string
+                                to host the app anywhere.
+                            </div>
+                        </div>
+
+                        <!-- Storage -->
+                        <div class="connCard">
+                            <div class="connHead">
+                                <span class="connName">Storage (R2)</span>
+                                <span class="connPill" v-bind:class="connections.storage.r2Enabled ? 'ok' : 'off'">
+                                    {{ connections.storage.r2Enabled ? 'connected' : 'off' }}
+                                </span>
+                            </div>
+                            <div class="connRow" v-if="connections.storage.publicUrl">
+                                <span>Public URL</span><b class="connMono">{{ connections.storage.publicUrl }}</b>
+                            </div>
+                            <div class="connNote" v-if="!connections.storage.r2Enabled">
+                                Screenshots and backups fall back to the database while R2 is unset.
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mt-2 mb-3">
+                        <button class="btn btn-outline-primary btn-sm" v-on:click="loadConnections()"
+                            :disabled="connectionsLoading">
+                            <i class="uil uil-sync me-1"></i>{{ connectionsLoading ? 'Checking…' : 'Re-check' }}
+                        </button>
+                    </div>
+                </div>
+
                 <!--=============== Layout & Style ===============-->
 
                 <div class="row align-items-center">
@@ -676,3 +823,84 @@ const updateAPIS = async () => {
 
     </div>
 </template>
+<style scoped>
+.connHint {
+    font-size: 0.85rem;
+    color: var(--white-60);
+}
+
+.connGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 0.75rem;
+    padding: 0;
+}
+
+.connCard {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 0.6rem;
+    background: rgba(255, 255, 255, 0.03);
+    padding: 0.85rem 1rem;
+}
+
+.connHead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.connName {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--white-60);
+}
+
+/* Status is the first thing scanned, so it gets colour and the rest stays neutral. */
+.connPill {
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 0.1rem 0.45rem;
+    border-radius: 0.25rem;
+    text-transform: lowercase;
+}
+
+.connPill.ok { color: #00CA73; background: rgba(0, 202, 115, 0.12); }
+.connPill.warn { color: #f59e0b; background: rgba(245, 158, 11, 0.12); }
+.connPill.off { color: #94a3b8; background: rgba(148, 163, 184, 0.12); }
+
+.connRow {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.6rem;
+    font-size: 0.85rem;
+    padding: 0.1rem 0;
+}
+
+.connRow span { color: var(--white-60); }
+
+.connMono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.75rem;
+    word-break: break-all;
+    text-align: right;
+}
+
+.connNote {
+    margin-top: 0.5rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 0.78rem;
+    color: var(--white-60);
+}
+
+.connWarnText { color: #f59e0b; }
+
+.connBad {
+    color: #F6465D;
+    font-size: 0.85rem;
+}
+</style>

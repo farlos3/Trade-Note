@@ -18,6 +18,9 @@ import { useToggleMobileMenu } from "../utils/utils";
                 <a id="step3" v-bind:class="[pageId === 'dashboard' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
                     href="/dashboard">
                     <i class="uil uil-apps me-2"></i>Dashboard</a>
+                <a id="step3b" v-bind:class="[pageId === 'live' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
+                    href="/live">
+                    <i class="uil uil-signal me-2"></i>Live</a>
                 <a id="step4" v-bind:class="[pageId === 'daily' ? 'activeNavCss' : '', 'nav-link', 'mb-1']" href="/daily">
                     <i class="uil uil-signal-alt-3 me-2"></i>History
                 </a>

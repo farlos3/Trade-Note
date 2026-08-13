@@ -1029,6 +1029,23 @@ export async function useRefreshCalendarData() {
     }
 }
 
+/**
+ * Background refresh for the History page. Deliberately NOT useMountDaily():
+ * that resets dailyPagination/dailyQueryLimit and raises the full-page spinner,
+ * which on a background refresh would throw away however far the user had scrolled
+ * and flash the whole page. Here the current pagination is left exactly as it is,
+ * so a newly synced trade simply appears in place.
+ */
+export async function useRefreshDailyData() {
+    try {
+        await useGetSelectedRange()
+        await Promise.all([useGetExcursions(), useGetSatisfactions(), useGetTags(), useGetNotes()])
+        await useGetFilteredTrades()
+    } catch (error) {
+        console.error("Daily background refresh failed:", error)
+    }
+}
+
 export async function useMountScreenshots() {
     await (spinnerLoadingPage.value = true)
     console.log("\MOUNTING SCREENSHOTS")

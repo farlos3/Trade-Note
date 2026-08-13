@@ -10,6 +10,7 @@ import { selectedDashTab, spinnerLoadingPage, dashboardIdMounted, totals, amount
 import { useThousandCurrencyFormat, useTwoDecCurrencyFormat, useXDecCurrencyFormat, useMountDashboard, useRefreshDashboardData, useThousandFormat, useXDecFormat } from '../utils/utils';
 import { activePlan } from '../utils/planStore'
 import { numOrNull } from '../utils/planMath'
+import { useJournalUpdates } from '../utils/journalStream'
 import NoData from '../components/NoData.vue';
 
 const dashTabs = [{
@@ -304,10 +305,17 @@ function renderEquityChart() {
 
 onMounted(() => nextTick(renderEquityChart))
 
+/* Refresh when the journal actually changes, instead of every 60s regardless.
+   The old timer meant a synced trade could sit invisible for up to a minute, and
+   burned a full re-fetch every minute even on a closed market. The slow timer is
+   kept as a safety net (a missed push should cost a minute, not the session). */
+let unsubscribeJournal = null
 onMounted(() => {
-    dashboardRefreshTimer = setInterval(useRefreshDashboardData, 60000)
+    unsubscribeJournal = useJournalUpdates(useRefreshDashboardData)
+    dashboardRefreshTimer = setInterval(useRefreshDashboardData, 300000)
 })
 onUnmounted(() => {
+    if (unsubscribeJournal) unsubscribeJournal()
     if (dashboardRefreshTimer) clearInterval(dashboardRefreshTimer)
 })
 watch([equitySeries, renderData], () => nextTick(renderEquityChart))

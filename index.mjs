@@ -22,6 +22,7 @@ import { flattenTrades, computeStats, findBehaviorPatterns, computeDailyBreakdow
 import Stripe from 'stripe';
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { randomUUID } from 'crypto';
+import { isMetaApiMode, mt5Source, startMetaApiFeed } from './mt5-source.mjs';
 
 /* CLOUDFLARE R2 (S3-compatible) image storage */
 let r2Client = null
@@ -787,6 +788,10 @@ const setupApiRoutes = (app) => {
                 await useImportTrades(data.data, "api", data.selectedBroker, ParseNode)
                 await useUploadTrades("api", ParseNode)
 
+                // Tell every open page the journal moved, so they re-fetch now
+                // instead of on their next timer tick.
+                bumpJournal('trades imported')
+
                 res.status(200).send(" -> Saved Trades to ParseNode DB");
             }
         } catch (error) {
@@ -801,6 +806,207 @@ const setupApiRoutes = (app) => {
      * as `mt5Accounts` (array, upserted by login) so the Dashboard can show
      * broker, account number, balance, deposits and withdrawals.
      **********************************************/
+    /**********************************************
+     * LIVE MT5 STATE (open positions / equity)
+     *
+     * Deliberately IN-MEMORY ONLY -- never written to MongoDB. This is a tick-rate
+     * feed (~1/s): persisting it would add millions of rows a week to describe a
+     * state that is worthless one second later, and the durable record of what
+     * happened is already the per-minute journal sync. If the process restarts the
+     * feed simply repopulates on the agent's next push.
+     *
+     * The MetaTrader5 Python package binds to the terminal's DLL, so it only runs
+     * on the Windows host -- never inside this container. mt5-sync/mt5_live.py is
+     * that host agent; it POSTs here and the browser reads the result over SSE, so
+     * a phone on the same network sees the same feed without touching MT5 itself.
+     **********************************************/
+    let liveSnapshot = null            // newest payload from the host agent
+    const liveClients = new Set()      // connected SSE responses
+
+    const liveIsStale = () => !liveSnapshot || (Date.now() - liveSnapshot.receivedAt) > 15000
+
+    /* Journal change notifications ride the SAME stream as the live snapshot, as a
+       NAMED SSE event -- one connection per browser serves both, and Live.vue's
+       unnamed `onmessage` handler never sees these.
+       Why push at all: the journal pages used to poll on a 60s timer (and most
+       pages never refreshed at all), so a trade could sit invisible for a minute
+       after it was already in the database. Pages now re-fetch the moment the
+       version moves, which is as soon as the sync finishes writing. */
+    let journalVersion = 0
+    let journalUpdatedAt = null
+
+    const sendEvent = (client, name, payload) => {
+        try {
+            client.write(`event: ${name}\ndata: ${JSON.stringify(payload)}\n\n`)
+            if (typeof client.flush === 'function') client.flush()
+        } catch { /* dropped on 'close' */ }
+    }
+
+    const bumpJournal = (reason) => {
+        journalVersion += 1
+        journalUpdatedAt = Date.now()
+        const payload = { version: journalVersion, updatedAt: journalUpdatedAt, reason: reason || null }
+        for (const client of liveClients) sendEvent(client, 'journal', payload)
+        console.log(` -> Journal v${journalVersion} (${reason || 'changed'}) -> ${liveClients.size} listener(s)`)
+    }
+
+    // Polling fallback for anything that cannot hold an EventSource open.
+    app.get('/api/journal/version', (req, res) => {
+        res.setHeader('Cache-Control', 'no-store')
+        res.send({ version: journalVersion, updatedAt: journalUpdatedAt })
+    })
+
+    /**********************************************
+     * CONNECTIONS STATUS (Settings page)
+     *
+     * Reports what this server is wired to -- MT5 source, MetaApi, database, R2 --
+     * so the Settings page can answer "is it connected?" without anyone SSHing in
+     * to read .env.
+     *
+     * READ-ONLY, and every secret is reduced to a boolean or a redacted host.
+     * Tokens and the Mongo URI are never returned: the MetaApi token is a bearer
+     * credential to a live trading account, and the Mongo URI carries the database
+     * password. Neither has any business reaching a browser, and anything sent
+     * here would also land in the R2 database backups.
+     *
+     * Configuration stays in .env on purpose. Writing these from the UI would mean
+     * storing those same credentials in MongoDB (readable back by the logged-in
+     * user, and copied into every backup), which is strictly worse than a file on
+     * the host that never leaves it.
+     **********************************************/
+    const redactMongoHost = (uri) => {
+        if (!uri) return null
+        try {
+            // Strip any user:pass@ before parsing, then keep only the host.
+            const noCreds = uri.replace(/\/\/[^@/]*@/, '//')
+            const m = noCreds.match(/^mongodb(\+srv)?:\/\/([^/?]+)/i)
+            return m ? m[2] : null
+        } catch { return null }
+    }
+
+    let metaApiStateCache = { at: 0, value: null }
+    const probeMetaApiState = async () => {
+        const token = process.env.METAAPI_ACCESS_TOKEN
+        const accountId = process.env.METAAPI_ACCOUNT_ID
+        if (!token || !accountId) return null
+        // Cached: this is an external call, and the Settings page may be reopened
+        // repeatedly while nothing about the account has changed.
+        if (Date.now() - metaApiStateCache.at < 30000) return metaApiStateCache.value
+        try {
+            const host = process.env.METAAPI_PROVISIONING_HOST
+                || 'mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai'
+            const r = await fetch(`https://${host}/users/current/accounts/${accountId}`, {
+                headers: { 'auth-token': token },
+                signal: AbortSignal.timeout(8000),
+            })
+            if (!r.ok) throw new Error(`HTTP ${r.status}`)
+            const a = await r.json()
+            const value = { state: a.state, login: a.login, server: a.server, region: a.region }
+            metaApiStateCache = { at: Date.now(), value }
+            return value
+        } catch (e) {
+            const value = { error: e.message }
+            metaApiStateCache = { at: Date.now(), value }
+            return value
+        }
+    }
+
+    app.get('/api/connections', async (req, res) => {
+        res.setHeader('Cache-Control', 'no-store')
+        const mongoHost = redactMongoHost(databaseURI)
+        const snap = liveSnapshot
+        res.send({
+            mt5: {
+                source: mt5Source,
+                // In local mode the proof of life is the host agent's last POST.
+                liveFeed: snap
+                    ? { connected: !liveIsStale(), ageSeconds: Math.floor((Date.now() - snap.receivedAt) / 1000), positions: snap.positions.length, login: snap.login }
+                    : { connected: false, ageSeconds: null, positions: 0, login: null },
+            },
+            metaapi: {
+                tokenConfigured: !!process.env.METAAPI_ACCESS_TOKEN,
+                accountId: process.env.METAAPI_ACCOUNT_ID || null,
+                region: process.env.METAAPI_REGION || null,
+                account: await probeMetaApiState(),
+            },
+            database: {
+                host: mongoHost,
+                name: tradenoteDatabase,
+                // mongodb+srv:// is what Atlas hands out; a bare host:port is local.
+                isAtlas: !!(databaseURI && /mongodb\+srv:\/\//i.test(databaseURI)),
+            },
+            storage: { r2Enabled, publicUrl: r2PublicUrl || null },
+            journal: { version: journalVersion, updatedAt: journalUpdatedAt },
+        })
+    })
+
+    // Shared by both sources: the host agent's POST below, and the MetaApi feed
+    // started at the bottom of this function. Same shape either way, so the SSE
+    // clients (and the /live page) never learn which one is running.
+    const applyLiveSnapshot = (b) => {
+        liveSnapshot = {
+            login: b.login ?? null,
+            currency: b.currency ?? 'USD',
+            balance: Number(b.balance) || 0,
+            equity: Number(b.equity) || 0,
+            profit: Number(b.profit) || 0,      // floating P&L of open positions
+            margin: Number(b.margin) || 0,
+            marginFree: Number(b.marginFree) || 0,
+            positions: Array.isArray(b.positions) ? b.positions : [],
+            ticks: b.ticks && typeof b.ticks === 'object' ? b.ticks : {},
+            agentTime: Number(b.t) || null,
+            receivedAt: Date.now(),
+        }
+        const frame = `data: ${JSON.stringify(liveSnapshot)}\n\n`
+        for (const client of liveClients) {
+            try {
+                client.write(frame)
+                // compression() buffers by default, which would hold SSE frames
+                // until the buffer fills -- flush so each tick leaves immediately.
+                if (typeof client.flush === 'function') client.flush()
+            } catch { /* dropped below on 'close' */ }
+        }
+    }
+
+    app.post('/api/live', validateApiKey, (req, res) => {
+        // Ignored in metaapi mode: this process is already producing the feed, and
+        // a stray host agent still running would otherwise fight it frame by frame.
+        if (isMetaApiMode) return res.send({ ok: true, ignored: 'MT5_SOURCE=metaapi' })
+        applyLiveSnapshot(req.body || {})
+        res.send({ ok: true, clients: liveClients.size })
+    })
+
+    // Plain snapshot, for a first paint before the stream delivers its first frame
+    // (and as a fallback anywhere EventSource is unavailable).
+    app.get('/api/live', (req, res) => {
+        res.setHeader('Cache-Control', 'no-store')
+        res.send({ stale: liveIsStale(), snapshot: liveSnapshot })
+    })
+
+    app.get('/api/live/stream', (req, res) => {
+        res.setHeader('Content-Type', 'text/event-stream')
+        res.setHeader('Cache-Control', 'no-cache, no-transform')
+        res.setHeader('Connection', 'keep-alive')
+        res.flushHeaders()
+
+        liveClients.add(res)
+        if (liveSnapshot) res.write(`data: ${JSON.stringify(liveSnapshot)}\n\n`)
+        // Baseline so a page that connects late can tell whether it missed a bump
+        // while it was away (tab backgrounded, laptop asleep, brief disconnect).
+        sendEvent(res, 'journal', { version: journalVersion, updatedAt: journalUpdatedAt, reason: 'hello' })
+
+        // Comment frames keep proxies and idle-socket timeouts from closing a quiet
+        // stream (a closed market pushes nothing for hours).
+        const beat = setInterval(() => {
+            try { res.write(': ping\n\n'); if (typeof res.flush === 'function') res.flush() } catch { /* closing */ }
+        }, 20000)
+
+        req.on('close', () => {
+            clearInterval(beat)
+            liveClients.delete(res)
+        })
+    })
+
     app.post('/api/account', validateApiKey, async (req, res) => {
         try {
             const b = req.body || {}
@@ -871,6 +1077,16 @@ const setupApiRoutes = (app) => {
             res.status(500).send({ error: error });
         }
     })
+
+    // Cloud source: this process owns the MT5 connection instead of a host agent.
+    // Fire-and-forget -- a MetaApi problem must never stop the app from serving.
+    if (isMetaApiMode) {
+        startMetaApiFeed(applyLiveSnapshot).catch((e) => {
+            console.log(` -> MetaApi feed failed to start: ${e.message}`)
+        })
+    } else {
+        console.log(`\nMT5 SOURCE: local (host agents push to /api/live)`)
+    }
 };
 
 /**************************** END APIs ****************************/
