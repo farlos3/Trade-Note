@@ -56,6 +56,8 @@ services:
       # Optional — enables the LLM analysis on the AI Analysis page (billed per
       # token, separate from a Claude subscription). Leave unset to keep it off.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      AI_PROVIDER: ${AI_PROVIDER:-}
       ANALYSIS_MODEL: ${ANALYSIS_MODEL:-}
       # Per-trade lot at/above which a trade counts as "oversized" in the
       # Overtrading flag (default 0.1). Set to your own normal size + margin.
