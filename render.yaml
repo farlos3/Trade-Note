@@ -58,13 +58,25 @@ services:
       - key: MASTER_KEY
         generateValue: true
 
-      # --- Single-user login (seeded at boot) ---
+      # --- Login ---
+      # AUTO_LOGIN skips the login screen entirely. Harmless on a LAN, but on a
+      # public URL it means anyone who opens the link is already signed in.
+      - key: TRADENOTE_AUTO_LOGIN
+        value: "false"
+      # Close public signup, or anyone can create an account on this instance.
+      - key: REGISTER_OFF
+        value: "true"
+
+      # OPTIONAL. seedLoginUser() creates/maintains the account you log in AS, and
+      # is skipped entirely when either is unset. The user already exists in the
+      # Atlas database this service points at, so you can simply log in and leave
+      # both blank. Set them only to force a password reset at boot -- and then the
+      # username must match the existing one EXACTLY, because a name that does not
+      # exist yet is created as a brand new (empty) account instead.
       - key: TRADENOTE_USER
         sync: false
       - key: TRADENOTE_PASSWORD
         sync: false
-      - key: TRADENOTE_AUTO_LOGIN
-        value: "false"        # off in public hosting: it would let anyone in
 
       # --- MT5 source: must be metaapi here (no Windows terminal in the cloud) ---
       - key: MT5_SOURCE
