@@ -11,6 +11,7 @@ import PlanDepositsEditor from '../components/PlanDepositsEditor.vue'
 import FpDate from '../components/FpDate.vue'
 import { activePlan } from '../utils/planStore'
 import { numOrNull, buildProjection, fmt, pnlClass } from '../utils/planMath'
+import { useJournalUpdates } from '../utils/journalStream'
 
 /* Everything here reads from the active plan (see PlanSelector) — the same
    plan you edit on the Trading Plan page, including its deposits. */
@@ -68,6 +69,12 @@ async function load() {
 // period changes — so "actual" always reflects the live journal without a click.
 onMounted(load)
 watch(period, load)
+
+// ...and again whenever the journal itself moves, so a page left open doesn't keep
+// comparing the plan against a stale "actual".
+let unsubscribeJournal = null
+onMounted(() => { unsubscribeJournal = useJournalUpdates(load) })
+onBeforeUnmount(() => { if (unsubscribeJournal) unsubscribeJournal() })
 
 const actual = computed(() => {
     if (!daily.value || !daily.value.length) return null

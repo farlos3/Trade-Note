@@ -1,5 +1,5 @@
 <script setup>
-import { onBeforeMount, onMounted, computed, reactive, ref } from 'vue';
+import { onBeforeMount, onMounted, onUnmounted, computed, reactive, ref } from 'vue';
 import Filters from '../components/Filters.vue'
 import NoData from '../components/NoData.vue';
 import SpinnerLoadingPage from '../components/SpinnerLoadingPage.vue';
@@ -8,7 +8,8 @@ import Screenshot from '../components/Screenshot.vue'
 
 import { spinnerLoadingPage, calendarData, filteredTrades, screenshots, diaries, modalDailyTradeOpen, amountCase, markerAreaOpen, screenshot, tradeScreenshotChanged, excursion, tradeExcursionChanged, spinnerSetups, spinnerSetupsText, tradeExcursionId, tradeExcursionDateUnix, hasData, tradeId, excursions, saveButton, itemTradeIndex, tradeIndex, tradeIndexPrevious, spinnerLoadMore, endOfList, selectedGrossNet, availableTags, tradeTagsChanged, tagInput, tags, tradeTags, showTagsList, selectedTagIndex, tradeTagsId, tradeTagsDateUnix, newTradeTags, notes, tradeNote, tradeNoteChanged, tradeReason, tradeReasonChanged, tradeNoteDateUnix, tradeNoteId, availableTagsArray, timeZoneTrade, screenshotsInfos, idCurrentType, idCurrentNumber, tabGettingScreenshots, currentUser, apis, satisfactionTradeArray, satisfactionArray } from '../stores/globals';
 
-import { useCreatedDateFormat, useTwoDecCurrencyFormat, useTimeFormat, useTimeDuration, useMountDaily, useGetSelectedRange, useLoadMore, useCheckVisibleScreen, useDecimalsArithmetic, useInitTooltip, useDateCalFormat, useSwingDuration, useStartOfDay, useInitTab } from '../utils/utils';
+import { useCreatedDateFormat, useTwoDecCurrencyFormat, useTimeFormat, useTimeDuration, useMountDaily, useRefreshDailyData, useGetSelectedRange, useLoadMore, useCheckVisibleScreen, useDecimalsArithmetic, useInitTooltip, useDateCalFormat, useSwingDuration, useStartOfDay, useInitTab } from '../utils/utils';
+import { useJournalUpdates } from '../utils/journalStream';
 
 import { useSetupImageUpload, useSaveScreenshot, useGetScreenshots } from '../utils/screenshots';
 
@@ -196,6 +197,15 @@ onMounted(async () => {
     document.getElementById("weekNoteModal").addEventListener('shown.bs.modal', async () => {
         weekNoteText.value = weekNoteExisting.value
     })
+
+    // History had no refresh at all: a trade synced while this page was open stayed
+    // invisible until a manual reload. Now it appears as soon as the sync writes.
+    unsubscribeJournal = useJournalUpdates(useRefreshDailyData)
+})
+
+let unsubscribeJournal = null
+onUnmounted(() => {
+    if (unsubscribeJournal) unsubscribeJournal()
 })
 
 async function saveDayNote() {

@@ -39,3 +39,7 @@ mt5-sync/logs/
 
 # Backup log written by the scheduled agent
 backup/logs/
+
+# Live MT5 feed agent output (mt5-sync/mt5_live.py, started by start.sh)
+mt5-sync/live-agent.log
+mt5-sync/live-agent.log.err

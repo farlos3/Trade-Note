@@ -5,19 +5,23 @@ import NoData from '../components/NoData.vue';
 import Calendar from '../components/Calendar.vue';
 import { spinnerLoadingPage, calendarData, filteredTrades } from '../stores/globals';
 import { useMountCalendar, useRefreshCalendarData } from '../utils/utils'
+import { useJournalUpdates } from '../utils/journalStream'
 
 onBeforeMount(async () => {
     useMountCalendar()
 })
 
-// Same reasoning as Dashboard's poll (see Dashboard.vue): the MT5 sync pushes
-// trades in the background on its own schedule, and a Calendar tab left open
-// otherwise never learns about them.
+// The MT5 sync pushes trades in the background, so a Calendar tab left open has to
+// be told about them. Driven by the journal push now rather than a 60s poll (see
+// utils/journalStream.js); the long timer is only a safety net for a missed push.
 let calendarRefreshTimer = null
+let unsubscribeJournal = null
 onMounted(() => {
-    calendarRefreshTimer = setInterval(useRefreshCalendarData, 60000)
+    unsubscribeJournal = useJournalUpdates(useRefreshCalendarData)
+    calendarRefreshTimer = setInterval(useRefreshCalendarData, 300000)
 })
 onUnmounted(() => {
+    if (unsubscribeJournal) unsubscribeJournal()
     if (calendarRefreshTimer) clearInterval(calendarRefreshTimer)
 })
 </script>

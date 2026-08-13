@@ -385,6 +385,36 @@ sync_from_mt5() {
   return 0
 }
 
+# --- Live feed: open positions + equity, streamed to the /live page -----------
+# A long-running loop, unlike the once-a-minute journal sync above: it reads OPEN
+# positions ~1/s and POSTs them to /api/live, which holds them in memory only.
+# Started detached with its output to a log file, because the scheduled-task
+# lesson applies here too -- a background job with nowhere to write its errors
+# fails invisibly.
+LIVE_LOG="$ROOT_DIR/mt5-sync/live-agent.log"
+start_live_feed() {
+  section "Starting live MT5 feed"
+  if [[ -z "$PY" ]]; then
+    warn "Python not found; skipping the live feed."
+    return 0
+  fi
+  # One agent is enough; a second would just double the POST rate.
+  if pgrep -f "mt5_live.py" >/dev/null 2>&1; then
+    printf '\033[32mLive feed already running.\033[0m\n'
+    return 0
+  fi
+  nohup "$PY" "$ROOT_DIR/mt5-sync/mt5_live.py" >"$LIVE_LOG" 2>&1 &
+  disown 2>/dev/null || true
+  sleep 2
+  if pgrep -f "mt5_live.py" >/dev/null 2>&1; then
+    printf '\033[32mLive feed running -> %s\033[0m\n' "$APP_URL/live"
+    printf '\033[90mLog:   %s\033[0m\n' "${LIVE_LOG#$ROOT_DIR/}"
+  else
+    warn "Live feed did not stay up. See ${LIVE_LOG#$ROOT_DIR/}"
+  fi
+  return 0
+}
+
 # 4a. Baseline: whatever is in the R2 backup.
 if [[ "$SKIP_RESTORE" -eq 0 ]]; then
   restore_from_r2
@@ -395,6 +425,7 @@ fi
 # on macOS, the TradeNoteExport EA) isn't running.
 if [[ "$SKIP_SYNC" -eq 0 ]]; then
   sync_from_mt5
+  start_live_feed
 fi
 
 # 4c. Persist: push the result back to R2 so the next start picks it up. Runs even
