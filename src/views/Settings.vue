@@ -3,6 +3,7 @@ import { onBeforeMount, onMounted, reactive, ref } from 'vue';
 import { useCheckCurrentUser, useInitTooltip, useGetAPIS, useGetLayoutStyle, useExport } from '../utils/utils';
 import { currentUser, renderProfile, availableTags, apis, layoutStyle } from '../stores/globals';
 import { useGetAvailableTags } from '../utils/daily';
+import { useAuthHeaders } from '../utils/apiAuth'
 
 /* MODULES */
 import Parse from 'parse/dist/parse.min.js'
@@ -24,7 +25,7 @@ async function loadConnections() {
     connectionsLoading.value = true
     connectionsError.value = null
     try {
-        const res = await fetch('/api/connections', { cache: 'no-store' })
+        const res = await fetch('/api/connections', { cache: 'no-store', headers: useAuthHeaders() })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         connections.value = await res.json()
     } catch (e) {

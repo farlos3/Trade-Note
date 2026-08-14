@@ -5,6 +5,7 @@ import dayjs from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek.js'; dayjs.extend(isoWeek)
 import FpDate from '../components/FpDate.vue'
 import { timeZoneTrade } from '../stores/globals'
+import { useAuthHeaders } from '../utils/apiAuth'
 
 /* Behavior analysis from real trades, via the backend. Result is cached per
    period in localStorage and only re-fetched when the underlying trade data
@@ -79,7 +80,7 @@ async function fetchFingerprint(from, to) {
     const params = { tz: timeZoneTrade.value || 'UTC' }
     if (from) params.from = from
     if (to) params.to = to
-    const res = await axios.get('/api/analysis/fingerprint', { params })
+    const res = await axios.get('/api/analysis/fingerprint', { params, headers: useAuthHeaders() })
     return res.data?.fingerprint || ''
 }
 
@@ -120,7 +121,7 @@ async function run(force = false) {
         const params = { tz: timeZoneTrade.value || 'UTC' }
         if (from) params.from = from
         if (to) params.to = to
-        const res = await axios.get('/api/analysis/behavior', { params })
+        const res = await axios.get('/api/analysis/behavior', { params, headers: useAuthHeaders() })
         data.value = res.data
         cached.value = false
         lastUpdated.value = Date.now()
@@ -227,7 +228,7 @@ async function runAI(force = false) {
         const params = { tz: timeZoneTrade.value || 'UTC' }
         if (from) params.from = from
         if (to) params.to = to
-        const res = await axios.get('/api/analysis/ai-summary', { params, timeout: 120000 })
+        const res = await axios.get('/api/analysis/ai-summary', { params, timeout: 120000, headers: useAuthHeaders() })
         if (res.data && res.data.disabled) { aiDisabled.value = true; aiSummary.value = ''; return }
         if (res.data && res.data.refused) { aiError.value = 'The model declined this request.'; return }
         aiSummary.value = (res.data && res.data.summary) || ''

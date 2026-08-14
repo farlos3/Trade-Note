@@ -99,6 +99,50 @@ export let allowRegister = false
 
 const setupApiRoutes = (app) => {
 
+    // Defined FIRST: Express evaluates middleware references when a route is
+    // REGISTERED, not when it is called, so a const declared further down the
+    // function is still in its temporal dead zone for every route above it
+    // ("Cannot access 'requireAuth' before initialization" at boot).
+    /**
+     * Gate for the endpoints that hand out real account data: open positions,
+     * balances, the daily P&L breakdown, the journal notes. They had no auth at
+     * all, which is survivable on a LAN and unacceptable the moment this is
+     * hosted -- anyone with the URL could read the whole journal.
+     *
+     * Accepts EITHER credential, because two very different callers use these:
+     *   - the MT5 host agents, which already carry an `api-key`
+     *   - the browser, which has a Parse session from logging in
+     *
+     * EventSource cannot set request headers, so the SSE stream also accepts the
+     * session token as a query parameter. It is the same bearer secret either
+     * way; hosting terminates TLS, which is what keeps it off the wire.
+     */
+    const requireAuth = async (req, res, next) => {
+        if (req.headers['api-key'] || req.query['api-key']) {
+            return validateApiKey(req, res, next)
+        }
+        const token = req.headers['x-parse-session-token'] || req.query.session
+        if (token) {
+            try {
+                const q = new ParseNode.Query(ParseNode.Session)
+                q.equalTo('sessionToken', token)
+                q.include('user')
+                const session = await q.first({ useMasterKey: true })
+                if (session) {
+                    const user = session.get('user')
+                    // Downstream handlers read currentUser (fetchNotes scopes its
+                    // query by it), so it has to be populated here as well.
+                    if (user) currentUser.value = JSON.parse(JSON.stringify(user))
+                    return next()
+                }
+            } catch (e) {
+                console.log(` -> session lookup failed: ${e.message}`)
+            }
+        }
+        return res.status(401).send({ error: 'unauthorized' })
+    }
+
+
     app.post("/api/parseAppId", (req, res) => {
         //console.log("\nAPI : post APP ID")
         //console.log(process.env.APP_ID)
@@ -418,7 +462,7 @@ const setupApiRoutes = (app) => {
         return { notes, weeklyReviews }
     }
 
-    app.get('/api/analysis/behavior', async (req, res) => {
+    app.get('/api/analysis/behavior', requireAuth, async (req, res) => {
         try {
             const tz = req.query.tz || process.env.TRADENOTE_TZ || 'UTC'
             const fromUnix = isoToUnix(req.query.from, tz)
@@ -466,7 +510,7 @@ const setupApiRoutes = (app) => {
      * Cheap signature of the trade data so the client can reuse a cached
      * analysis until an order changes. Returns { fingerprint: "count:lastUpdate" }.
      **********************************************/
-    app.get('/api/analysis/fingerprint', async (req, res) => {
+    app.get('/api/analysis/fingerprint', requireAuth, async (req, res) => {
         try {
             // Same tz resolution as the analysis routes, or the fingerprint would
             // cover a different set of days than the result it is meant to guard,
@@ -490,7 +534,7 @@ const setupApiRoutes = (app) => {
      * no provider key is set, so the client falls back to its rule-based summary.
      * Returns { summary, fingerprint, model, provider } on success.
      **********************************************/
-    app.get('/api/analysis/ai-summary', async (req, res) => {
+    app.get('/api/analysis/ai-summary', requireAuth, async (req, res) => {
         try {
             if (!AI_PROVIDER) {
                 // An explicit AI_PROVIDER whose key is missing is reported as
@@ -902,7 +946,7 @@ const setupApiRoutes = (app) => {
     }
 
     // Polling fallback for anything that cannot hold an EventSource open.
-    app.get('/api/journal/version', (req, res) => {
+    app.get('/api/journal/version', requireAuth, (req, res) => {
         res.setHeader('Cache-Control', 'no-store')
         res.send({ version: journalVersion, updatedAt: journalUpdatedAt })
     })
@@ -962,7 +1006,7 @@ const setupApiRoutes = (app) => {
         }
     }
 
-    app.get('/api/connections', async (req, res) => {
+    app.get('/api/connections', requireAuth, async (req, res) => {
         res.setHeader('Cache-Control', 'no-store')
         const mongoHost = redactMongoHost(databaseURI)
         const snap = liveSnapshot
@@ -1029,12 +1073,12 @@ const setupApiRoutes = (app) => {
 
     // Plain snapshot, for a first paint before the stream delivers its first frame
     // (and as a fallback anywhere EventSource is unavailable).
-    app.get('/api/live', (req, res) => {
+    app.get('/api/live', requireAuth, (req, res) => {
         res.setHeader('Cache-Control', 'no-store')
         res.send({ stale: liveIsStale(), snapshot: liveSnapshot })
     })
 
-    app.get('/api/live/stream', (req, res) => {
+    app.get('/api/live/stream', requireAuth, (req, res) => {
         res.setHeader('Content-Type', 'text/event-stream')
         res.setHeader('Cache-Control', 'no-cache, no-transform')
         res.setHeader('Connection', 'keep-alive')

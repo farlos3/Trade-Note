@@ -12,6 +12,7 @@ import FpDate from '../components/FpDate.vue'
 import { activePlan } from '../utils/planStore'
 import { numOrNull, buildProjection, fmt, pnlClass } from '../utils/planMath'
 import { useJournalUpdates } from '../utils/journalStream'
+import { useAuthHeaders } from '../utils/apiAuth'
 
 /* Everything here reads from the active plan (see PlanSelector) — the same
    plan you edit on the Trading Plan page, including its deposits. */
@@ -55,7 +56,7 @@ async function load() {
         const params = { tz: timeZoneTrade.value || 'UTC' }
         if (from) params.from = from
         if (to) params.to = to
-        const res = await axios.get('/api/analysis/behavior', { params })
+        const res = await axios.get('/api/analysis/behavior', { params, headers: useAuthHeaders() })
         daily.value = res.data.daily || []
     } catch (e) {
         error.value = e?.response?.data?.error || e.message

@@ -15,6 +15,7 @@
  * Falls back to polling /api/journal/version when EventSource is unavailable or
  * the stream cannot stay up, so a page is never left silently stale.
  */
+import { useAuthHeaders, useAuthedUrl } from './apiAuth.js'
 const POLL_MS = 15000
 
 let source = null
@@ -38,7 +39,7 @@ function notify(version) {
 
 async function pollOnce() {
     try {
-        const res = await fetch('/api/journal/version', { cache: 'no-store' })
+        const res = await fetch('/api/journal/version', { cache: 'no-store', headers: useAuthHeaders() })
         const j = await res.json()
         if (j && typeof j.version === 'number') notify(j.version)
     } catch { /* offline; the next tick retries */ }
@@ -62,7 +63,7 @@ function connect() {
         startPolling()
         return
     }
-    source = new EventSource('/api/live/stream')
+    source = new EventSource(useAuthedUrl('/api/live/stream'))
     source.addEventListener('journal', (e) => {
         stopPolling()   // the stream is alive; no need to also poll
         try {
