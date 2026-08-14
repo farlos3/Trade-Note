@@ -307,6 +307,9 @@ const targetProjection = computed(() =>
 const PLAN_COLOR = '#2f9bff'   // app accent, same hue the Trading Plan chart uses
 const ACTUAL_COLOR = '#f59e0b' // amber: CVD-separated from the blue on every channel
 const SURFACE = '#1b1f2a'
+// Third hue, distinct from plan-blue and actual-amber on every channel so the
+// trend never reads as either of the two lines it summarises.
+const TREND_COLOR = '#a78bfa'
 const INK_MUTED = 'rgba(237, 240, 247, 0.60)'
 
 // Profit/loss colouring, only used by the daily bars where the sign IS the
@@ -409,6 +412,40 @@ function renderChart() {
         }
         : undefined
 
+    /* Average line over the ACTUAL series: where your real performance is heading
+       once the day-to-day noise is taken out. Least-squares fit, so it is the
+       average TREND rather than a moving average -- a moving average lags and
+       still wiggles, which defeats the point of comparing it against a straight
+       plan line.
+       Daily P&L mode is different: the meaningful average there is the flat mean
+       of profit per traded day, which is exactly what the plan's own flat line is
+       compared against.
+       Nulls (untraded days) are skipped rather than counted as zero, which would
+       drag the average toward zero on every weekend. */
+    const trendData = (() => {
+        const pts = []
+        actualData.forEach((v, i) => { if (v != null) pts.push([i, v]) })
+        if (pts.length < 2) return null
+
+        if (mode === 'daily') {
+            const mean = pts.reduce((s, p) => s + p[1], 0) / pts.length
+            return actualData.map(() => Number(mean.toFixed(2)))
+        }
+
+        const n = pts.length
+        const sx = pts.reduce((s, p) => s + p[0], 0)
+        const sy = pts.reduce((s, p) => s + p[1], 0)
+        const sxy = pts.reduce((s, p) => s + p[0] * p[1], 0)
+        const sxx = pts.reduce((s, p) => s + p[0] * p[0], 0)
+        const denom = n * sxx - sx * sx
+        if (!denom) return null
+        const slope = (n * sxy - sx * sy) / denom
+        const intercept = (sy - slope * sx) / n
+        // Drawn across every index so the line spans the chart, not just the
+        // traded days it was fitted from.
+        return actualData.map((_, i) => Number((intercept + slope * i).toFixed(2)))
+    })()
+
     const series = []
     if (planData.some((v) => v != null)) {
         series.push({
@@ -456,6 +493,23 @@ function renderChart() {
             itemStyle: { color: ACTUAL_COLOR, borderColor: SURFACE, borderWidth: 2 },
             areaStyle: { color: 'rgba(245, 158, 11, 0.08)' },
             markLine: withdrawalMarkLine,
+        })
+    }
+
+    if (trendData) {
+        series.push({
+            name: mode === 'daily' ? 'Average / traded day' : 'Actual trend (average)',
+            type: 'line',
+            data: trendData,
+            showSymbol: false,
+            // Never smoothed: it is a straight fit by definition, and curving it
+            // would imply structure the regression explicitly removed.
+            smooth: false,
+            lineStyle: { color: TREND_COLOR, width: 2, type: 'dashed', opacity: 0.9 },
+            itemStyle: { color: TREND_COLOR },
+            // Under both real lines: this is a reference, not a thing to read
+            // values off.
+            z: 1,
         })
     }
 
