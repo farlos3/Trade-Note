@@ -589,7 +589,7 @@ const updateAPIS = async () => {
                 <!--=============== Connections ===============-->
                 <div class="settingsSection">
                     <p class="sectionTitle">Connections</p>
-                    <p class="connHint">
+                    <p class="sectionHint">
                         Configured in <code>.env</code> on the server and connected automatically at
                         startup. Shown here read-only — tokens and the database password are never sent
                         to the browser, so they can't leak into the R2 backups.
@@ -708,38 +708,48 @@ const updateAPIS = async () => {
                 <!--=============== Password ===============-->
                 <div class="settingsSection">
                     <p class="sectionTitle">Password</p>
-                    <p class="connHint">
-                        Signed in as <b>{{ currentUser.username }}</b>. Changing this updates the hash stored
-                        in the database — once you have set it here, <code>TRADENOTE_USER</code> and
-                        <code>TRADENOTE_PASSWORD</code> can be removed from <code>.env</code>, leaving no copy
-                        of the password in plain text anywhere.
+                    <p class="sectionHint">
+                        Signed in as <b>{{ currentUser.username }}</b>. This updates the hash stored in the
+                        database, so <code>TRADENOTE_USER</code> and <code>TRADENOTE_PASSWORD</code> can then be
+                        removed from <code>.env</code> — leaving no copy of the password in plain text anywhere.
                     </p>
 
-                    <div class="col-12 col-md-8">
-                        <div class="pwField">
-                            <label class="pwLabel">Current password</label>
+                    <div class="row align-items-center mt-2">
+                        <div class="col-12 col-md-4">Current password</div>
+                        <div class="col-12 col-md-8">
                             <input type="password" class="form-control" v-model="pw.current"
                                 autocomplete="current-password" />
                         </div>
-                        <div class="pwField">
-                            <label class="pwLabel">New password</label>
+                    </div>
+                    <div class="row align-items-center mt-2">
+                        <div class="col-12 col-md-4">New password</div>
+                        <div class="col-12 col-md-8">
                             <input type="password" class="form-control" v-model="pw.next"
                                 autocomplete="new-password" />
                         </div>
-                        <div class="pwField">
-                            <label class="pwLabel">Confirm new password</label>
+                    </div>
+                    <div class="row align-items-center mt-2">
+                        <div class="col-12 col-md-4">Confirm new password</div>
+                        <div class="col-12 col-md-8">
                             <input type="password" class="form-control" v-model="pw.confirm"
                                 autocomplete="new-password" />
                         </div>
+                    </div>
 
-                        <div v-if="pwProblem" class="pwMsg pwBad">{{ pwProblem }}</div>
-                        <div v-else-if="pwError" class="pwMsg pwBad">{{ pwError }}</div>
-                        <div v-else-if="pwDone" class="pwMsg pwGood">
-                            <i class="uil uil-check-circle me-1"></i>Password changed. Other devices signed in
-                            with the old password have been signed out.
+                    <div class="row mt-2">
+                        <div class="col-12 col-md-4"></div>
+                        <div class="col-12 col-md-8">
+                            <div v-if="pwProblem" class="pwMsg pwBad">{{ pwProblem }}</div>
+                            <div v-else-if="pwError" class="pwMsg pwBad">{{ pwError }}</div>
+                            <div v-else-if="pwDone" class="pwMsg pwGood">
+                                <i class="uil uil-check-circle me-1"></i>Password changed. Other devices signed
+                                in with the old password have been signed out.
+                            </div>
                         </div>
+                    </div>
 
-                        <button type="button" class="btn btn-success mt-2" :disabled="!pwReady || pwBusy"
+                    <div class="mt-3 mb-3">
+                        <button type="button" class="btn btn-success" :disabled="!pwReady || pwBusy"
                             v-on:click="changePassword">
                             {{ pwBusy ? 'Changing…' : 'Change password' }}
                         </button>
@@ -875,7 +885,7 @@ const updateAPIS = async () => {
                 </div>
 
                 <!-- Delete Group -->
-                <div class="mt-5 row align-items-center">
+                <div class="mt-4 row align-items-center">
                     <div class="col-12 col-md-4">
                         Group to delete<i class="ps-1 uil uil-info-circle" data-bs-toggle="tooltip"
                             data-bs-title="Tags will be moved to Ungrouped."></i>
@@ -894,7 +904,7 @@ const updateAPIS = async () => {
                 </div>
 
                 <!-- Delete Tag -->
-                <div class="mt-5 row align-items-center">
+                <div class="mt-4 row align-items-center">
                     <div class="col-12 col-md-4">
                         Tag to delete
                     </div>
@@ -919,7 +929,7 @@ const updateAPIS = async () => {
     </div>
 </template>
 <style scoped>
-.connHint {
+.sectionHint {
     font-size: 0.85rem;
     color: var(--white-60);
 }
@@ -999,17 +1009,7 @@ const updateAPIS = async () => {
     font-size: 0.85rem;
 }
 
-.pwField {
-    margin-bottom: 0.6rem;
-    max-width: 380px;
-}
 
-.pwLabel {
-    font-size: 0.78rem;
-    color: var(--white-60);
-    margin-bottom: 0.2rem;
-    display: block;
-}
 
 .pwMsg {
     font-size: 0.85rem;
