@@ -133,7 +133,9 @@ export async function fetchNotes({ fromUnix, toUnix } = {}) {
     if (toUnix != null) q.dateUnix.$lt = toUnix
   }
   return db.collection('notes')
-    .find(q, { projection: { note: 1, reason: 1, tradeId: 1, dateUnix: 1 } })
+    // `reflection` is the write-up done after re-reading a week (week notes only);
+    // without it the analysis sees what happened but not what the trader concluded.
+    .find(q, { projection: { note: 1, reason: 1, tradeId: 1, dateUnix: 1, reflection: 1, checkRead: 1, checkReflected: 1 } })
     .sort({ dateUnix: 1 })
     .toArray()
 }

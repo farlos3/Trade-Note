@@ -45,14 +45,10 @@ import { useToggleMobileMenu } from "../utils/utils";
                 <a id="step6" v-bind:class="[pageId === 'diary' ? 'activeNavCss' : '', 'nav-link', 'mb-1']" href="/diary">
                     <i class="uil uil-diary me-2"></i>Diary
                 </a>
-                <a id="step7" v-bind:class="[pageId === 'screenshots' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
-                    href="/screenshots">
-                    <i class="uil uil-image-v me-2"></i>Screenshots
-                </a>
-                <a id="step8" v-bind:class="[pageId === 'playbook' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
-                    href="/playbook">
-                    <i class="uil uil-compass me-2"></i>Playbook
-                </a>
+                <!-- Screenshots and Playbook are hidden from the menu on request.
+                     The routes, views and stored data are all left intact, so this
+                     is reversible by restoring these two links -- /screenshots and
+                     /playbook still work if opened directly. -->
             </div>
         </div>
     </div>
