@@ -696,7 +696,26 @@ const setupApiRoutes = (app) => {
         }
     })
 
+    /* Result of the last successful schema provisioning in THIS process.
+     *
+     * The login page calls /api/updateSchemas before every sign-in, and it walks
+     * all 13 classes and every one of their fields -- 218 round trips. Against a
+     * Mongo container next door that was invisible; against Atlas each hop costs
+     * ~50ms, so signing in stalled for ~15 seconds redoing work the server had
+     * already done at boot.
+     *
+     * Cached per process rather than persisted, deliberately: a deploy that
+     * changes requiredClasses.json starts a new process, so the next login
+     * provisions the new fields exactly as before. SCHEMA_CACHE=off forces
+     * every call through.
+     */
+    let schemaCache = null
+
     app.post("/api/updateSchemas", async (req, res) => {
+        if (schemaCache && String(process.env.SCHEMA_CACHE || '').toLowerCase() !== 'off') {
+            return res.send(schemaCache)
+        }
+
 
         if (!process.env.STRIPE_SK || process.env.UPSERT_SCHEMA) {
             console.log("\nAPI : post update schema")
@@ -810,7 +829,8 @@ const setupApiRoutes = (app) => {
                 }
             }
 
-            res.send({ "existingSchema": existingSchema })
+            schemaCache = { "existingSchema": existingSchema }
+            res.send(schemaCache)
         } else {
             res.status(200).send('OK');
         }
