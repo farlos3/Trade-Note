@@ -13,6 +13,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import dayjs from 'dayjs'
 import { useTwoDecCurrencyFormat } from '../utils/utils'
 import { usePipSize } from '../utils/addOrder'
+import { useAuthHeaders, useAuthedUrl } from '../utils/apiAuth'
 
 const snapshot = ref(null)
 const connected = ref(false)
@@ -90,7 +91,7 @@ function applySnapshot(s) {
 }
 
 function connect() {
-    source = new EventSource('/api/live/stream')
+    source = new EventSource(useAuthedUrl('/api/live/stream'))
     source.onopen = () => { connected.value = true }
     source.onmessage = (e) => {
         connected.value = true
@@ -104,7 +105,7 @@ onMounted(async () => {
     // Paint immediately from the stored snapshot instead of waiting up to a second
     // for the stream's first frame.
     try {
-        const res = await fetch('/api/live')
+        const res = await fetch('/api/live', { headers: useAuthHeaders() })
         const j = await res.json()
         if (j && j.snapshot && !j.stale) applySnapshot(j.snapshot)
     } catch { /* the stream below is the real source */ }
