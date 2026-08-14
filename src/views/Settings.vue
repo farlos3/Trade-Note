@@ -1,5 +1,5 @@
 <script setup>
-import { onBeforeMount, onMounted, reactive, ref } from 'vue';
+import { onBeforeMount, onMounted, reactive, ref, computed } from 'vue';
 import { useCheckCurrentUser, useInitTooltip, useGetAPIS, useGetLayoutStyle, useExport } from '../utils/utils';
 import { currentUser, renderProfile, availableTags, apis, layoutStyle } from '../stores/globals';
 import { useGetAvailableTags } from '../utils/daily';
@@ -33,6 +33,63 @@ async function loadConnections() {
         connections.value = null
     } finally {
         connectionsLoading.value = false
+    }
+}
+
+/*********************
+ * CHANGE PASSWORD
+ *
+ * Until now the only way to change the login password was TRADENOTE_PASSWORD in
+ * .env plus a server restart -- which meant the password had to exist in plain
+ * text in a file just to be changeable at all. With this, it lives only as a
+ * bcrypt hash in the database and those env vars can be removed entirely.
+ *
+ * The current password is re-verified before the change even though the user is
+ * already signed in: a session left open on a shared machine should not be
+ * enough to take the account over.
+ *********************/
+const pw = reactive({ current: '', next: '', confirm: '' })
+const pwBusy = ref(false)
+const pwError = ref(null)
+const pwDone = ref(false)
+
+const pwProblem = computed(() => {
+    if (!pw.current || !pw.next || !pw.confirm) return null   // not an error yet, just incomplete
+    if (pw.next.length < 8) return 'New password must be at least 8 characters.'
+    if (pw.next !== pw.confirm) return 'New password and confirmation do not match.'
+    if (pw.next === pw.current) return 'New password is the same as the current one.'
+    return null
+})
+const pwReady = computed(() => !!(pw.current && pw.next && pw.confirm) && !pwProblem.value)
+
+async function changePassword() {
+    pwError.value = null
+    pwDone.value = false
+    if (!pwReady.value) return
+    pwBusy.value = true
+    try {
+        const username = currentUser.value && currentUser.value.username
+        if (!username) throw new Error('Not signed in.')
+
+        // Proves the old password, and fails cleanly if it is wrong.
+        await Parse.User.logIn(username, pw.current)
+
+        const user = Parse.User.current()
+        user.set('password', pw.next)
+        await user.save()
+
+        // Parse revokes every session for the user when the password changes
+        // (revokeSessionOnPasswordReset), so without logging back in the page
+        // would keep a token the server has already thrown away and every
+        // subsequent request would fail with "Invalid session token".
+        await Parse.User.logIn(username, pw.next)
+
+        pw.current = ''; pw.next = ''; pw.confirm = ''
+        pwDone.value = true
+    } catch (e) {
+        pwError.value = e && e.message ? e.message : String(e)
+    } finally {
+        pwBusy.value = false
     }
 }
 
@@ -651,6 +708,50 @@ const updateAPIS = async () => {
                 <!--=============== Layout & Style ===============-->
 
                 <div class="row align-items-center">
+                </div>
+
+                <!--=============== Password ===============-->
+                <div class="row align-items-center">
+                    <p class="fs-5 fw-bold mb-1">Password</p>
+                    <p class="connHint">
+                        Signed in as <b>{{ currentUser.username }}</b>. Changing this updates the hash stored
+                        in the database — once you have set it here, <code>TRADENOTE_USER</code> and
+                        <code>TRADENOTE_PASSWORD</code> can be removed from <code>.env</code>, leaving no copy
+                        of the password in plain text anywhere.
+                    </p>
+
+                    <div class="col-12 col-md-8">
+                        <div class="pwField">
+                            <label class="pwLabel">Current password</label>
+                            <input type="password" class="form-control" v-model="pw.current"
+                                autocomplete="current-password" />
+                        </div>
+                        <div class="pwField">
+                            <label class="pwLabel">New password</label>
+                            <input type="password" class="form-control" v-model="pw.next"
+                                autocomplete="new-password" />
+                        </div>
+                        <div class="pwField">
+                            <label class="pwLabel">Confirm new password</label>
+                            <input type="password" class="form-control" v-model="pw.confirm"
+                                autocomplete="new-password" />
+                        </div>
+
+                        <div v-if="pwProblem" class="pwMsg pwBad">{{ pwProblem }}</div>
+                        <div v-else-if="pwError" class="pwMsg pwBad">{{ pwError }}</div>
+                        <div v-else-if="pwDone" class="pwMsg pwGood">
+                            <i class="uil uil-check-circle me-1"></i>Password changed. Other devices signed in
+                            with the old password have been signed out.
+                        </div>
+
+                        <button type="button" class="btn btn-success mt-2" :disabled="!pwReady || pwBusy"
+                            v-on:click="changePassword">
+                            {{ pwBusy ? 'Changing…' : 'Change password' }}
+                        </button>
+                    </div>
+                </div>
+
+                <div class="row align-items-center">
                     <p class="fs-5 fw-bold">Layout & Style</p>
 
                     <!-- Prfile Picture -->
@@ -904,4 +1005,26 @@ const updateAPIS = async () => {
     color: #F6465D;
     font-size: 0.85rem;
 }
+
+.pwField {
+    margin-bottom: 0.6rem;
+    max-width: 380px;
+}
+
+.pwLabel {
+    font-size: 0.78rem;
+    color: var(--white-60);
+    margin-bottom: 0.2rem;
+    display: block;
+}
+
+.pwMsg {
+    font-size: 0.85rem;
+    margin-top: 0.5rem;
+    max-width: 380px;
+}
+
+.pwBad { color: #F6465D; }
+.pwGood { color: #00CA73; }
+
 </style>
