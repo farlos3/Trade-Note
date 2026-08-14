@@ -57,8 +57,33 @@ def load_config():
     return cfg
 
 
+def terminal_running():
+    """True if an MT5 terminal process is already open.
+
+    mt5.initialize() LAUNCHES the terminal when none is running. In a loop that
+    calls it once a second, that means closing MT5 just makes it reappear -- you
+    cannot actually shut the platform down while this agent is alive. So the
+    terminal is only ever attached to, never started: no process, no snapshot.
+
+    mt5_sync.py has the same guard (mt5_terminal_running) for the same reason.
+    On a detection failure assume it IS running, so a glitch in tasklist degrades
+    to "keep syncing" rather than silently killing the feed.
+    """
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq terminal64.exe", "/NH"],
+            capture_output=True, text=True, timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return "terminal64.exe" in (out.stdout or "").lower()
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def read_live():
     """One snapshot of the terminal, or None when it isn't reachable."""
+    if not terminal_running():
+        return None
     ai = mt5.account_info()
     if ai is None:
         return None
@@ -141,8 +166,14 @@ def main():
     api_key = cfg.get("tradenote", "api_key")
     headers = {"api-key": api_key, "Content-Type": "application/json"}
 
-    if not mt5.initialize():
-        log(f"mt5.initialize failed: {mt5.last_error()} — is the terminal open and logged in?")
+    # Only ever ATTACH to a terminal that is already open (see terminal_running).
+    if terminal_running():
+        if not mt5.initialize():
+            log(f"mt5.initialize failed: {mt5.last_error()} — is the terminal logged in?")
+            if args.once:
+                sys.exit(1)
+    else:
+        log("MT5 terminal is closed — waiting for it to be opened (will not launch it).")
         if args.once:
             sys.exit(1)
 
@@ -166,10 +197,14 @@ def main():
                 snap = read_live()
                 if snap is None:
                     if last_err != "no-terminal":
-                        log("MT5 not reachable (terminal closed or logged out) — retrying quietly.")
+                        log("MT5 terminal not available — waiting (will not launch it).")
                         last_err = "no-terminal"
+                    # Reconnect ONLY to a terminal that is already open. The old
+                    # unconditional initialize() re-launched MT5 every second, so
+                    # closing the platform was impossible while this ran.
                     mt5.shutdown()
-                    mt5.initialize()
+                    if terminal_running():
+                        mt5.initialize()
                 else:
                     r = session.post(url, headers=headers, json=snap, timeout=5)
                     if r.status_code != 200:
