@@ -587,8 +587,8 @@ const updateAPIS = async () => {
         <div class="row justify-content-md-center">
             <div class="col-12 col-md-8">
                 <!--=============== Connections ===============-->
-                <div class="row align-items-center">
-                    <p class="fs-5 fw-bold mb-1">Connections</p>
+                <div class="settingsSection">
+                    <p class="sectionTitle">Connections</p>
                     <p class="connHint">
                         Configured in <code>.env</code> on the server and connected automatically at
                         startup. Shown here read-only — tokens and the database password are never sent
@@ -705,14 +705,9 @@ const updateAPIS = async () => {
                     </div>
                 </div>
 
-                <!--=============== Layout & Style ===============-->
-
-                <div class="row align-items-center">
-                </div>
-
                 <!--=============== Password ===============-->
-                <div class="row align-items-center">
-                    <p class="fs-5 fw-bold mb-1">Password</p>
+                <div class="settingsSection">
+                    <p class="sectionTitle">Password</p>
                     <p class="connHint">
                         Signed in as <b>{{ currentUser.username }}</b>. Changing this updates the hash stored
                         in the database — once you have set it here, <code>TRADENOTE_USER</code> and
@@ -751,8 +746,8 @@ const updateAPIS = async () => {
                     </div>
                 </div>
 
-                <div class="row align-items-center">
-                    <p class="fs-5 fw-bold">Layout & Style</p>
+                <div class="settingsSection row align-items-center">
+                    <p class="sectionTitle">Layout &amp; Style</p>
 
                     <!-- Prfile Picture -->
                     <div class="col-12 col-md-4">
@@ -767,11 +762,10 @@ const updateAPIS = async () => {
                     <button type="button" v-on:click="updateProfile" class="btn btn-success">Save</button>
                 </div>
 
-                <hr />
 
                 <!--=============== API KEY ===============-->
-                <div class="mt-3 row align-items-center">
-                    <p class="fs-5 fw-bold">API Keys</p>
+                <div class="settingsSection row align-items-center">
+                    <p class="sectionTitle">API Keys</p>
                     <div class="row">
                         <div class="col-12 col-md-4">TradeNote<i class="ps-1 uil uil-info-circle"
                                 data-bs-toggle="tooltip"
@@ -822,11 +816,10 @@ const updateAPIS = async () => {
                 </div>
 
 
-                <hr />
 
                 <!--=============== TAGS ===============-->
-                <div class="mt-3 row">
-                    <p class="fs-5 fw-bold">TAGS</p>
+                <div class="settingsSection row">
+                    <p class="sectionTitle">Tags</p>
                     <p class="fw-lighter">Create tag groups and assign tags to your groups.</p>
                     <div class="row">
                         <div class="col-6">
@@ -1026,5 +1019,30 @@ const updateAPIS = async () => {
 
 .pwBad { color: #F6465D; }
 .pwGood { color: #00CA73; }
+
+
+/* One rhythm for the whole page. Sections previously mixed mt-3, bare rows and a
+   stray <hr>, so the gaps between them were all different sizes and two headings
+   sat right on top of the block above. The divider is the wrapper's own top
+   border, which cannot drift out of step with the spacing the way a separate
+   <hr> did. */
+.settingsSection {
+    padding-top: 1.5rem;
+    margin-top: 1.5rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* No border above the first one -- nothing to separate it from. */
+.settingsSection:first-of-type {
+    padding-top: 0;
+    margin-top: 0;
+    border-top: 0;
+}
+
+.sectionTitle {
+    font-size: 1.05rem;
+    font-weight: 700;
+    margin-bottom: 0.75rem;
+}
 
 </style>
