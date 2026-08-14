@@ -767,6 +767,88 @@ export const useSaveDayNote = async (dateUnix, note) => {
  * tradeId "week" and dateUnix = start of the ISO week (Monday), so it never
  * collides with a same-date day note (different tradeId).
  */
+/**
+ * Every week note, newest first. Deliberately NOT date-filtered like
+ * useGetNotes(): that one narrows to `selectedRange`, which the Diary page never
+ * sets, so week notes would silently never appear there. There is at most one
+ * row per week, so fetching the lot costs nothing.
+ */
+export const useGetWeekNotes = async () => {
+    const parseObject = Parse.Object.extend("notes");
+    const query = new Parse.Query(parseObject);
+    query.equalTo("user", Parse.User.current())
+    query.equalTo("tradeId", "week")
+    query.descending("dateUnix")
+    query.limit(500)
+    const results = await query.find()
+    return results
+        .map((r) => ({
+            dateUnix: r.get('dateUnix'),
+            note: r.get('note') || '',
+            // Undefined on notes written before the checklist existed, so coerce
+            // rather than leaving the checkbox bound to undefined.
+            checkRead: !!r.get('checkRead'),
+            checkReflected: !!r.get('checkReflected'),
+            reflection: r.get('reflection') || '',
+        }))
+        .filter((n) => n.note.trim())
+}
+
+/**
+ * Every whole-day note, newest first. Same reasoning as useGetWeekNotes: the
+ * shared useGetNotes() narrows to `selectedRange`, which the Diary page never
+ * sets, and it also returns per-trade notes mixed in.
+ */
+export const useGetDayNotes = async () => {
+    const parseObject = Parse.Object.extend("notes");
+    const query = new Parse.Query(parseObject);
+    query.equalTo("user", Parse.User.current())
+    query.equalTo("tradeId", "day")
+    query.descending("dateUnix")
+    query.limit(1000)
+    const results = await query.find()
+    return results
+        .map((r) => ({ dateUnix: r.get('dateUnix'), note: r.get('note') || '' }))
+        .filter((n) => n.note.trim())
+}
+
+/** Save the reflection written for a week. Touches only that field (see useSetWeekNoteCheck). */
+export const useSaveWeekReflection = async (dateUnix, reflection) => {
+    const parseObject = Parse.Object.extend("notes");
+    const query = new Parse.Query(parseObject);
+    query.equalTo("user", Parse.User.current())
+    query.equalTo("tradeId", "week")
+    query.equalTo("dateUnix", dateUnix)
+    const existing = await query.first()
+    if (!existing) return
+    existing.set("reflection", reflection || '')
+    // Writing a reflection IS the act the checkbox tracks, so keep them in step
+    // rather than making the user tick a box to describe what they just did.
+    existing.set("checkReflected", !!(reflection || '').trim())
+    await existing.save()
+}
+
+/**
+ * Tick/untick one of a week note's review boxes.
+ *
+ * Only ever touches the flag being changed -- it does NOT write `note` back. The
+ * checkbox and the note text are edited from different screens (Diary vs
+ * History), and saving a stale copy of the text from here would quietly revert an
+ * edit made in the other place.
+ */
+export const useSetWeekNoteCheck = async (dateUnix, field, value) => {
+    if (field !== 'checkRead' && field !== 'checkReflected') return
+    const parseObject = Parse.Object.extend("notes");
+    const query = new Parse.Query(parseObject);
+    query.equalTo("user", Parse.User.current())
+    query.equalTo("tradeId", "week")
+    query.equalTo("dateUnix", dateUnix)
+    const existing = await query.first()
+    if (!existing) return
+    existing.set(field, !!value)
+    await existing.save()
+}
+
 export const useSaveWeekNote = async (dateUnix, note) => {
     await useSaveTradeNote("week", dateUnix, note)
     const idx = notes.findIndex((n) => n.tradeId === "week" && n.dateUnix === dateUnix)

@@ -370,6 +370,54 @@ const setupApiRoutes = (app) => {
         return { summary, model: ANALYSIS_MODEL }
     }
 
+    /**
+     * Split the journal into the two things it actually contains, because they
+     * are different evidence and get used differently:
+     *
+     *   notes          per-day / per-trade commentary -- what it felt like AT the
+     *                  time, written in the heat of it.
+     *   weeklyReviews  the week summary plus the reflection written afterwards --
+     *                  what the trader concluded once the week was over.
+     *
+     * Previously everything was flattened into one list keyed only by date, with
+     * `tradeId` dropped, so a weekly review was indistinguishable from a passing
+     * remark about a single trade -- and the reflection was never fetched at all.
+     * Worse, the combined list was truncated to the last 15 entries, so day notes
+     * could push the weekly reviews out entirely.
+     */
+    const shapeJournal = (raw, tz, limit = 15) => {
+        const dateOf = (n) => (n.dateUnix
+            ? new Date(n.dateUnix * 1000).toLocaleDateString('en-CA', { timeZone: tz })
+            : null)
+        const hasText = (v) => !!(v && String(v).trim())
+
+        const weeklyReviews = raw
+            .filter((n) => n.tradeId === 'week' && (hasText(n.note) || hasText(n.reflection)))
+            .sort((a, b) => (b.dateUnix || 0) - (a.dateUnix || 0))
+            .slice(0, limit)
+            .map((n) => ({
+                weekStarting: dateOf(n),
+                summary: n.note || null,
+                reflection: n.reflection || null,
+                // Whether the trader actually closed the loop on that week.
+                reviewed: !!n.checkRead,
+                reflectionWritten: !!n.checkReflected,
+            }))
+
+        const notes = raw
+            .filter((n) => n.tradeId !== 'week' && (hasText(n.note) || hasText(n.reason)))
+            .slice(-limit)
+            .reverse()
+            .map((n) => ({
+                date: dateOf(n),
+                scope: n.tradeId === 'day' ? 'day' : 'trade',
+                reason: n.reason || null,
+                note: n.note || null,
+            }))
+
+        return { notes, weeklyReviews }
+    }
+
     app.get('/api/analysis/behavior', async (req, res) => {
         try {
             const tz = req.query.tz || process.env.TRADENOTE_TZ || 'UTC'
@@ -389,17 +437,12 @@ const setupApiRoutes = (app) => {
 
             // Recent journal notes so the user can eyeball behavior vs. commentary
             let notes = []
+            let weeklyReviews = []
             try {
                 const raw = await fetchNotes({ fromUnix, toUnix })
-                notes = raw
-                    .filter(n => (n.reason && n.reason.trim()) || (n.note && n.note.trim()))
-                    .slice(-15)
-                    .reverse()
-                    .map(n => ({
-                        date: n.dateUnix ? new Date(n.dateUnix * 1000).toLocaleDateString('en-CA', { timeZone: tz }) : null,
-                        reason: n.reason || null,
-                        note: n.note || null,
-                    }))
+                const shaped = shapeJournal(raw, tz)
+                notes = shaped.notes
+                weeklyReviews = shaped.weeklyReviews
             } catch (e) { /* notes are optional */ }
 
             res.status(200).json({
@@ -410,6 +453,7 @@ const setupApiRoutes = (app) => {
                 patterns,
                 daily: computeDailyBreakdown(trades, tz), // per-day P&L: plan target vs reality
                 notes,
+                weeklyReviews,
             })
         } catch (error) {
             console.error(' -> Behavior analysis error', error)
@@ -475,29 +519,36 @@ const setupApiRoutes = (app) => {
             }
 
             let notes = []
+            let weeklyReviews = []
             try {
                 const raw = await fetchNotes({ fromUnix, toUnix })
-                notes = raw
-                    .filter(n => (n.reason && n.reason.trim()) || (n.note && n.note.trim()))
-                    .slice(-15).reverse()
-                    // Format in the TRADE timezone, not UTC: toISOString() would
-                    // label a Bangkok-evening note with the previous day, so the
-                    // model would tie a reflection to the wrong trading day.
-                    .map(n => ({ date: n.dateUnix ? new Date(n.dateUnix * 1000).toLocaleDateString('en-CA', { timeZone: tz }) : null, reason: n.reason || null, note: n.note || null }))
+                // Dates are formatted in the TRADE timezone, not UTC: toISOString()
+                // would label a Bangkok-evening note with the previous day, so the
+                // model would tie a reflection to the wrong trading day.
+                const shaped = shapeJournal(raw, tz)
+                notes = shaped.notes
+                weeklyReviews = shaped.weeklyReviews
             } catch (e) { /* notes optional */ }
 
-            const payload = { range: { from: req.query.from || null, to: req.query.to || null }, timezone: tz, stats, patterns, notes }
+            const payload = { range: { from: req.query.from || null, to: req.query.to || null }, timezone: tz, stats, patterns, notes, weeklyReviews }
             // Plain text, not Markdown: the card renders this with white-space
             // pre-wrap and no Markdown parser, so asterisks would show literally
             // (they did). Notes are called out explicitly -- they were already in
             // the payload but nothing told the model to use them.
             const system = [
                 'You are a trading-performance coach. Analyse the trader\'s behaviour from the JSON provided:',
-                'computed statistics, behavioural flags, and the trader\'s own journal notes.',
+                'computed statistics, behavioural flags, the trader\'s own journal notes, and their weekly reviews.',
                 '',
                 'Ground every claim in the numbers or the notes given. Never invent data. Be concise, specific and actionable.',
                 'Where the notes describe how a day felt, connect that to what the numbers actually did -- agreement and',
                 'contradiction are both worth saying out loud.',
+                '',
+                'weeklyReviews carries, per week: `summary` (what the trader recorded about that week) and `reflection`',
+                '(what they concluded afterwards). Treat these as the trader\'s own stated intentions, and check them against',
+                'the following weeks\' numbers: a lesson written down but not reflected in later behaviour is the single most',
+                'useful thing you can point out. Say plainly which resolutions were kept and which were not.',
+                'reflectionWritten=false means a week was never reviewed at all -- worth naming if it is a pattern.',
+                'notes carries `scope`: "day" is a whole-day entry, "trade" is about one position.',
                 '',
                 'FORMAT: plain text only. No Markdown. Do not use asterisks, underscores, backticks or hash marks anywhere.',
                 'Reply using EXACTLY this skeleton, keeping all four headings, each alone on its line, spelled exactly:',

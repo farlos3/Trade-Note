@@ -1,11 +1,15 @@
 <script setup>
-import { onMounted, onBeforeMount, computed } from 'vue'
+import { onMounted, onBeforeMount, computed, reactive, ref, watch } from 'vue'
+import dayjs from 'dayjs'
+import utc from 'dayjs/plugin/utc.js'; dayjs.extend(utc)
+import timezone from 'dayjs/plugin/timezone.js'; dayjs.extend(timezone)
+import isoWeek from 'dayjs/plugin/isoWeek.js'; dayjs.extend(isoWeek)
 import SpinnerLoadingPage from '../components/SpinnerLoadingPage.vue';
 import NoData from '../components/NoData.vue';
-import { spinnerLoadingPage, diaries, selectedItem, spinnerLoadMore, endOfList, tags, satisfactionArray, dayFiles } from '../stores/globals';
+import { spinnerLoadingPage, diaries, selectedItem, spinnerLoadMore, endOfList, tags, satisfactionArray, dayFiles, timeZoneTrade } from '../stores/globals';
 import { useCheckVisibleScreen, useCreatedDateFormat, useEditItem, useInitPopover, useLoadMore } from '../utils/utils';
 import { useGetDiaries } from '../utils/diary';
-import { useGetTags, useGetTagInfo, useGetAvailableTags, useDailySatisfactionChange, useGetSatisfactions } from '../utils/daily';
+import { useGetTags, useGetTagInfo, useGetAvailableTags, useDailySatisfactionChange, useGetSatisfactions, useGetWeekNotes, useGetDayNotes, useSetWeekNoteCheck, useSaveWeekReflection } from '../utils/daily';
 import { useGetDayFiles, useDayFilesFor } from '../utils/dayFiles';
 
 onBeforeMount(async () => {
@@ -24,12 +28,152 @@ const diaryEntries = computed(() => {
     return [...byDay.values()].sort((a, b) => b.dateUnix - a.dateUnix)
 })
 
+/* Week notes, shown in the same stream as the day cards.
+   A week note is keyed to the START of its ISO week (see useSaveWeekNote), so
+   each day card is mapped to its own week start and the note is emitted once,
+   above the first day of that week -- newest first, matching the day order.
+   Weeks whose note exists but which have no diary/file days still appear, or a
+   week you only wrote a summary for would be invisible here. */
+const weekNotes = ref([])
+const dayNotes = ref([])
+
+/* Day / Week view. They answer different questions -- "what happened on this
+   date" vs "what did the whole week amount to" -- and mixing both in one stream
+   made the weekly summaries hard to find among the day cards. Persisted so the
+   page opens on whichever one you actually use. */
+const VIEWS = [{ id: 'day', label: 'Day' }, { id: 'week', label: 'Week' }]
+const view = ref(localStorage.getItem('diaryView') === 'week' ? 'week' : 'day')
+watch(view, (v) => localStorage.setItem('diaryView', v))
+
+const weekStartOf = (dateUnix) =>
+    dayjs.unix(dateUnix).tz(timeZoneTrade.value || 'UTC').startOf('isoWeek').unix()
+
+const dayNoteFor = (dateUnix) => {
+    const n = dayNotes.value.find((x) => Number(x.dateUnix) === Number(dateUnix))
+    return n ? n.note : ''
+}
+
+// Day view: one card per day that has a diary, a file, or a day note.
+const dayFeed = computed(() => {
+    const byDay = new Map(diaryEntries.value.map((e) => [Number(e.dateUnix), e]))
+    dayNotes.value.forEach((n) => {
+        const d = Number(n.dateUnix)
+        if (!byDay.has(d)) byDay.set(d, { dateUnix: d, diary: '', objectId: null })
+    })
+    return [...byDay.values()].sort((a, b) => b.dateUnix - a.dateUnix)
+})
+
+/* Week view: one card per week note, with the days it covers listed underneath
+   so the summary can be read against what actually happened. */
+const weekFeed = computed(() =>
+    [...weekNotes.value]
+        .map((n) => {
+            const wk = Number(n.dateUnix)
+            return {
+                ...n,
+                dateUnix: wk,
+                days: dayFeed.value.filter((e) => weekStartOf(e.dateUnix) === wk),
+            }
+        })
+        .sort((a, b) => b.dateUnix - a.dateUnix),
+)
+
+/* Review checklist per week note. Flipped optimistically so the tick responds
+   immediately, then reverted if the save fails -- a checkbox that waits on a
+   round trip feels broken, and one that silently lies about being saved is
+   worse. */
+async function toggleWeekCheck(dateUnix, field) {
+    const item = weekNotes.value.find((n) => Number(n.dateUnix) === Number(dateUnix))
+    if (!item) return
+    const next = !item[field]
+    item[field] = next
+    try {
+        await useSetWeekNoteCheck(Number(dateUnix), field, next)
+    } catch (e) {
+        item[field] = !next
+        console.error('could not save week note checklist', e)
+    }
+}
+
+const weekCheck = (dateUnix, field) => {
+    const item = weekNotes.value.find((n) => Number(n.dateUnix) === Number(dateUnix))
+    return !!(item && item[field])
+}
+
+/* Reflection editing. Held in a local draft per week rather than bound straight
+   to the list: typing must not mutate the loaded data before it is saved, or a
+   failed save would leave the page showing text that is not in the database. */
+const drafts = reactive({})
+const savingWeek = ref(null)
+const savedWeek = ref(null)
+
+const draftFor = (w) => {
+    if (drafts[w.dateUnix] === undefined) drafts[w.dateUnix] = w.reflection || ''
+    return drafts[w.dateUnix]
+}
+const setDraft = (dateUnix, v) => { drafts[dateUnix] = v }
+const isDirty = (w) => draftFor(w) !== (w.reflection || '')
+
+async function saveReflection(w) {
+    const text = drafts[w.dateUnix] ?? ''
+    savingWeek.value = w.dateUnix
+    try {
+        await useSaveWeekReflection(Number(w.dateUnix), text)
+        // Only now does the loaded copy match the database.
+        w.reflection = text
+        w.checkReflected = !!text.trim()
+        savedWeek.value = w.dateUnix
+        setTimeout(() => { if (savedWeek.value === w.dateUnix) savedWeek.value = null }, 2000)
+    } catch (e) {
+        console.error('could not save reflection', e)
+    } finally {
+        savingWeek.value = null
+    }
+}
+
+const weekLabel = (dateUnix) => {
+    const s = dayjs.unix(dateUnix).tz(timeZoneTrade.value || 'UTC')
+    return `Week of ${s.format('MMM D')} – ${s.add(6, 'day').format('MMM D, YYYY')}`
+}
+
 const fileSrc = (f) => (f ? (f.url || f.base64) : '')
 const isPdf = (f) => !!f && ((f.url && /\.pdf(\?|$)/i.test(f.url)) || (f.base64 && f.base64.startsWith('data:application/pdf')))
+
+/* Files are listed, not previewed, until you ask for one.
+   Every file used to render its own inline <iframe>/<img> on load, so a page with
+   a dozen day summaries pulled a dozen PDFs from R2 before you had looked at any
+   of them -- slow, and it buried the diary text between full-height frames. The
+   list answers "what is here" at a glance; opening a row answers "what is in it". */
+const expanded = reactive(new Set())
+const isOpen = (f) => expanded.has(f.objectId)
+const toggle = (f) => { expanded.has(f.objectId) ? expanded.delete(f.objectId) : expanded.add(f.objectId) }
+
+const kindOf = (f) => (isPdf(f) ? 'PDF' : 'Image')
+const iconOf = (f) => (isPdf(f) ? 'uil uil-file-alt' : 'uil uil-image-v')
+
+// Size is only known for files still stored as base64 (the pre-R2 fallback): a
+// remote URL would need a HEAD request per file, which is exactly the per-file
+// network cost this list exists to avoid.
+function sizeOf(f) {
+    if (!f || !f.base64) return null
+    const b64 = f.base64.split(',')[1] || ''
+    const bytes = Math.floor(b64.length * 3 / 4)
+    if (bytes < 1024) return bytes + ' B'
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB'
+    return (bytes / 1024 / 1024).toFixed(1) + ' MB'
+}
+
+// "where the file lives" -- R2 vs still inline in the database.
+const storageOf = (f) => (f && f.url ? 'R2' : 'database')
 
 onMounted(async () => {
     await useGetDiaries(true)
     await Promise.all([useGetTags(), useGetAvailableTags(), useGetSatisfactions(), useGetDayFiles()])
+    try {
+        const [wn, dn] = await Promise.all([useGetWeekNotes(), useGetDayNotes()])
+        weekNotes.value = wn
+        dayNotes.value = dn
+    } catch (e) { console.error('notes failed', e) }
     useInitPopover()
     window.addEventListener('scroll', () => {
         let scrollTop = window.scrollY
@@ -51,11 +195,77 @@ onMounted(async () => {
     <SpinnerLoadingPage />
     <div v-show="!spinnerLoadingPage" class="row justify-content-center mt-3 mb-4">
         <div class="col-12 col-xxl-10">
-            <div v-if="diaryEntries.length == 0">
+            <!-- Day / Week -->
+            <div class="viewToolbar mb-3">
+                <span class="viewLabel">VIEW BY</span>
+                <button v-for="v in VIEWS" :key="v.id" type="button"
+                    :class="['viewBtn', { active: view === v.id }]" v-on:click="view = v.id">{{ v.label }}</button>
+            </div>
+
+            <!-- ================= WEEK ================= -->
+            <template v-if="view === 'week'">
+                <div v-if="weekFeed.length == 0">
+                    <NoData />
+                </div>
+
+                <div v-for="w in weekFeed" :key="'w-' + w.dateUnix" class="dailyCard weekNoteCard mb-4">
+                    <div class="weekNoteHead">
+                        <i class="uil uil-bell me-2"></i>
+                        <span class="weekNoteTitle">{{ weekLabel(w.dateUnix) }}</span>
+                        <span class="weekDayCount ms-auto">{{ w.days.length }} day(s) journalled</span>
+                    </div>
+                    <p class="weekNoteBody mb-0">{{ w.note }}</p>
+
+                    <!-- Reflection is written HERE, not just ticked off: a checkbox
+                         claiming a reflection exists with nowhere to read it is
+                         worth nothing when you come back to the week later. -->
+                    <div class="reflectionBlock">
+                        <label class="reflectionLabel">
+                            <i class="uil uil-comment-alt-edit me-1"></i>Reflection
+                            <span v-if="savedWeek === w.dateUnix" class="savedTag">saved</span>
+                            <span v-else-if="isDirty(w)" class="unsavedTag">unsaved</span>
+                        </label>
+                        <textarea class="form-control reflectionInput" rows="4"
+                            placeholder="What did this week teach you? What will you do differently next week?"
+                            :value="draftFor(w)"
+                            v-on:input="setDraft(w.dateUnix, $event.target.value)"></textarea>
+                        <div class="reflectionActions">
+                            <button class="btn btn-outline-success btn-sm" :disabled="!isDirty(w) || savingWeek === w.dateUnix"
+                                v-on:click="saveReflection(w)">
+                                {{ savingWeek === w.dateUnix ? 'Saving…' : 'Save reflection' }}
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="weekCheckList">
+                        <label class="weekCheck" v-bind:class="{ done: weekCheck(w.dateUnix, 'checkRead') }">
+                            <input type="checkbox" :checked="weekCheck(w.dateUnix, 'checkRead')"
+                                v-on:change="toggleWeekCheck(w.dateUnix, 'checkRead')" />
+                            <span>Reviewed</span>
+                        </label>
+                        <!-- Driven by the reflection text itself, so it can never
+                             claim something that was never written. -->
+                        <label class="weekCheck" v-bind:class="{ done: weekCheck(w.dateUnix, 'checkReflected') }">
+                            <input type="checkbox" :checked="weekCheck(w.dateUnix, 'checkReflected')" disabled />
+                            <span>Reflection written</span>
+                        </label>
+                    </div>
+
+                    <div v-if="w.days.length" class="weekDayList">
+                        <span v-for="d in w.days" :key="'wd-' + d.dateUnix" class="weekDayChip">
+                            {{ useCreatedDateFormat(d.dateUnix) }}
+                        </span>
+                    </div>
+                </div>
+            </template>
+
+            <!-- ================= DAY ================= -->
+            <template v-else>
+            <div v-if="dayFeed.length == 0">
                 <NoData />
             </div>
 
-            <div v-for="(itemDiary, index) in diaryEntries" :key="itemDiary.dateUnix"
+            <div v-for="itemDiary in dayFeed" :key="itemDiary.dateUnix"
                 class="dailyCard diaryEntryCard mb-4">
                 <!-- Header: date + satisfaction + actions -->
                 <div class="d-flex align-items-center flex-wrap diaryHeader">
@@ -89,17 +299,40 @@ onMounted(async () => {
                 <!-- Diary text -->
                 <div v-if="itemDiary.diary" class="quill diaryText mt-3" v-html="itemDiary.diary"></div>
 
-                <!-- Day summary files (whole-day PDFs/images), uploaded on Daily; many per day -->
+                <!-- The whole-day note written from History's bell icon. It lived
+                     only on that page before, so a day journalled there looked
+                     empty here. -->
+                <div v-if="dayNoteFor(itemDiary.dateUnix)" class="dayNoteBlock mt-3">
+                    <div class="dayNoteHead"><i class="uil uil-bell me-1"></i>Day note</div>
+                    <p class="dayNoteBody mb-0">{{ dayNoteFor(itemDiary.dateUnix) }}</p>
+                </div>
+
+                <!-- Day summary files: an overview list first (what/where), and the
+                     file itself only once a row is opened. -->
                 <div v-if="useDayFilesFor(itemDiary.dateUnix).length" class="dayFileBlock mt-3">
-                    <div v-for="f in useDayFilesFor(itemDiary.dateUnix)" :key="f.objectId" class="mb-3">
-                        <div class="dayFileHeader d-flex align-items-center mb-2">
-                            <i class="uil uil-file-alt me-2"></i>
-                            <a :href="fileSrc(f)" target="_blank" rel="noopener" class="pointerClass fw-bold">{{
-                                f.filename }}</a>
-                            <a :href="fileSrc(f)" target="_blank" rel="noopener" class="ms-2 pointerClass"
-                                title="Open in new tab"><i class="uil uil-external-link-alt"></i></a>
+                    <div class="dayFileCount">
+                        <i class="uil uil-paperclip me-1"></i>
+                        {{ useDayFilesFor(itemDiary.dateUnix).length }} file(s) attached
+                    </div>
+
+                    <div v-for="f in useDayFilesFor(itemDiary.dateUnix)" :key="f.objectId" class="fileRow">
+                        <div class="fileLine" v-on:click="toggle(f)">
+                            <i v-bind:class="[isOpen(f) ? 'uil uil-angle-down' : 'uil uil-angle-right', 'fileChevron']"></i>
+                            <i v-bind:class="[iconOf(f), 'fileIcon']"></i>
+                            <span class="fileName">{{ f.filename }}</span>
+                            <span class="fileMeta">{{ kindOf(f) }}</span>
+                            <span v-if="sizeOf(f)" class="fileMeta">{{ sizeOf(f) }}</span>
+                            <span class="fileMeta fileWhere">{{ storageOf(f) }}</span>
+                            <!-- .stop so opening in a new tab doesn't also expand the row -->
+                            <a :href="fileSrc(f)" target="_blank" rel="noopener" class="fileOpen"
+                                title="Open in new tab" v-on:click.stop>
+                                <i class="uil uil-external-link-alt"></i>
+                            </a>
                         </div>
-                        <div class="dayFilePreview">
+
+                        <!-- v-if, not v-show: the point is that nothing is fetched
+                             until you actually open the row. -->
+                        <div v-if="isOpen(f)" class="dayFilePreview mt-2">
                             <iframe v-if="isPdf(f)" :src="fileSrc(f) + '#view=FitH'" class="dayFileFrame"
                                 loading="lazy"></iframe>
                             <img v-else :src="fileSrc(f)" class="dayFileImg" loading="lazy" />
@@ -107,6 +340,8 @@ onMounted(async () => {
                     </div>
                 </div>
             </div>
+
+            </template>
 
             <!-- Load more spinner -->
             <div v-if="spinnerLoadMore" class="d-flex justify-content-center mt-3">
@@ -119,6 +354,12 @@ onMounted(async () => {
 <style scoped>
 .diaryEntryCard {
     padding: 20px 24px;
+    /* .dailyCard sets height:100%, which is meant for cards sitting side by side
+       in a grid row. Here the cards are stacked in one column, so each one tried
+       to be as tall as the whole stack. It went unnoticed while every card was
+       filled by a full-height PDF iframe; with the files collapsed to a list the
+       card is short and the leftover stretch became a page of empty space. */
+    height: auto;
 }
 
 .diaryHeader {
@@ -167,4 +408,239 @@ onMounted(async () => {
     border: 1px solid rgba(128, 128, 128, 0.3);
     border-radius: 8px;
 }
+
+.dayFileCount {
+    font-size: 0.78rem;
+    color: var(--white-60);
+    margin-bottom: 0.4rem;
+}
+/* One compact row per file: name first, then the facts that tell you what it is
+   and where it lives, without opening anything. */
+.fileRow {
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+    padding: 0.4rem 0;
+}
+.fileLine {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+}
+.fileLine:hover .fileName {
+    text-decoration: underline;
+}
+.fileChevron {
+    color: var(--white-60);
+    width: 0.9rem;
+    flex: 0 0 auto;
+}
+.fileIcon {
+    color: #2f9bff;
+    flex: 0 0 auto;
+}
+.fileName {
+    font-size: 0.88rem;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.fileMeta {
+    font-size: 0.72rem;
+    color: var(--white-60);
+    padding: 0.05rem 0.35rem;
+    border-radius: 0.25rem;
+    background: rgba(255, 255, 255, 0.05);
+    flex: 0 0 auto;
+}
+.fileWhere {
+    text-transform: lowercase;
+}
+/* Pushed to the right so the row reads name-then-facts, action last. */
+.fileOpen {
+    margin-left: auto;
+    color: var(--white-60);
+    flex: 0 0 auto;
+}
+.fileOpen:hover {
+    color: #2f9bff;
+}
+
+/* Week note reads as a header for the days beneath it, not as another day card:
+   accent border on the leading edge, no satisfaction/actions row. */
+.weekNoteCard {
+    height: auto;
+    padding: 16px 20px;
+    border-left: 3px solid #f59e0b;
+}
+
+.weekNoteHead {
+    display: flex;
+    align-items: center;
+    color: #f59e0b;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.5rem;
+}
+
+.weekNoteTitle {
+    font-weight: 700;
+}
+
+/* The notes are written as paragraphs with blank lines between them, so the
+   newlines have to survive rendering. */
+.weekNoteBody {
+    white-space: pre-wrap;
+    line-height: 1.6;
+    font-size: 0.9rem;
+}
+
+
+.weekCheckList {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.25rem;
+    margin-top: 0.9rem;
+    padding-top: 0.7rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.weekCheck {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.85rem;
+    color: var(--white-60);
+    cursor: pointer;
+    margin-bottom: 0;
+}
+
+.weekCheck input {
+    cursor: pointer;
+    width: 15px;
+    height: 15px;
+    accent-color: #00CA73;
+}
+
+/* Struck through once done, so an unfinished week is what stands out rather
+   than a wall of identical rows. */
+.weekCheck.done span {
+    color: #00CA73;
+    text-decoration: line-through;
+    text-decoration-color: rgba(0, 202, 115, 0.5);
+}
+
+
+/* Day / Week toolbar -- mirrors the History page's VIEW BY control so the two
+   journal pages are operated the same way. */
+.viewToolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 0.6rem;
+    border-radius: 0.5rem;
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.viewLabel {
+    font-size: 0.68rem;
+    letter-spacing: 0.05em;
+    color: var(--white-60);
+    margin-right: 0.25rem;
+}
+
+.viewBtn {
+    background: transparent;
+    border: 0;
+    color: var(--white-60);
+    font-size: 0.82rem;
+    padding: 0.2rem 0.7rem;
+    border-radius: 0.35rem;
+    cursor: pointer;
+}
+
+.viewBtn.active {
+    background: #2f9bff;
+    color: #fff;
+    font-weight: 600;
+}
+
+.weekDayCount {
+    font-size: 0.72rem;
+    color: var(--white-60);
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.reflectionBlock {
+    margin-top: 0.9rem;
+    padding-top: 0.7rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.reflectionLabel {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--white-60);
+    margin-bottom: 0.4rem;
+}
+
+.savedTag { color: #00CA73; text-transform: none; letter-spacing: 0; }
+.unsavedTag { color: #f59e0b; text-transform: none; letter-spacing: 0; }
+
+.reflectionInput {
+    font-size: 0.9rem;
+    line-height: 1.55;
+}
+
+.reflectionActions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 0.5rem;
+}
+
+/* The days the week covers, so the summary can be checked against them. */
+.weekDayList {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.8rem;
+    padding-top: 0.6rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.weekDayChip {
+    font-size: 0.72rem;
+    color: var(--white-60);
+    background: rgba(255, 255, 255, 0.05);
+    padding: 0.1rem 0.45rem;
+    border-radius: 0.25rem;
+}
+
+.dayNoteBlock {
+    border-left: 3px solid #f59e0b;
+    padding: 0.5rem 0.75rem;
+    background: rgba(245, 158, 11, 0.05);
+    border-radius: 0 0.35rem 0.35rem 0;
+}
+
+.dayNoteHead {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #f59e0b;
+    margin-bottom: 0.25rem;
+}
+
+.dayNoteBody {
+    white-space: pre-wrap;
+    font-size: 0.88rem;
+    line-height: 1.55;
+}
+
 </style>

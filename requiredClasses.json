@@ -806,6 +806,15 @@
       },
       "reason": {
         "type": "string"
+      },
+      "checkRead": {
+        "type": "Boolean"
+      },
+      "checkReflected": {
+        "type": "Boolean"
+      },
+      "reflection": {
+        "type": "String"
       }
     },
     "classLevelPermissions": {
