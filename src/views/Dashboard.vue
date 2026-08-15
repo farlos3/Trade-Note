@@ -11,6 +11,7 @@ import { useThousandCurrencyFormat, useTwoDecCurrencyFormat, useXDecCurrencyForm
 import { activePlan } from '../utils/planStore'
 import { numOrNull } from '../utils/planMath'
 import { useJournalUpdates } from '../utils/journalStream'
+import { profileStartUnix, activeStatsProfile } from '../utils/statsProfile'
 import NoData from '../components/NoData.vue';
 
 const dashTabs = [{
@@ -171,6 +172,44 @@ onBeforeMount(async () => {
     
     //console.log(" barChartNegativeTagGroups "+JSON.stringify(barChartNegativeTagGroups.value))
 })
+
+/* Account figures re-cut for the active stats profile.
+ *
+ * acc.deposit / acc.withdrawal from the sync are LIFETIME totals, so under a
+ * "fresh start" profile they still reported money moved long before the reset --
+ * the one number the profile exists to exclude. These recompute from the dated
+ * cashFlows instead.
+ *
+ * Balance is left alone: it is what the broker holds right now, not a figure over
+ * a window, and pretending it belongs to a date range would be a lie. What the
+ * profile adds is the balance the window STARTED at, derived from today's balance
+ * by unwinding everything that happened since:
+ *     start = now - (P&L since) - (deposits since) + (withdrawals since)
+ * filteredTrades is already clamped to the profile, so its P&L is exactly the
+ * "since" part.
+ */
+const profileAccountStats = (acc) => {
+    const floor = profileStartUnix.value
+    const flows = Array.isArray(acc.cashFlows) ? acc.cashFlows : []
+    const inWindow = (cf) => !floor || Number(cf.t) >= floor
+    const sum = (type) => flows
+        .filter((cf) => cf && cf.type === type && inWindow(cf))
+        .reduce((t, cf) => t + Math.abs(Number(cf.amount) || 0), 0)
+
+    // No profile: keep the sync's own lifetime totals, which are authoritative
+    // and include anything predating the oldest cashFlow entry.
+    if (!floor) {
+        return { deposit: acc.deposit, withdrawal: acc.withdrawal, startBalance: null }
+    }
+
+    const deposit = sum('deposit')
+    const withdrawal = sum('withdrawal')
+    const field = amountCase.value + 'Proceeds'
+    const pnlSince = filteredTrades.reduce(
+        (t, tr) => t + Number((tr.pAndL && tr.pAndL[field]) || 0), 0)
+    const balance = Number(acc.balance) || 0
+    return { deposit, withdrawal, startBalance: balance - pnlSince - deposit + withdrawal }
+}
 
 /* Real-balance equity curve: starts at the plan's starting balance, steps by each
    traded day's net P&L, drops when money is withdrawn and rises when money is
@@ -338,19 +377,26 @@ if (typeof window !== 'undefined') window.addEventListener('resize', () => equit
                         <div class="acctHead">
                             <span class="acctBroker"><i class="uil uil-university me-1"></i>{{ acc.server }}</span>
                             <span class="acctLogin">MT5 #{{ acc.login }}</span>
+                            <span v-if="profileStartUnix" class="acctScope">
+                                since {{ activeStatsProfile.name }}
+                            </span>
                         </div>
                         <div class="acctStats">
                             <div class="acctStat">
                                 <span class="acctStatLabel">Balance</span>
                                 <span class="acctStatVal">{{ useTwoDecCurrencyFormat(acc.balance) }}</span>
                             </div>
+                            <div class="acctStat" v-if="profileAccountStats(acc).startBalance !== null">
+                                <span class="acctStatLabel">Start balance</span>
+                                <span class="acctStatVal">{{ useTwoDecCurrencyFormat(profileAccountStats(acc).startBalance) }}</span>
+                            </div>
                             <div class="acctStat">
                                 <span class="acctStatLabel">Deposit</span>
-                                <span class="acctStatVal acctPos">{{ useTwoDecCurrencyFormat(acc.deposit) }}</span>
+                                <span class="acctStatVal acctPos">{{ useTwoDecCurrencyFormat(profileAccountStats(acc).deposit) }}</span>
                             </div>
                             <div class="acctStat">
                                 <span class="acctStatLabel">Withdraw</span>
-                                <span class="acctStatVal acctNeg">{{ useTwoDecCurrencyFormat(acc.withdrawal) }}</span>
+                                <span class="acctStatVal acctNeg">{{ useTwoDecCurrencyFormat(profileAccountStats(acc).withdrawal) }}</span>
                             </div>
                             <div class="acctStat">
                                 <span class="acctStatLabel">Currency</span>
@@ -860,4 +906,16 @@ if (typeof window !== 'undefined') window.addEventListener('resize', () => equit
     align-items: center;
     justify-content: center;
 }
+
+/* Names the window the deposit/withdraw figures cover -- without it they read as
+   lifetime totals, which is exactly what they no longer are under a profile. */
+.acctScope {
+    font-size: 0.7rem;
+    color: var(--white-60);
+    background: rgba(47, 155, 255, 0.14);
+    padding: 0.1rem 0.4rem;
+    border-radius: 0.25rem;
+    margin-left: 0.5rem;
+}
+
 </style>
