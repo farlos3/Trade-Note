@@ -18,6 +18,7 @@
  * changes a single trade, so it never needs to reach the database.
  */
 import { reactive, computed } from 'vue'
+import dayjs from 'dayjs'
 
 const KEY = 'tradenote_stats_profiles_v1'
 
@@ -95,7 +96,23 @@ export function removeStatsProfile(id) {
 export function clampRangeToProfile(range) {
     const floor = profileStartUnix.value
     if (!floor || !range) return range
-    return { ...range, start: Math.max(Number(range.start) || 0, floor) }
+
+    // {start:0, end:0} is this app's sentinel for "All time, no date bound at
+    // all" (see useGetTrades / useGetPeriods) -- NOT the literal instant 1970.
+    // Raising start to the floor while leaving end at 0 turns it into
+    // "dateUnix >= floor AND dateUnix < 0", which no document can ever satisfy,
+    // so a profile silently zeroed every page still on the "All" period. It needs
+    // an explicit end, not the sentinel's implicit "none".
+    const isAllSentinel = Number(range.start) === 0 && Number(range.end) === 0
+    const end = isAllSentinel ? dayjs().add(1, 'day').unix() : Number(range.end)
+
+    let start = Math.max(Number(range.start) || 0, floor)
+    // Never let the floor push start PAST end. A window that ends before the
+    // profile begins legitimately contains nothing, but expressing that as
+    // start > end is an inverted range, and the queries downstream are written
+    // for start <= end -- so collapse it to an empty-but-valid window instead.
+    if (Number.isFinite(end) && start > end) start = end
+    return { ...range, start, end }
 }
 
 /** Same clamp for the analysis endpoints, which take ISO dates rather than unix. */
