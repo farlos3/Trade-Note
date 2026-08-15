@@ -3,6 +3,8 @@ import { daysBack } from "../stores/globals.js";
 
 /* MODULES */
 import Parse from 'parse/dist/parse.min.js'
+import axios from 'axios'
+import { useAuthHeaders } from './apiAuth.js'
 import dayjs from 'dayjs'
 import utc from 'dayjs/plugin/utc.js'
 dayjs.extend(utc)
@@ -790,6 +792,8 @@ export const useGetWeekNotes = async () => {
             checkRead: !!r.get('checkRead'),
             checkReflected: !!r.get('checkReflected'),
             reflection: r.get('reflection') || '',
+            aiAnalysis: r.get('aiAnalysis') || '',
+            aiAnalysisAt: r.get('aiAnalysisAt') || null,
         }))
         .filter((n) => n.note.trim())
 }
@@ -826,6 +830,20 @@ export const useSaveWeekReflection = async (dateUnix, reflection) => {
     // rather than making the user tick a box to describe what they just did.
     existing.set("checkReflected", !!(reflection || '').trim())
     await existing.save()
+}
+
+/**
+ * Ask the server to check a week's reflection against that week's own numbers.
+ * The server call itself does the persisting (onto the same `notes` record, via
+ * the master key) -- this just returns what it saved so the caller can update
+ * the local copy without a refetch. Needs the trade timezone so the server buckets
+ * the same 7 days the reflection was written about.
+ */
+export const useAnalyzeWeekReflection = async (dateUnix, tz) => {
+    const res = await axios.post('/api/analysis/week-reflection',
+        { weekStart: Number(dateUnix), tz },
+        { timeout: 120000, headers: useAuthHeaders() })
+    return res.data
 }
 
 /**

@@ -643,6 +643,110 @@ const setupApiRoutes = (app) => {
     });
 
     /**********************************************
+     * POST /api/analysis/week-reflection  { weekStart, tz }
+     * Diary's week card: checks the reflection the trader actually wrote for
+     * ONE week against that week's own numbers, and PERSISTS the verdict onto
+     * that week's `notes` record (aiAnalysis / aiAnalysisAt) so it survives a
+     * reload instead of being re-run every time the card is opened.
+     * weekStart is the ISO-week start (Monday) in unix seconds, trade tz --
+     * the same value Diary.vue already computes via weekStartOf().
+     **********************************************/
+    app.post('/api/analysis/week-reflection', requireAuth, async (req, res) => {
+        try {
+            if (!AI_PROVIDER) {
+                const want = (process.env.AI_PROVIDER || '').toLowerCase()
+                const reason = want
+                    ? `AI_PROVIDER=${want} but its key is not set on the server`
+                    : 'No AI key on the server — set ANTHROPIC_API_KEY or GEMINI_API_KEY'
+                return res.status(200).json({ disabled: true, reason })
+            }
+            const weekStart = Number(req.body.weekStart)
+            if (!Number.isFinite(weekStart)) {
+                return res.status(400).send({ error: 'weekStart (unix seconds) is required' })
+            }
+            const tz = req.body.tz || process.env.TRADENOTE_TZ || 'UTC'
+            const weekEnd = weekStart + 7 * 86400
+
+            // The week's own note is both the source of the reflection and the
+            // record the verdict gets written back onto -- fetch it with the
+            // master key since this route only has the session's user id, not a
+            // browser-side Parse.User.current() session to query as.
+            const noteQuery = new ParseNode.Query(ParseNode.Object.extend('notes'))
+            noteQuery.equalTo('user', { __type: 'Pointer', className: '_User', objectId: currentUser.value.objectId })
+            noteQuery.equalTo('tradeId', 'week')
+            noteQuery.equalTo('dateUnix', weekStart)
+            const weekNote = await noteQuery.first({ useMasterKey: true })
+            const reflection = ((weekNote && weekNote.get('reflection')) || '').trim()
+            if (!reflection) {
+                return res.status(400).send({ error: 'Write a reflection for this week before analyzing it.' })
+            }
+
+            const days = await fetchDayDocs({ fromUnix: weekStart, toUnix: weekEnd })
+            const trades = flattenTrades(days)
+            const stats = computeStats(trades, tz)
+            const patterns = findBehaviorPatterns(trades, { revengeWindowMinutes: 15, tz, overtradeLotCap: Number(process.env.OVERTRADE_LOT_CAP) || 0.1 })
+
+            if (!stats.trades) {
+                return res.status(200).json({ summary: 'No trades landed this week — nothing to check the reflection against.' })
+            }
+
+            const weekStarting = new Date(weekStart * 1000).toLocaleDateString('en-CA', { timeZone: tz })
+            const payload = { weekStarting, stats, patterns, reflection, summary: (weekNote.get('note') || null) }
+
+            const system = [
+                'You are a trading-performance coach reviewing ONE week for a trader you already coach.',
+                'You are given that week\'s computed statistics, behavioural flags, and the reflection the trader wrote',
+                'about it afterwards ("reflection" in the JSON -- their own words, written after the week closed).',
+                '',
+                'Your job is to check the reflection against what the numbers actually show. Ground every claim in the',
+                'numbers given, never invent data, and say plainly where the reflection holds up and where it does not --',
+                'a reflection that ignores or contradicts what the data shows is the single most useful thing to call out.',
+                'Be concise, specific and direct.',
+                '',
+                'FORMAT: plain text only. No Markdown. Do not use asterisks, underscores, backticks or hash marks anywhere.',
+                'Reply using EXACTLY this skeleton, keeping all three headings, each alone on its line, spelled exactly:',
+                '',
+                'Verdict',
+                '<one or two sentences on how well the reflection matches reality>',
+                '',
+                'What the reflection got right',
+                '- <point>',
+                '',
+                'What it missed',
+                '- <point>',
+                '- <point>',
+                '',
+                'Every bullet must sit under one of those headings. Do not restate the raw JSON.',
+            ].join('\n')
+            const userText = `Here is one week of my trading data and the reflection I wrote about it afterwards. Check it against reality.\n\n${JSON.stringify(payload, null, 2)}`
+
+            const out = await runAnalysisModel(system, userText)
+            if (out.refused || !out.summary) {
+                return res.status(200).json({ summary: null, refused: true })
+            }
+
+            weekNote.set('aiAnalysis', out.summary)
+            weekNote.set('aiAnalysisAt', new Date())
+            await weekNote.save(null, { useMasterKey: true })
+
+            res.status(200).json({ summary: out.summary, analyzedAt: weekNote.get('aiAnalysisAt'), model: out.model, provider: AI_PROVIDER })
+        } catch (error) {
+            const apiMsg = error?.response?.data?.error?.message
+                || error?.response?.data?.error
+                || error?.error?.message
+            const status = error?.response?.status || error?.status
+            let msg = String(apiMsg || error?.message || error)
+            if (status === 400 || status === 401 || status === 403) {
+                msg += ` (${AI_PROVIDER} rejected the request — check the API key`
+                    + (AI_PROVIDER === 'gemini' ? '; Gemini keys from aistudio.google.com start with "AIza"' : '')
+                    + ')'
+            }
+            console.error(' -> Week reflection analysis error', status || '', msg)
+            res.status(500).send({ error: msg })
+        }
+    });
+
+    /**********************************************
      * CLOUDFLARE R2 IMAGE STORAGE
      **********************************************/
     const bigJson = express.json({ limit: '30mb' })

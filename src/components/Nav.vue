@@ -402,7 +402,7 @@ function getLatestVersion() {
                             v-model="newProfileName" v-on:click.stop />
                         <input class="form-control form-control-sm spInput" type="date"
                             v-model="newProfileDate" v-on:click.stop />
-                        <button type="button" class="btn btn-success btn-sm spAdd"
+                        <button type="button" class="btn btn-outline-success btn-sm spAdd"
                             :disabled="!newProfileName.trim()" v-on:click.stop="createProfile">Add</button>
                     </li>
                 </ul>
@@ -670,5 +670,15 @@ function getLatestVersion() {
 .spInput { margin-bottom: 0.35rem; }
 
 .spAdd { width: 100%; }
+
+/* Explicit rather than relying on Bootstrap's own outline-hover fill: this
+   button sits inside a dropdown menu, and pinning the exact fill color here
+   guarantees it matches "Save reflection" (the other outline-success button in
+   the app) once a name is typed, instead of depending on cascade order. */
+.spAdd:not(:disabled):hover {
+    background-color: #198754;
+    border-color: #198754;
+    color: #fff;
+}
 
 </style>

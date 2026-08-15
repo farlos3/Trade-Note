@@ -9,7 +9,7 @@ import NoData from '../components/NoData.vue';
 import { spinnerLoadingPage, diaries, selectedItem, spinnerLoadMore, endOfList, tags, satisfactionArray, dayFiles, timeZoneTrade } from '../stores/globals';
 import { useCheckVisibleScreen, useCreatedDateFormat, useEditItem, useInitPopover, useLoadMore } from '../utils/utils';
 import { useGetDiaries } from '../utils/diary';
-import { useGetTags, useGetTagInfo, useGetAvailableTags, useDailySatisfactionChange, useGetSatisfactions, useGetWeekNotes, useGetDayNotes, useSetWeekNoteCheck, useSaveWeekReflection } from '../utils/daily';
+import { useGetTags, useGetTagInfo, useGetAvailableTags, useDailySatisfactionChange, useGetSatisfactions, useGetWeekNotes, useGetDayNotes, useSetWeekNoteCheck, useSaveWeekReflection, useAnalyzeWeekReflection } from '../utils/daily';
 import { useGetDayFiles, useDayFilesFor } from '../utils/dayFiles';
 
 onBeforeMount(async () => {
@@ -114,6 +114,18 @@ const draftFor = (w) => {
 const setDraft = (dateUnix, v) => { drafts[dateUnix] = v }
 const isDirty = (w) => draftFor(w) !== (w.reflection || '')
 
+/* Grows the box to fit what's typed instead of scrolling inside a fixed box.
+   rows="4" + CSS min-height still set the starting size, so a fresh box (or one
+   short enough to fit) reads the same as before -- this only ever adds height,
+   never removes the baseline. Height is reset to auto first so deleting text
+   shrinks it back down too, not just grows. */
+const autoGrow = (el) => {
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = el.scrollHeight + 'px'
+}
+const vAutoGrow = { mounted: autoGrow, updated: autoGrow }
+
 async function saveReflection(w) {
     const text = drafts[w.dateUnix] ?? ''
     savingWeek.value = w.dateUnix
@@ -130,6 +142,37 @@ async function saveReflection(w) {
         savingWeek.value = null
     }
 }
+
+/* AI check of the reflection against that week's own numbers. Requires a saved
+   (non-dirty) reflection -- there is nothing to check yet if it only exists as an
+   unsaved draft, and re-analyzing mid-edit would grade text that's about to
+   change. Server call also persists the result, so it survives a reload. */
+const AI_WEEK_HEADINGS = ['Verdict', 'What the reflection got right', 'What it missed']
+const analyzingWeek = ref(null)
+const analyzeError = reactive({})
+
+async function analyzeReflection(w) {
+    analyzingWeek.value = w.dateUnix
+    delete analyzeError[w.dateUnix]
+    try {
+        const res = await useAnalyzeWeekReflection(w.dateUnix, timeZoneTrade.value)
+        if (res.disabled) {
+            analyzeError[w.dateUnix] = res.reason || 'AI analysis is not configured on the server.'
+        } else if (res.refused || !res.summary) {
+            analyzeError[w.dateUnix] = 'The AI declined to analyze this week.'
+        } else {
+            w.aiAnalysis = res.summary
+            w.aiAnalysisAt = res.analyzedAt
+        }
+    } catch (e) {
+        analyzeError[w.dateUnix] = e?.response?.data?.error || e.message || 'Analysis failed'
+        console.error('could not analyze reflection', e)
+    } finally {
+        analyzingWeek.value = null
+    }
+}
+
+const aiAnalysisTime = (t) => (t ? dayjs(t).tz(timeZoneTrade.value || 'UTC').format('MMM D, HH:mm') : '')
 
 const weekLabel = (dateUnix) => {
     const s = dayjs.unix(dateUnix).tz(timeZoneTrade.value || 'UTC')
@@ -225,15 +268,34 @@ onMounted(async () => {
                             <span v-if="savedWeek === w.dateUnix" class="savedTag">saved</span>
                             <span v-else-if="isDirty(w)" class="unsavedTag">unsaved</span>
                         </label>
-                        <textarea class="form-control reflectionInput" rows="4"
+                        <textarea class="form-control reflectionInput" rows="4" v-auto-grow
                             placeholder="What did this week teach you? What will you do differently next week?"
                             :value="draftFor(w)"
-                            v-on:input="setDraft(w.dateUnix, $event.target.value)"></textarea>
+                            v-on:input="setDraft(w.dateUnix, $event.target.value); autoGrow($event.target)"></textarea>
                         <div class="reflectionActions">
                             <button class="btn btn-outline-success btn-sm" :disabled="!isDirty(w) || savingWeek === w.dateUnix"
                                 v-on:click="saveReflection(w)">
                                 {{ savingWeek === w.dateUnix ? 'Saving…' : 'Save reflection' }}
                             </button>
+                            <button class="btn btn-outline-primary btn-sm ms-2"
+                                :disabled="!w.checkReflected || isDirty(w) || analyzingWeek === w.dateUnix"
+                                :title="!w.checkReflected ? 'Save a reflection first' : (isDirty(w) ? 'Save your changes first' : '')"
+                                v-on:click="analyzeReflection(w)">
+                                {{ analyzingWeek === w.dateUnix ? 'Analyzing…' : (w.aiAnalysis ? 'Re-analyze with AI' : 'Analyze with AI') }}
+                            </button>
+                        </div>
+
+                        <div v-if="analyzeError[w.dateUnix]" class="aiAnalysisErr mt-2">{{ analyzeError[w.dateUnix] }}</div>
+
+                        <div v-if="w.aiAnalysis" class="aiAnalysisBlock mt-3">
+                            <div class="aiAnalysisHead">
+                                <i class="uil uil-robot me-1"></i>AI analysis
+                                <span v-if="w.aiAnalysisAt" class="aiAnalysisTime">{{ aiAnalysisTime(w.aiAnalysisAt) }}</span>
+                            </div>
+                            <template v-for="(line, i) in w.aiAnalysis.split('\n')" :key="i">
+                                <div v-if="AI_WEEK_HEADINGS.includes(line.trim())" class="aiAnalysisLineHead">{{ line }}</div>
+                                <div v-else class="aiAnalysisLine">{{ line }}</div>
+                            </template>
                         </div>
                     </div>
 
@@ -244,9 +306,14 @@ onMounted(async () => {
                             <span>Reviewed</span>
                         </label>
                         <!-- Driven by the reflection text itself, so it can never
-                             claim something that was never written. -->
+                             claim something that was never written. Not `disabled` --
+                             browsers grey a disabled checkbox out regardless of
+                             accent-color, so it stopped matching Reviewed's green the
+                             moment it was checked. click.prevent blocks toggling
+                             instead, which keeps the same colored, checked look. -->
                         <label class="weekCheck" v-bind:class="{ done: weekCheck(w.dateUnix, 'checkReflected') }">
-                            <input type="checkbox" :checked="weekCheck(w.dateUnix, 'checkReflected')" disabled />
+                            <input type="checkbox" :checked="weekCheck(w.dateUnix, 'checkReflected')"
+                                tabindex="-1" v-on:click.prevent />
                             <span>Reflection written</span>
                         </label>
                     </div>
@@ -531,7 +598,6 @@ onMounted(async () => {
     text-decoration-color: rgba(0, 202, 115, 0.5);
 }
 
-
 /* Day / Week toolbar -- mirrors the History page's VIEW BY control so the two
    journal pages are operated the same way. */
 .viewToolbar {
@@ -596,12 +662,72 @@ onMounted(async () => {
 .reflectionInput {
     font-size: 0.9rem;
     line-height: 1.55;
+    /* rows="4" sets the starting height via the DOM; min-height keeps it from
+       ever going shorter than that once JS takes over. resize:none because a
+       manually-dragged height would just get overwritten on the next keystroke. */
+    min-height: 6.2rem;
+    overflow-y: hidden;
+    resize: none;
 }
 
 .reflectionActions {
     display: flex;
     justify-content: flex-end;
     margin-top: 0.5rem;
+}
+
+.aiAnalysisErr {
+    font-size: 0.8rem;
+    line-height: 1.5;
+    color: #f28b8b;
+    background: rgba(220, 53, 69, 0.08);
+    border: 1px solid rgba(220, 53, 69, 0.3);
+    border-radius: 0.5rem;
+    padding: 0.5rem 0.7rem;
+}
+
+/* AI output gets its own accent (blue, matching the app's other AI-analysis
+   surfaces) so it reads visibly distinct from the trader's own writing above --
+   the reflection is what they wrote, this is a model checking it. */
+.aiAnalysisBlock {
+    border-left: 3px solid #2f9bff;
+    padding: 0.55rem 0.75rem;
+    background: rgba(47, 155, 255, 0.06);
+    border-radius: 0 0.35rem 0.35rem 0;
+}
+
+.aiAnalysisHead {
+    display: flex;
+    align-items: center;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #2f9bff;
+    margin-bottom: 0.35rem;
+}
+
+.aiAnalysisTime {
+    margin-left: auto;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 0.7rem;
+    color: var(--white-60);
+}
+
+.aiAnalysisLineHead {
+    font-weight: 700;
+    font-size: 0.88rem;
+    margin-top: 0.6rem;
+}
+
+.aiAnalysisLineHead:first-child {
+    margin-top: 0;
+}
+
+.aiAnalysisLine {
+    white-space: pre-wrap;
+    font-size: 0.88rem;
+    line-height: 1.55;
 }
 
 /* The days the week covers, so the summary can be checked against them. */

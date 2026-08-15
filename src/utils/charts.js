@@ -527,47 +527,34 @@ export function useLineBarChart(param) {
 
             //console.log("element "+JSON.stringify(element))
         }
+        // Same look as the Equity chart above it (Dashboard.vue's renderEquityChart):
+        // same blue line + area fill, same dimmed axis labels and hairline grid, same
+        // tight margins. The two used to be styled independently (a lighter cyan
+        // line, no area, a bold custom tooltip) and read as unrelated charts even
+        // though they're both a running total plotted the same way.
         const option = {
+            backgroundColor: 'transparent',
             tooltip: {
                 trigger: 'axis',
-                backgroundColor: blackbg7,
-                borderColor: blackbg7,
-                textStyle: {
-                    color: white87.value
-                },
-                formatter: (params) => {
-                    // Single series (running total) — no separate "Proceeds" series
-                    // exists, so show just the date and the cumulated value (2 dp).
-                    const p = Array.isArray(params) ? params[0] : params
-                    if (!p) return ''
-                    return p.name + "<br>Cumulated: " + useTwoDecCurrencyFormat(p.value)
-                }
+                valueFormatter: (v) => useTwoDecCurrencyFormat(v),
             },
-            axisLabel: {
-                interval: 1000,
-            },
-            // Same tight margins as the Equity chart above it (Dashboard.vue's
-            // renderEquityChart) so both charts fill their identical 400px
-            // container to the same degree -- without this, echarts' default
-            // grid margins leave far more empty space here, making the line
-            // look squeezed into a smaller area than Equity even though the
-            // two cards are the same height.
             grid: { left: 58, right: 16, top: 16, bottom: 28 },
             xAxis: {
                 type: 'category',
                 data: chartXAxis,
+                boundaryGap: false,
+                axisLabel: { color: 'rgba(255,255,255,0.5)' },
             },
             yAxis: {
                 type: 'value',
+                scale: true,
                 splitLine: {
-                    lineStyle: {
-                        type: 'solid',
-                        color: cssColor38
-                    }
+                    lineStyle: { color: 'rgba(255,255,255,0.06)' }
                 },
                 axisLabel: {
+                    color: 'rgba(255,255,255,0.5)',
                     formatter: (params) => {
-                        return useThousandCurrencyFormat(params)
+                        return useTwoDecCurrencyFormat(params)
                     }
                 },
             },
@@ -576,17 +563,13 @@ export function useLineBarChart(param) {
             // dropped -- they plot a different quantity on the same axis, which
             // made the scale unreadable once the cumulative total grew.
             series: [{
+                name: 'Cumulated P&L',
                 data: chartData,
                 type: 'line',
                 smooth: true,
-                itemStyle: {
-                    color: '#35C4FE',
-                },
-                emphasis: {
-                    itemStyle: {
-                        color: '#01B4FF'
-                    }
-                },
+                showSymbol: false,
+                lineStyle: { color: '#2f9bff', width: 2 },
+                areaStyle: { color: 'rgba(47,155,255,0.08)' },
             }
             ]
         }
