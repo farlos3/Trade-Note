@@ -10,6 +10,7 @@ import { spinnerLoadingPage, calendarData, filteredTrades, screenshots, diaries,
 
 import { useCreatedDateFormat, useTwoDecCurrencyFormat, useTimeFormat, useTimeDuration, useMountDaily, useRefreshDailyData, useGetSelectedRange, useLoadMore, useCheckVisibleScreen, useDecimalsArithmetic, useInitTooltip, useDateCalFormat, useSwingDuration, useStartOfDay, useInitTab } from '../utils/utils';
 import { useJournalUpdates } from '../utils/journalStream';
+import { offerEntryChecklist, useLoadChecklistedIds } from '../utils/entryChecklist';
 
 import { useSetupImageUpload, useSaveScreenshot, useGetScreenshots } from '../utils/screenshots';
 
@@ -159,10 +160,41 @@ const apiIndex = ref(-1)
 const apiKey = ref(null)
 const apiSource = ref(null)
 
+/* Post-entry review: offer any trade that just synced in and has no checklist
+   yet. Bounded to a recent lookback (unlike Live's open positions, which are
+   always few and current) or a first-ever page load would queue up every trade
+   ever imported instead of just what "just arrived". */
+let checklistReady = false
+const CHECKLIST_LOOKBACK_SECONDS = 48 * 3600
+function offerRecentTradesForChecklist() {
+    if (!checklistReady) return
+    const cutoff = dayjs().unix() - CHECKLIST_LOOKBACK_SECONDS
+    for (const day of filteredTrades) {
+        for (const trade of (day.trades || [])) {
+            if (!trade.positionId || !trade.entryTime || trade.entryTime < cutoff) continue
+            offerEntryChecklist({
+                tradeId: String(trade.positionId),
+                dateUnix: trade.entryTime,
+                symbol: trade.symbol,
+                side: trade.strategy,   // 'long' | 'short'
+                entryPrice: trade.entryPrice,
+                // No broker TP/SL on a synced/closed trade -- left for manual entry.
+                tp: null,
+                sl: null,
+                lot: Math.max(trade.buyQuantity, trade.sellQuantity),
+            })
+        }
+    }
+}
+
 onBeforeMount(async () => {
 
 })
 onMounted(async () => {
+    useLoadChecklistedIds().then(() => {
+        checklistReady = true
+        offerRecentTradesForChecklist()
+    })
     await useMountDaily()
     await useGetDayFiles()
     await useInitTooltip()
@@ -200,7 +232,10 @@ onMounted(async () => {
 
     // History had no refresh at all: a trade synced while this page was open stayed
     // invisible until a manual reload. Now it appears as soon as the sync writes.
-    unsubscribeJournal = useJournalUpdates(useRefreshDailyData)
+    unsubscribeJournal = useJournalUpdates(async () => {
+        await useRefreshDailyData()
+        offerRecentTradesForChecklist()
+    })
 })
 
 let unsubscribeJournal = null

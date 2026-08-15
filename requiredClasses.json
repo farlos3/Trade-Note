@@ -862,6 +862,113 @@
     }
   },
   {
+    "className": "entryChecklists",
+    "fields": {
+      "objectId": {
+        "type": "String"
+      },
+      "createdAt": {
+        "type": "Date"
+      },
+      "updatedAt": {
+        "type": "Date"
+      },
+      "ACL": {
+        "type": "ACL"
+      },
+      "user": {
+        "type": "Pointer",
+        "targetClass": "_User",
+        "required": false
+      },
+      "tradeId": {
+        "type": "String"
+      },
+      "dateUnix": {
+        "type": "Number"
+      },
+      "symbol": {
+        "type": "String"
+      },
+      "side": {
+        "type": "String"
+      },
+      "hasTp": {
+        "type": "Boolean"
+      },
+      "hasSl": {
+        "type": "Boolean"
+      },
+      "tpPrice": {
+        "type": "Number"
+      },
+      "slPrice": {
+        "type": "Number"
+      },
+      "tpPips": {
+        "type": "Number"
+      },
+      "slPips": {
+        "type": "Number"
+      },
+      "tpSlAcceptable": {
+        "type": "Boolean"
+      },
+      "positionQuality": {
+        "type": "String"
+      },
+      "entryEmotion": {
+        "type": "String"
+      },
+      "entryReasoning": {
+        "type": "String"
+      },
+      "logicValid": {
+        "type": "Boolean"
+      },
+      "oversized": {
+        "type": "Boolean"
+      },
+      "revengeScore": {
+        "type": "Number"
+      },
+      "lot": {
+        "type": "Number"
+      }
+    },
+    "classLevelPermissions": {
+      "find": {
+        "*": true
+      },
+      "count": {
+        "*": true
+      },
+      "get": {
+        "*": true
+      },
+      "create": {
+        "*": true
+      },
+      "update": {
+        "*": true
+      },
+      "delete": {
+        "*": true
+      },
+      "addField": {
+        "*": true
+      },
+      "protectedFields": {
+        "*": []
+      }
+    },
+    "indexes": {
+      "_id_": {
+        "_id": 1
+      }
+    }
+  },
+  {
     "className": "excursions",
     "fields": {
       "objectId": {
