@@ -13,6 +13,7 @@ import { activePlan } from '../utils/planStore'
 import { numOrNull, buildProjection, fmt, pnlClass } from '../utils/planMath'
 import { useJournalUpdates } from '../utils/journalStream'
 import { useAuthHeaders } from '../utils/apiAuth'
+import { clampFromDate } from '../utils/statsProfile'
 
 /* Everything here reads from the active plan (see PlanSelector) — the same
    plan you edit on the Trading Plan page, including its deposits. */
@@ -42,6 +43,10 @@ const loading = ref(false)
 const error = ref(null)
 const daily = ref(null)
 
+// Profile start (unix) as a YYYY-MM-DD date in the trade timezone, which is the
+// shape these endpoints take.
+const isoFromUnix = (u) => dayjs.unix(u).tz(timeZoneTrade.value || 'UTC').format('YYYY-MM-DD')
+
 function rangeFor(p) {
     if (p === 'all') return { from: null, to: null }
     const d = p === '7d' ? 7 : p === '90d' ? 90 : 30
@@ -54,7 +59,10 @@ async function load() {
     try {
         const { from, to } = rangeFor(period.value)
         const params = { tz: timeZoneTrade.value || 'UTC' }
-        if (from) params.from = from
+        // The stats profile floors the window, so a profile that starts today
+        // keeps pre-reset trades out even under the "All" period.
+        const flooredFrom = clampFromDate(from, isoFromUnix)
+        if (flooredFrom) params.from = flooredFrom
         if (to) params.to = to
         const res = await axios.get('/api/analysis/behavior', { params, headers: useAuthHeaders() })
         daily.value = res.data.daily || []

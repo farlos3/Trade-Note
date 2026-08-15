@@ -3,9 +3,12 @@ import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
 import dayjs from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek.js'; dayjs.extend(isoWeek)
+import utc from 'dayjs/plugin/utc.js'; dayjs.extend(utc)
+import timezone from 'dayjs/plugin/timezone.js'; dayjs.extend(timezone)
 import FpDate from '../components/FpDate.vue'
 import { timeZoneTrade } from '../stores/globals'
 import { useAuthHeaders } from '../utils/apiAuth'
+import { clampFromDate } from '../utils/statsProfile'
 
 /* Behavior analysis from real trades, via the backend. Result is cached per
    period in localStorage and only re-fetched when the underlying trade data
@@ -47,6 +50,10 @@ watch(customTo, (v) => localStorage.setItem('aiAnalysisTo', v || ''))
 
 // Weeks start Monday here, matching the isoWeek grouping the rest of the app
 // uses for its weekly buckets.
+// Profile start (unix) as a YYYY-MM-DD date in the trade timezone, which is the
+// shape these endpoints take.
+const isoFromUnix = (u) => dayjs.unix(u).tz(timeZoneTrade.value || 'UTC').format('YYYY-MM-DD')
+
 function rangeFor(p) {
     const tomorrow = () => dayjs().add(1, 'day').format('YYYY-MM-DD') // exclusive upper bound
     if (p === 'all') return { from: null, to: null }
@@ -78,7 +85,7 @@ async function fetchFingerprint(from, to) {
     // tz matters here too: the server resolves YYYY-MM-DD in the trade timezone,
     // so omitting it would fingerprint a different range than the one analysed.
     const params = { tz: timeZoneTrade.value || 'UTC' }
-    if (from) params.from = from
+    if (clampFromDate(from, isoFromUnix)) params.from = clampFromDate(from, isoFromUnix)
     if (to) params.to = to
     const res = await axios.get('/api/analysis/fingerprint', { params, headers: useAuthHeaders() })
     return res.data?.fingerprint || ''
@@ -119,7 +126,7 @@ async function run(force = false) {
         }
 
         const params = { tz: timeZoneTrade.value || 'UTC' }
-        if (from) params.from = from
+        if (clampFromDate(from, isoFromUnix)) params.from = clampFromDate(from, isoFromUnix)
         if (to) params.to = to
         const res = await axios.get('/api/analysis/behavior', { params, headers: useAuthHeaders() })
         data.value = res.data
@@ -226,7 +233,7 @@ async function runAI(force = false) {
     try {
         const { from, to } = rangeFor(period.value)
         const params = { tz: timeZoneTrade.value || 'UTC' }
-        if (from) params.from = from
+        if (clampFromDate(from, isoFromUnix)) params.from = clampFromDate(from, isoFromUnix)
         if (to) params.to = to
         const res = await axios.get('/api/analysis/ai-summary', { params, timeout: 120000, headers: useAuthHeaders() })
         if (res.data && res.data.disabled) { aiDisabled.value = true; aiSummary.value = ''; return }
