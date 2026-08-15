@@ -4,6 +4,7 @@ import { useToggleMobileMenu } from '../utils/utils.js'
 import { useInitShepherd, useInitTooltip } from "../utils/utils.js";
 import { usePipSize, useDefaultContractSize } from '../utils/addOrder.js'
 import { routeComponentLoaders } from '../router/index.js'
+import { statsProfiles, activeStatsProfile, setActiveStatsProfile, addStatsProfile, removeStatsProfile } from '../utils/statsProfile'
 import { pageId, currentUser, renderProfile, screenType, latestVersion } from "../stores/globals"
 import { version } from '../../package.json';
 
@@ -163,6 +164,39 @@ function prefetchOtherPages() {
     }
 }
 
+/* Stats profile: the point in time every statistic is measured from. Lives in the
+   nav rather than in Filters.vue because it applies to pages that have no filter
+   bar (AI Analysis, Plan vs Actual) -- a scope that covers everything has to be
+   reachable from everywhere.
+   Switching reloads the page: the range is resolved once per page mount
+   (useGetSelectedRange), so re-running every view's data fetch in place would mean
+   touching every page, while a reload is exactly what this app already does on
+   every nav. */
+const newProfileName = ref('')
+const newProfileDate = ref(new Date().toISOString().slice(0, 10))
+
+function pickProfile(id) {
+    if (id === activeStatsProfile.value.id) return
+    setActiveStatsProfile(id)
+    window.location.reload()
+}
+
+function createProfile() {
+    const name = newProfileName.value.trim()
+    if (!name) return
+    const startUnix = newProfileDate.value
+        ? Math.floor(new Date(newProfileDate.value + 'T00:00:00').getTime() / 1000)
+        : null
+    addStatsProfile(name, startUnix)
+    newProfileName.value = ''
+    window.location.reload()
+}
+
+function deleteProfile(id) {
+    removeStatsProfile(id)
+    window.location.reload()
+}
+
 // Risk-check bell: shakes on its own every 15 min as a passive nudge (no popup/toast).
 // Clicking it opens a quick lot-size / emotional-state check-in, answers are not saved.
 const bellShaking = ref(false)
@@ -315,6 +349,38 @@ function getLatestVersion() {
                     pages.filter(item => item.id == pageId)[0].name }}</span>
         </div>
         <div class="navActions">
+            <div class="dropdown me-2">
+                <button class="btn btn-sm profileBtn" type="button" data-bs-toggle="dropdown" aria-expanded="false"
+                    title="Stats profile — what every statistic is measured from">
+                    <i class="uil uil-layer-group me-1"></i>{{ activeStatsProfile.name }}
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end statsProfileMenu">
+                    <li><h6 class="dropdown-header">Measure stats from</h6></li>
+                    <li v-for="p in statsProfiles" :key="p.id">
+                        <a class="dropdown-item d-flex align-items-center"
+                            v-bind:class="{ active: p.id === activeStatsProfile.id }"
+                            v-on:click="pickProfile(p.id)">
+                            <span>{{ p.name }}</span>
+                            <span v-if="p.startUnix" class="profileFrom ms-2">
+                                {{ new Date(p.startUnix * 1000).toISOString().slice(0, 10) }}
+                            </span>
+                            <span v-else class="profileFrom ms-2">everything</span>
+                            <i v-if="p.id !== 'all'" class="uil uil-trash-alt ms-auto profileDel"
+                                title="Delete profile" v-on:click.stop="deleteProfile(p.id)"></i>
+                        </a>
+                    </li>
+                    <li><hr class="dropdown-divider"></li>
+                    <li class="px-3 pb-2">
+                        <div class="profileNewLabel">New profile</div>
+                        <input class="form-control form-control-sm mb-1" placeholder="Name"
+                            v-model="newProfileName" v-on:click.stop />
+                        <input class="form-control form-control-sm mb-1" type="date"
+                            v-model="newProfileDate" v-on:click.stop />
+                        <button class="btn btn-outline-success btn-sm w-100" :disabled="!newProfileName.trim()"
+                            v-on:click.stop="createProfile">Add</button>
+                    </li>
+                </ul>
+            </div>
             <div id="step11" class="navBellWrap">
                 <span v-if="riskCheckSummary" class="navBellSummary" v-bind:style="{ color: riskCheckSummaryColor }">{{
                     riskCheckSummary }}</span>
@@ -496,4 +562,36 @@ function getLatestVersion() {
     color: #f59e0b;
     animation: navBellShakeAnim 0.8s ease-in-out;
 }
+
+.profileBtn {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: var(--white-87);
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
+.statsProfileMenu { min-width: 260px; }
+
+/* The date a profile starts, kept quiet so the name reads first. */
+.profileFrom {
+    font-size: 0.72rem;
+    color: var(--white-60);
+}
+
+.profileDel {
+    opacity: 0.45;
+    font-size: 0.85rem;
+}
+
+.profileDel:hover { opacity: 1; color: #F6465D; }
+
+.profileNewLabel {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--white-60);
+    margin-bottom: 0.3rem;
+}
+
 </style>

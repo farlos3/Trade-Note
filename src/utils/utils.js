@@ -1,4 +1,5 @@
 import { useRoute } from "vue-router";
+import { clampRangeToProfile } from './statsProfile.js'
 import { pageId, timeZoneTrade, currentUser, periodRange, selectedDashTab, renderData, selectedPeriodRange, selectedPositions, selectedTimeFrame, selectedRatio, selectedAccount, selectedGrossNet, selectedPlSatisfaction, selectedBroker, selectedDateRange, selectedMonth, selectedAccounts, amountCase, screenshotsPagination, diaryUpdate, diaryButton, selectedItem, playbookUpdate, playbookButton, sideMenuMobileOut, spinnerLoadingPage, dashboardChartsMounted, dashboardIdMounted, hasData, renderingCharts, screenType, selectedRange, dailyQueryLimit, dailyPagination, endOfList, spinnerLoadMore, windowIsScrolled, legacy, selectedTags, tags, filteredTrades, idCurrent, idPrevious, idCurrentType, idCurrentNumber, idPreviousType, idPreviousNumber, screenshots, screenshotsInfos, tabGettingScreenshots, apis, layoutStyle, countdownInterval, countdownSeconds, barChartNegativeTagGroups, availableTags, groups } from "../stores/globals.js"
 import { useECharts, useRenderDoubleLineChart, useRenderPieChart } from './charts.js';
 import { useDeleteDiary, useGetDiaries, useUploadDiary } from "./diary.js";
@@ -1130,6 +1131,10 @@ export function useGetSelectedRange() {
         else {
             selectedRange.value = selectedMonth.value
         }
+        // Apply the active stats profile LAST, so it floors whatever the page
+        // just chose. Every page resolves its range through here, which is why
+        // one clamp covers Dashboard, History and Calendar at once.
+        selectedRange.value = clampRangeToProfile(selectedRange.value)
         //console.log("SelectedRange "+JSON.stringify(selectedRange.value))
         resolve()
     })
