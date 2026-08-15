@@ -53,6 +53,12 @@
       },
       "layoutStyle": {
         "type": "Array"
+      },
+      "statsProfiles": {
+        "type": "Array"
+      },
+      "activeStatsProfileId": {
+        "type": "String"
       }
     },
     "classLevelPermissions": {

@@ -175,26 +175,51 @@ function prefetchOtherPages() {
 const newProfileName = ref('')
 const newProfileDate = ref(new Date().toISOString().slice(0, 10))
 
-function pickProfile(id) {
-    if (id === activeStatsProfile.value.id) return
-    setActiveStatsProfile(id)
-    window.location.reload()
+// These now write to the database (see statsProfile.js), so each is a network
+// round trip -- profileBusy disables the controls meanwhile rather than letting a
+// second click race the first, and reload only fires once the write is actually
+// durable so a slow connection can't reload onto the pre-change state.
+const profileBusy = ref(false)
+
+async function pickProfile(id) {
+    if (id === activeStatsProfile.value.id || profileBusy.value) return
+    profileBusy.value = true
+    try {
+        await setActiveStatsProfile(id)
+        window.location.reload()
+    } catch (e) {
+        console.error('could not switch stats profile', e)
+        profileBusy.value = false
+    }
 }
 
-function createProfile() {
+async function createProfile() {
     const name = newProfileName.value.trim()
-    if (!name) return
-    const startUnix = newProfileDate.value
-        ? Math.floor(new Date(newProfileDate.value + 'T00:00:00').getTime() / 1000)
-        : null
-    addStatsProfile(name, startUnix)
-    newProfileName.value = ''
-    window.location.reload()
+    if (!name || profileBusy.value) return
+    profileBusy.value = true
+    try {
+        const startUnix = newProfileDate.value
+            ? Math.floor(new Date(newProfileDate.value + 'T00:00:00').getTime() / 1000)
+            : null
+        await addStatsProfile(name, startUnix)
+        newProfileName.value = ''
+        window.location.reload()
+    } catch (e) {
+        console.error('could not create stats profile', e)
+        profileBusy.value = false
+    }
 }
 
-function deleteProfile(id) {
-    removeStatsProfile(id)
-    window.location.reload()
+async function deleteProfile(id) {
+    if (profileBusy.value) return
+    profileBusy.value = true
+    try {
+        await removeStatsProfile(id)
+        window.location.reload()
+    } catch (e) {
+        console.error('could not delete stats profile', e)
+        profileBusy.value = false
+    }
 }
 
 // Risk-check bell: shakes on its own every 15 min as a passive nudge (no popup/toast).
