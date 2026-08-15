@@ -355,29 +355,30 @@ function getLatestVersion() {
                     <i class="uil uil-layer-group me-1"></i>{{ activeStatsProfile.name }}
                 </button>
                 <ul class="dropdown-menu dropdown-menu-end statsProfileMenu">
-                    <li><h6 class="dropdown-header">Measure stats from</h6></li>
+                    <li class="spHeader">Measure stats from</li>
                     <li v-for="p in statsProfiles" :key="p.id">
-                        <a class="dropdown-item d-flex align-items-center"
-                            v-bind:class="{ active: p.id === activeStatsProfile.id }"
+                        <!-- Own classes rather than .dropdown-item/.active: the global
+                             .dropdown-item.active paints a solid blue bar with
+                             !important, which made the selected row tower over the
+                             others instead of just marking which one is on. -->
+                        <div class="spRow" v-bind:class="{ on: p.id === activeStatsProfile.id }"
                             v-on:click="pickProfile(p.id)">
-                            <span>{{ p.name }}</span>
-                            <span v-if="p.startUnix" class="profileFrom ms-2">
-                                {{ new Date(p.startUnix * 1000).toISOString().slice(0, 10) }}
-                            </span>
-                            <span v-else class="profileFrom ms-2">everything</span>
-                            <i v-if="p.id !== 'all'" class="uil uil-trash-alt ms-auto profileDel"
-                                title="Delete profile" v-on:click.stop="deleteProfile(p.id)"></i>
-                        </a>
+                            <i class="spTick uil" v-bind:class="p.id === activeStatsProfile.id ? 'uil-check' : ''"></i>
+                            <span class="spName">{{ p.name }}</span>
+                            <span class="spFrom">{{ p.startUnix ? new Date(p.startUnix * 1000).toISOString().slice(0, 10) : 'everything' }}</span>
+                            <i v-if="p.id !== 'all'" class="uil uil-trash-alt spDel" title="Delete profile"
+                                v-on:click.stop="deleteProfile(p.id)"></i>
+                        </div>
                     </li>
-                    <li><hr class="dropdown-divider"></li>
-                    <li class="px-3 pb-2">
-                        <div class="profileNewLabel">New profile</div>
-                        <input class="form-control form-control-sm mb-1" placeholder="Name"
+                    <li class="spDivider"></li>
+                    <li class="spNew">
+                        <div class="spHeader">New profile</div>
+                        <input class="form-control form-control-sm spInput" placeholder="Name"
                             v-model="newProfileName" v-on:click.stop />
-                        <input class="form-control form-control-sm mb-1" type="date"
+                        <input class="form-control form-control-sm spInput" type="date"
                             v-model="newProfileDate" v-on:click.stop />
-                        <button class="btn btn-outline-success btn-sm w-100" :disabled="!newProfileName.trim()"
-                            v-on:click.stop="createProfile">Add</button>
+                        <button type="button" class="btn btn-success btn-sm spAdd"
+                            :disabled="!newProfileName.trim()" v-on:click.stop="createProfile">Add</button>
                     </li>
                 </ul>
             </div>
@@ -571,27 +572,78 @@ function getLatestVersion() {
     white-space: nowrap;
 }
 
-.statsProfileMenu { min-width: 260px; }
 
-/* The date a profile starts, kept quiet so the name reads first. */
-.profileFrom {
-    font-size: 0.72rem;
-    color: var(--white-60);
+
+
+.statsProfileMenu {
+    min-width: 268px;
+    padding: 0.35rem;
 }
 
-.profileDel {
-    opacity: 0.45;
+/* One header treatment for both the list and the new-profile block, so the two
+   halves of the menu read as the same thing. */
+.spHeader {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--white-60);
+    padding: 0.35rem 0.5rem 0.3rem;
+}
+
+/* Every row the same height whether selected or not -- selection is a tick and a
+   tint, not a change of size. */
+.spRow {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.5rem;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    line-height: 1.2;
+}
+
+.spRow:hover { background: var(--surface-hover); }
+.spRow.on { background: rgba(47, 155, 255, 0.14); }
+
+.spTick {
+    width: 0.9rem;
+    flex: 0 0 auto;
+    color: #2f9bff;
+    font-size: 0.9rem;
+}
+
+.spName {
+    font-size: 0.88rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.spFrom {
+    font-size: 0.72rem;
+    color: var(--white-60);
+    margin-left: auto;
+    white-space: nowrap;
+}
+
+.spDel {
+    flex: 0 0 auto;
+    opacity: 0.4;
     font-size: 0.85rem;
 }
 
-.profileDel:hover { opacity: 1; color: #F6465D; }
+.spDel:hover { opacity: 1; color: #F6465D; }
 
-.profileNewLabel {
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--white-60);
-    margin-bottom: 0.3rem;
+.spDivider {
+    height: 1px;
+    background: rgba(255, 255, 255, 0.1);
+    margin: 0.35rem 0.25rem;
 }
+
+.spNew { padding: 0 0.5rem 0.4rem; }
+
+.spInput { margin-bottom: 0.35rem; }
+
+.spAdd { width: 100%; }
 
 </style>
