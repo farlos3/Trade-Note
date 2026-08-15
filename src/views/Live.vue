@@ -14,6 +14,7 @@ import dayjs from 'dayjs'
 import { useTwoDecCurrencyFormat } from '../utils/utils'
 import { usePipSize } from '../utils/addOrder'
 import { useAuthHeaders, useAuthedUrl } from '../utils/apiAuth'
+import { offerEntryChecklist, useLoadChecklistedIds } from '../utils/entryChecklist'
 
 const snapshot = ref(null)
 const connected = ref(false)
@@ -84,10 +85,31 @@ function fmtPips(v) {
     return a >= 10 ? v.toFixed(0) : v.toFixed(1)
 }
 
+// Offer every open position that has no checklist yet -- guarded until the set
+// of already-answered trade ids has loaded, or every position would be offered
+// again on each page load before that set was known.
+let checklistReady = false
+function offerPositionsForChecklist(list) {
+    if (!checklistReady) return
+    for (const p of list) {
+        offerEntryChecklist({
+            tradeId: String(p.ticket),
+            dateUnix: p.openTime,
+            symbol: p.symbol,
+            side: p.side,
+            entryPrice: p.priceOpen,
+            tp: p.tp,
+            sl: p.sl,
+            lot: p.volume,
+        })
+    }
+}
+
 function applySnapshot(s) {
     if (!s) return
     snapshot.value = s
     lastFrameAt.value = Date.now()
+    offerPositionsForChecklist(s.positions || [])
 }
 
 function connect() {
@@ -102,6 +124,10 @@ function connect() {
 }
 
 onMounted(async () => {
+    useLoadChecklistedIds().then(() => {
+        checklistReady = true
+        offerPositionsForChecklist(positions.value)
+    })
     // Paint immediately from the stored snapshot instead of waiting up to a second
     // for the stream's first frame.
     try {

@@ -4,6 +4,7 @@ import Nav from '../components/Nav.vue'
 import Screenshot from '../components/Screenshot.vue'
 import ReturnToTopButton from '../components/ReturnToTopButton.vue'
 import AddOrderModal from '../components/AddOrderModal.vue'
+import EntryChecklistModal from '../components/EntryChecklistModal.vue'
 import { onBeforeMount } from 'vue'
 import { useInitParse, usePageId, useScreenType, useGetTimeZone, useGetPeriods, useReconcileSelectedDateRange, useInitPostHog, useCreatedDateFormat, useTimeFormat, useHourMinuteFormat } from '../utils/utils.js'
 import { screenType, sideMenuMobileOut, screenshots, pageId, screenshot, selectedScreenshot, selectedScreenshotIndex, getMore } from '../stores/globals'
@@ -43,6 +44,8 @@ useInitPostHog()
   </div>
   <!-- Add Order popup (triggered from the +Add menu in Nav) -->
   <AddOrderModal />
+  <!-- Post-entry review, offered by Live.vue/Daily.vue when a new order shows up -->
+  <EntryChecklistModal />
   <!-- Modal -->
   <div class="modal fade" id="fullScreenModal" tabindex="-1" aria-labelledby="fullScreenModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-fullscreen">
