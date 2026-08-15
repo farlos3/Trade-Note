@@ -13,45 +13,32 @@
  * days" under a profile that starts today shows the part of those 7 days that the
  * profile covers, not 7 days of pre-reset history.
  *
- * Stored in localStorage next to the other view preferences (see planStore.js for
- * the same pattern). It is a lens on the data, not data itself -- nothing here
- * changes a single trade, so it never needs to reach the database.
+ * Stored on the _User record (statsProfiles / activeStatsProfileId), the same
+ * place tags/apis/mt5Accounts already live -- NOT in localStorage. It used to be
+ * localStorage, which meant "clear site data" (the standard fix for a stuck Parse
+ * session, used earlier in this app's own history) silently deleted every profile
+ * along with it. A database field survives that, survives a different browser,
+ * and survives moving the app to another machine.
  */
-import { reactive, computed } from 'vue'
-import dayjs from 'dayjs'
+import { computed } from 'vue'
+import Parse from 'parse/dist/parse.min.js'
+import { currentUser } from '../stores/globals.js'
 
-const KEY = 'tradenote_stats_profiles_v1'
-
-// `startUnix: null` means no floor at all -- the whole history.
+// Always present, never persisted itself (see persist() below) -- the way back
+// to the full history that can't be deleted or corrupted out of existence.
 const ALL_TIME = { id: 'all', name: 'All time', startUnix: null }
 
-function load() {
-    try {
-        const raw = JSON.parse(localStorage.getItem(KEY))
-        if (raw && Array.isArray(raw.profiles) && raw.profiles.length) {
-            // "All time" is guaranteed to exist so there is always a way back to
-            // the unfiltered view, even if the stored list was hand-edited.
-            const profiles = raw.profiles.some((p) => p.id === 'all')
-                ? raw.profiles
-                : [ALL_TIME, ...raw.profiles]
-            return { profiles, activeId: raw.activeId || 'all' }
-        }
-    } catch { /* corrupt or absent -- fall through to the default */ }
-    return { profiles: [ALL_TIME], activeId: 'all' }
-}
+export const statsProfiles = computed(() => {
+    const stored = (currentUser.value && Array.isArray(currentUser.value.statsProfiles))
+        ? currentUser.value.statsProfiles
+        : []
+    return [ALL_TIME, ...stored.filter((p) => p && p.id !== 'all')]
+})
 
-const state = reactive(load())
-
-function persist() {
-    try {
-        localStorage.setItem(KEY, JSON.stringify({ profiles: state.profiles, activeId: state.activeId }))
-    } catch { /* storage unavailable (private mode / quota) -- still works in-session */ }
-}
-
-export const statsProfiles = computed(() => state.profiles)
-
-export const activeStatsProfile = computed(() =>
-    state.profiles.find((p) => p.id === state.activeId) || state.profiles[0])
+export const activeStatsProfile = computed(() => {
+    const activeId = (currentUser.value && currentUser.value.activeStatsProfileId) || 'all'
+    return statsProfiles.value.find((p) => p.id === activeId) || statsProfiles.value[0]
+})
 
 /** Unix seconds the active profile starts at, or null for all-time. */
 export const profileStartUnix = computed(() => {
@@ -59,31 +46,43 @@ export const profileStartUnix = computed(() => {
     return p && p.startUnix ? Number(p.startUnix) : null
 })
 
-export function setActiveStatsProfile(id) {
-    if (!state.profiles.some((p) => p.id === id)) return
-    state.activeId = id
-    persist()
+/**
+ * Write profiles + the active selection to the CURRENT user object (not a
+ * separately-queried copy) and save it. Parse's JS SDK persists its own local
+ * cache of Parse.User.current() after a successful save on that same instance,
+ * so a page that full-reloads right after this (every call site here does)
+ * picks the change up without a fresh network fetch.
+ */
+async function persist(profiles, activeId) {
+    const user = Parse.User.current()
+    if (!user) return   // Nav.vue only renders on authenticated pages; defensive only
+    user.set('statsProfiles', profiles.filter((p) => p.id !== 'all'))
+    user.set('activeStatsProfileId', activeId)
+    await user.save()
+    currentUser.value = JSON.parse(JSON.stringify(user))
 }
 
-export function addStatsProfile(name, startUnix) {
+export async function setActiveStatsProfile(id) {
+    if (!statsProfiles.value.some((p) => p.id === id)) return
+    await persist(statsProfiles.value, id)
+}
+
+export async function addStatsProfile(name, startUnix) {
     const p = {
         id: 'p' + Date.now().toString(36),
         name: (name || '').trim() || 'Untitled',
         startUnix: startUnix ? Number(startUnix) : null,
     }
-    state.profiles.push(p)
-    state.activeId = p.id
-    persist()
+    await persist([...statsProfiles.value, p], p.id)
     return p
 }
 
-export function removeStatsProfile(id) {
+export async function removeStatsProfile(id) {
     if (id === 'all') return          // the way back to the full history
-    const i = state.profiles.findIndex((p) => p.id === id)
-    if (i === -1) return
-    state.profiles.splice(i, 1)
-    if (state.activeId === id) state.activeId = 'all'
-    persist()
+    if (!statsProfiles.value.some((p) => p.id === id)) return
+    const next = statsProfiles.value.filter((p) => p.id !== id)
+    const activeId = activeStatsProfile.value.id === id ? 'all' : activeStatsProfile.value.id
+    await persist(next, activeId)
 }
 
 /**
@@ -104,7 +103,7 @@ export function clampRangeToProfile(range) {
     // so a profile silently zeroed every page still on the "All" period. It needs
     // an explicit end, not the sentinel's implicit "none".
     const isAllSentinel = Number(range.start) === 0 && Number(range.end) === 0
-    const end = isAllSentinel ? dayjs().add(1, 'day').unix() : Number(range.end)
+    const end = isAllSentinel ? Math.floor(Date.now() / 1000) + 86400 : Number(range.end)
 
     let start = Math.max(Number(range.start) || 0, floor)
     // Never let the floor push start PAST end. A window that ends before the
