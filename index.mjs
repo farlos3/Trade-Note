@@ -22,7 +22,6 @@ import { flattenTrades, computeStats, findBehaviorPatterns, computeDailyBreakdow
 import Stripe from 'stripe';
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { randomUUID } from 'crypto';
-import { isMetaApiMode, mt5Source, startMetaApiFeed } from './mt5-source.mjs';
 
 /* CLOUDFLARE R2 (S3-compatible) image storage */
 let r2Client = null
@@ -1078,15 +1077,14 @@ const setupApiRoutes = (app) => {
     /**********************************************
      * CONNECTIONS STATUS (Settings page)
      *
-     * Reports what this server is wired to -- MT5 source, MetaApi, database, R2 --
-     * so the Settings page can answer "is it connected?" without anyone SSHing in
-     * to read .env.
+     * Reports what this server is wired to -- MT5 live feed, database, R2 -- so
+     * the Settings page can answer "is it connected?" without anyone SSHing in to
+     * read .env.
      *
      * READ-ONLY, and every secret is reduced to a boolean or a redacted host.
-     * Tokens and the Mongo URI are never returned: the MetaApi token is a bearer
-     * credential to a live trading account, and the Mongo URI carries the database
-     * password. Neither has any business reaching a browser, and anything sent
-     * here would also land in the R2 database backups.
+     * The Mongo URI is never returned as-is: it carries the database password,
+     * which has no business reaching a browser, and anything sent here would also
+     * land in the R2 database backups.
      *
      * Configuration stays in .env on purpose. Writing these from the UI would mean
      * storing those same credentials in MongoDB (readable back by the logged-in
@@ -1103,50 +1101,16 @@ const setupApiRoutes = (app) => {
         } catch { return null }
     }
 
-    let metaApiStateCache = { at: 0, value: null }
-    const probeMetaApiState = async () => {
-        const token = process.env.METAAPI_ACCESS_TOKEN
-        const accountId = process.env.METAAPI_ACCOUNT_ID
-        if (!token || !accountId) return null
-        // Cached: this is an external call, and the Settings page may be reopened
-        // repeatedly while nothing about the account has changed.
-        if (Date.now() - metaApiStateCache.at < 30000) return metaApiStateCache.value
-        try {
-            const host = process.env.METAAPI_PROVISIONING_HOST
-                || 'mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai'
-            const r = await fetch(`https://${host}/users/current/accounts/${accountId}`, {
-                headers: { 'auth-token': token },
-                signal: AbortSignal.timeout(8000),
-            })
-            if (!r.ok) throw new Error(`HTTP ${r.status}`)
-            const a = await r.json()
-            const value = { state: a.state, login: a.login, server: a.server, region: a.region }
-            metaApiStateCache = { at: Date.now(), value }
-            return value
-        } catch (e) {
-            const value = { error: e.message }
-            metaApiStateCache = { at: Date.now(), value }
-            return value
-        }
-    }
-
     app.get('/api/connections', requireAuth, async (req, res) => {
         res.setHeader('Cache-Control', 'no-store')
         const mongoHost = redactMongoHost(databaseURI)
         const snap = liveSnapshot
         res.send({
             mt5: {
-                source: mt5Source,
                 // In local mode the proof of life is the host agent's last POST.
                 liveFeed: snap
                     ? { connected: !liveIsStale(), ageSeconds: Math.floor((Date.now() - snap.receivedAt) / 1000), positions: snap.positions.length, login: snap.login }
                     : { connected: false, ageSeconds: null, positions: 0, login: null },
-            },
-            metaapi: {
-                tokenConfigured: !!process.env.METAAPI_ACCESS_TOKEN,
-                accountId: process.env.METAAPI_ACCOUNT_ID || null,
-                region: process.env.METAAPI_REGION || null,
-                account: await probeMetaApiState(),
             },
             database: {
                 host: mongoHost,
@@ -1159,9 +1123,6 @@ const setupApiRoutes = (app) => {
         })
     })
 
-    // Shared by both sources: the host agent's POST below, and the MetaApi feed
-    // started at the bottom of this function. Same shape either way, so the SSE
-    // clients (and the /live page) never learn which one is running.
     const applyLiveSnapshot = (b) => {
         liveSnapshot = {
             login: b.login ?? null,
@@ -1188,9 +1149,6 @@ const setupApiRoutes = (app) => {
     }
 
     app.post('/api/live', validateApiKey, (req, res) => {
-        // Ignored in metaapi mode: this process is already producing the feed, and
-        // a stray host agent still running would otherwise fight it frame by frame.
-        if (isMetaApiMode) return res.send({ ok: true, ignored: 'MT5_SOURCE=metaapi' })
         applyLiveSnapshot(req.body || {})
         res.send({ ok: true, clients: liveClients.size })
     })
@@ -1297,15 +1255,7 @@ const setupApiRoutes = (app) => {
         }
     })
 
-    // Cloud source: this process owns the MT5 connection instead of a host agent.
-    // Fire-and-forget -- a MetaApi problem must never stop the app from serving.
-    if (isMetaApiMode) {
-        startMetaApiFeed(applyLiveSnapshot).catch((e) => {
-            console.log(` -> MetaApi feed failed to start: ${e.message}`)
-        })
-    } else {
-        console.log(`\nMT5 SOURCE: local (host agents push to /api/live)`)
-    }
+    console.log(`\nMT5 SOURCE: local (host agents push to /api/live)`)
 };
 
 /**************************** END APIs ****************************/

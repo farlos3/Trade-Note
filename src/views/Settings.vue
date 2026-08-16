@@ -11,11 +11,11 @@ import Sortable from 'sortablejs';
 
 /*********************
  * CONNECTIONS
- * Read-only status of what the SERVER is wired to (MT5 / MetaApi / database /
- * R2). Deliberately not editable here: these are credentials, and saving them
- * from the browser would mean storing a live trading token and the database
- * password in MongoDB -- readable back by the logged-in user and copied into
- * every R2 backup. They stay in .env on the host, which never leaves it.
+ * Read-only status of what the SERVER is wired to (MT5 / database / R2).
+ * Deliberately not editable here: these are credentials, and saving them from
+ * the browser would mean storing the database password in MongoDB itself --
+ * readable back by the logged-in user and copied into every R2 backup. They
+ * stay in .env on the host, which never leaves it.
  *********************/
 const connections = ref(null)
 const connectionsError = ref(null)
@@ -609,10 +609,6 @@ const updateAPIS = async () => {
                                     {{ connections.mt5.liveFeed.connected ? 'live' : 'no data' }}
                                 </span>
                             </div>
-                            <div class="connRow">
-                                <span>Source</span>
-                                <b>{{ connections.mt5.source === 'metaapi' ? 'MetaApi (cloud)' : 'Local terminal' }}</b>
-                            </div>
                             <div class="connRow" v-if="connections.mt5.liveFeed.login">
                                 <span>Account</span><b>{{ connections.mt5.liveFeed.login }}</b>
                             </div>
@@ -622,42 +618,9 @@ const updateAPIS = async () => {
                             <div class="connRow" v-if="connections.mt5.liveFeed.ageSeconds !== null">
                                 <span>Last update</span><b>{{ connections.mt5.liveFeed.ageSeconds }}s ago</b>
                             </div>
-                            <div class="connNote" v-if="connections.mt5.source !== 'metaapi'">
+                            <div class="connNote">
                                 Needs MetaTrader 5 open on a Windows host running
-                                <code>mt5-sync/mt5_live.py</code>. Set <code>MT5_SOURCE=metaapi</code> to
-                                use the cloud instead.
-                            </div>
-                        </div>
-
-                        <!-- MetaApi -->
-                        <div class="connCard">
-                            <div class="connHead">
-                                <span class="connName">MetaApi</span>
-                                <span class="connPill"
-                                    v-bind:class="!connections.metaapi.tokenConfigured ? 'off'
-                                        : connections.metaapi.account && connections.metaapi.account.state === 'DEPLOYED' ? 'ok' : 'warn'">
-                                    {{ !connections.metaapi.tokenConfigured ? 'not set'
-                                        : (connections.metaapi.account && (connections.metaapi.account.state || 'error')) || '…' }}
-                                </span>
-                            </div>
-                            <div class="connRow">
-                                <span>Token</span>
-                                <b>{{ connections.metaapi.tokenConfigured ? 'configured' : 'missing' }}</b>
-                            </div>
-                            <div class="connRow" v-if="connections.metaapi.accountId">
-                                <span>Account id</span><b class="connMono">{{ connections.metaapi.accountId }}</b>
-                            </div>
-                            <div class="connRow" v-if="connections.metaapi.account && connections.metaapi.account.login">
-                                <span>Broker</span><b>{{ connections.metaapi.account.server }}</b>
-                            </div>
-                            <div class="connNote connWarnText"
-                                v-if="connections.metaapi.account && connections.metaapi.account.state === 'UNDEPLOYED'">
-                                Account is undeployed — deploy it on metaapi.cloud before it can stream
-                                (billable).
-                            </div>
-                            <div class="connNote" v-else-if="!connections.metaapi.tokenConfigured">
-                                Set <code>METAAPI_ACCESS_TOKEN</code> and <code>METAAPI_ACCOUNT_ID</code>
-                                in <code>.env</code>.
+                                <code>mt5-sync/mt5_live.py</code>.
                             </div>
                         </div>
 
