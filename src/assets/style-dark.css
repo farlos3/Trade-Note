@@ -1510,8 +1510,13 @@ table {
     background-color: var(--black-bg-7) !important;
 }
 
+/* Both halves must carry the .forecastTable prefix. Written as
+   `.forecastTable th:first-child, td:first-child` the second selector is
+   GLOBAL, so every first cell of every table in the app became
+   position: sticky with a forced background -- sticky cells paint above their
+   neighbours and follow the scroll, which reads as content overlapping itself. */
 .forecastTable th:first-child,
-td:first-child {
+.forecastTable td:first-child {
     position: sticky;
     left: 0px;
     background-color: var(--black-bg-7) !important;
@@ -1621,10 +1626,13 @@ td:first-child {
     color: var(--blue-active-color);
 }
 
+/* Same trap as .forecastTable above: only the first selector carried the .quill
+   prefix, so h2/h3/h4 got this padding EVERYWHERE, nudging every card heading in
+   the app down by 0.3em. */
 .quill h1,
-h2,
-h3,
-h4 {
+.quill h2,
+.quill h3,
+.quill h4 {
     padding-top: 0.3em;
 }
 

@@ -62,12 +62,6 @@ services:
       # Per-trade lot at/above which a trade counts as "oversized" in the
       # Overtrading flag (default 0.1). Set to your own normal size + margin.
       OVERTRADE_LOT_CAP: ${OVERTRADE_LOT_CAP:-}
-      # MT5 data source. local = Windows host agents push in; metaapi = this
-      # container connects to MetaApi's cloud terminal itself (no host, no MT5).
-      MT5_SOURCE: ${MT5_SOURCE:-local}
-      METAAPI_ACCESS_TOKEN: ${METAAPI_ACCESS_TOKEN:-}
-      METAAPI_ACCOUNT_ID: ${METAAPI_ACCOUNT_ID:-}
-      METAAPI_REGION: ${METAAPI_REGION:-}
       R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
       R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
       R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
