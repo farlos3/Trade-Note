@@ -827,6 +827,24 @@
       },
       "aiAnalysisAt": {
         "type": "Date"
+      },
+      "planText": {
+        "type": "String"
+      },
+      "planPdfUrl": {
+        "type": "String"
+      },
+      "planPdfKey": {
+        "type": "String"
+      },
+      "planPdfBase64": {
+        "type": "String"
+      },
+      "planPdfName": {
+        "type": "String"
+      },
+      "planReviewed": {
+        "type": "Boolean"
       }
     },
     "classLevelPermissions": {

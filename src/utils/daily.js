@@ -794,8 +794,15 @@ export const useGetWeekNotes = async () => {
             reflection: r.get('reflection') || '',
             aiAnalysis: r.get('aiAnalysis') || '',
             aiAnalysisAt: r.get('aiAnalysisAt') || null,
+            planText: r.get('planText') || '',
+            planPdfUrl: r.get('planPdfUrl') || '',
+            planPdfBase64: r.get('planPdfBase64') || '',
+            planPdfName: r.get('planPdfName') || '',
+            planReviewed: !!r.get('planReviewed'),
         }))
-        .filter((n) => n.note.trim())
+        // A future week can have a plan (written the Friday before) with no
+        // summary yet -- note.trim() alone would hide it from the Plan tab.
+        .filter((n) => n.note.trim() || n.planText.trim())
 }
 
 /**
