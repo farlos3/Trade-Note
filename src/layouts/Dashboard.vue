@@ -5,6 +5,7 @@ import Screenshot from '../components/Screenshot.vue'
 import ReturnToTopButton from '../components/ReturnToTopButton.vue'
 import AddOrderModal from '../components/AddOrderModal.vue'
 import EntryChecklistModal from '../components/EntryChecklistModal.vue'
+import WeeklyGateModal from '../components/WeeklyGateModal.vue'
 import { onBeforeMount } from 'vue'
 import { useInitParse, usePageId, useScreenType, useGetTimeZone, useGetPeriods, useReconcileSelectedDateRange, useInitPostHog, useCreatedDateFormat, useTimeFormat, useHourMinuteFormat } from '../utils/utils.js'
 import { screenType, sideMenuMobileOut, screenshots, pageId, screenshot, selectedScreenshot, selectedScreenshotIndex, getMore } from '../stores/globals'
@@ -46,6 +47,8 @@ useInitPostHog()
   <AddOrderModal />
   <!-- Post-entry review, offered by Live.vue/Daily.vue when a new order shows up -->
   <EntryChecklistModal />
+  <!-- Weekly discipline gates: Friday plan, Monday review, missing reflection -->
+  <WeeklyGateModal />
   <!-- Modal -->
   <div class="modal fade" id="fullScreenModal" tabindex="-1" aria-labelledby="fullScreenModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-fullscreen">
