@@ -10,7 +10,7 @@ import { spinnerLoadingPage, calendarData, filteredTrades, screenshots, diaries,
 
 import { useCreatedDateFormat, useTwoDecCurrencyFormat, useTimeFormat, useTimeDuration, useMountDaily, useRefreshDailyData, useGetSelectedRange, useLoadMore, useCheckVisibleScreen, useDecimalsArithmetic, useInitTooltip, useDateCalFormat, useSwingDuration, useStartOfDay, useInitTab } from '../utils/utils';
 import { useJournalUpdates } from '../utils/journalStream';
-import { offerEntryChecklist, useLoadChecklistedIds, checklistCutoffUnix } from '../utils/entryChecklist';
+import { offerEntryChecklist, useLoadChecklistedIds, checklistCutoffUnix, loadEntryChecklists } from '../utils/entryChecklist';
 
 import { useSetupImageUpload, useSaveScreenshot, useGetScreenshots } from '../utils/screenshots';
 
@@ -164,6 +164,29 @@ const apiSource = ref(null)
    yet. Bounded to a recent lookback (unlike Live's open positions, which are
    always few and current) or a first-ever page load would queue up every trade
    ever imported instead of just what "just arrived". */
+/* The saved entry review for each trade, keyed by the MT5 position id -- the same
+   value the checklist stores as tradeId. Shown inline under its own order so the
+   answers sit next to the trade they describe, rather than only in Diary's Entry
+   reviews tab where they have to be matched up by hand. */
+const entryReviews = ref({})
+const reviewFor = (trade) => (trade && trade.positionId) ? entryReviews.value[String(trade.positionId)] : null
+
+const REVIEW_EMOTION_COLORS = {
+    calm: '#22c55e', confident: '#38bdf8', nervous: '#ef4444',
+    excited: '#f59e0b', frustrated: '#94a3b8',
+}
+
+async function loadEntryReviews() {
+    try {
+        const rows = await loadEntryChecklists()
+        const byId = {}
+        rows.forEach((r) => { byId[String(r.tradeId)] = r })
+        entryReviews.value = byId
+    } catch (e) {
+        console.error('could not load entry reviews', e)
+    }
+}
+
 let checklistReady = false
 function offerRecentTradesForChecklist() {
     if (!checklistReady) return
@@ -200,6 +223,7 @@ onMounted(async () => {
     await Promise.all([
         useLoadChecklistedIds().then(() => { checklistReady = true }),
         useMountDaily(),
+        loadEntryReviews(),
     ])
     offerRecentTradesForChecklist()
     await useGetDayFiles()
@@ -1179,8 +1203,9 @@ function getOHLC(date, symbol, type) {
                                                         <!-- the page loads faster than the video blob => check if blob, that is after slash, is not null, and then load -->
                                                         <!--<tr v-if="/[^/]*$/.exec(videoBlob)[0]!='null'&&trade.videoStart&&trade.videoEnd">-->
 
-                                                        <tr v-for="(trade, index2) in itemTrade.trades"
-                                                            data-bs-toggle="modal" data-bs-target="#tradesModal"
+                                                        <template v-for="(trade, index2) in itemTrade.trades"
+                                                            :key="trade.id || index2">
+                                                        <tr data-bs-toggle="modal" data-bs-target="#tradesModal"
                                                             class="pointerClass" :data-index="index"
                                                             :data-indextwo="index2">
 
@@ -1265,6 +1290,52 @@ function getOHLC(date, symbol, type) {
                                                             </td>
 
                                                         </tr>
+
+                                                        <!-- The entry review for THIS order, if one was written. Its own
+                                                             row rather than a column: the answers do not fit a cell, and
+                                                             it deliberately has no modal toggle, so reading a review
+                                                             never opens the trade popup by accident. -->
+                                                        <tr v-if="reviewFor(trade)" class="reviewRow">
+                                                            <td colspan="9">
+                                                                <div class="reviewInline">
+                                                                    <span class="reviewInlineLabel">
+                                                                        <i class="uil uil-clipboard-notes me-1"></i>Entry review
+                                                                    </span>
+                                                                    <span class="reviewChip"
+                                                                        :class="reviewFor(trade).hasSl ? 'ok' : 'bad'">
+                                                                        SL {{ reviewFor(trade).hasSl ? reviewFor(trade).slPrice : 'none' }}
+                                                                    </span>
+                                                                    <span class="reviewChip"
+                                                                        :class="reviewFor(trade).hasTp ? 'ok' : 'bad'">
+                                                                        TP {{ reviewFor(trade).hasTp ? reviewFor(trade).tpPrice : 'none' }}
+                                                                    </span>
+                                                                    <span class="reviewChip"
+                                                                        :class="reviewFor(trade).positionQuality === 'good' ? 'ok' : 'bad'">
+                                                                        {{ reviewFor(trade).positionQuality === 'good' ? 'Good position' : 'Bad position' }}
+                                                                    </span>
+                                                                    <span class="reviewChip"
+                                                                        :class="reviewFor(trade).oversized ? 'bad' : 'ok'">
+                                                                        {{ reviewFor(trade).oversized ? 'Oversized' : 'Size ok' }}
+                                                                    </span>
+                                                                    <span class="reviewChip"
+                                                                        :class="reviewFor(trade).logicValid ? 'ok' : 'bad'">
+                                                                        Logic {{ reviewFor(trade).logicValid ? 'valid' : 'broken' }}
+                                                                    </span>
+                                                                    <span v-if="reviewFor(trade).entryEmotion" class="reviewChip emotion"
+                                                                        :style="{ borderColor: REVIEW_EMOTION_COLORS[reviewFor(trade).entryEmotion], color: REVIEW_EMOTION_COLORS[reviewFor(trade).entryEmotion] }">
+                                                                        {{ reviewFor(trade).entryEmotion }}
+                                                                    </span>
+                                                                    <span class="reviewChip"
+                                                                        :class="reviewFor(trade).revengeScore >= 6 ? 'bad' : 'ok'">
+                                                                        Revenge {{ reviewFor(trade).revengeScore }}/10
+                                                                    </span>
+                                                                </div>
+                                                                <div v-if="reviewFor(trade).entryReasoning" class="reviewInlineReason">
+                                                                    {{ reviewFor(trade).entryReasoning }}
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                        </template>
                                                     </tbody>
                                                 </table>
                                             </div>
@@ -1728,6 +1799,55 @@ function getOHLC(date, symbol, type) {
 </template>
 
 <style scoped>
+/* Entry review, shown under its own order row. Indented and un-hovered so it reads
+   as belonging to the trade above rather than as another trade. */
+.reviewRow > td {
+    padding-top: 0;
+    padding-bottom: 0.7rem;
+    border-top: 0;
+}
+
+.reviewInline {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    padding-left: 0.6rem;
+    border-left: 2px solid rgba(47, 155, 255, 0.5);
+}
+
+.reviewInlineLabel {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--white-60);
+    margin-right: 0.2rem;
+    white-space: nowrap;
+}
+
+.reviewChip {
+    font-size: 0.7rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: 0.25rem;
+    border: 1px solid transparent;
+    white-space: nowrap;
+}
+
+.reviewChip.ok { color: #00CA73; background: rgba(0, 202, 115, 0.1); border-color: rgba(0, 202, 115, 0.3); }
+.reviewChip.bad { color: #F6465D; background: rgba(246, 70, 93, 0.1); border-color: rgba(246, 70, 93, 0.3); }
+.reviewChip.emotion { background: transparent; text-transform: capitalize; }
+
+.reviewInlineReason {
+    margin-top: 0.35rem;
+    padding-left: 0.6rem;
+    border-left: 2px solid rgba(47, 155, 255, 0.5);
+    font-size: 0.8rem;
+    line-height: 1.5;
+    color: var(--white-60);
+    white-space: pre-wrap;
+}
+
+
 .weekNoteCard {
     padding: 0.75rem 1rem;
     cursor: pointer;
