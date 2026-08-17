@@ -34,13 +34,20 @@ function thisMonday() {
     return dayjs().tz(tz()).startOf('isoWeek')
 }
 
-async function fetchWeekNotes() {
+/**
+ * Every week record, unfiltered. Exported for the Weekly Plan page, which needs
+ * exactly this and not daily.js's useGetWeekNotes(): that one drops weeks with no
+ * summary AND no plan text, so a week carrying only `planReviewed` disappears --
+ * and the page would then redraw it as "Not reviewed", losing a flag the user had
+ * just set. Nothing here is thrown away, so the caller decides what is relevant.
+ */
+export async function loadWeekNotes() {
     const parseObject = Parse.Object.extend('notes')
     const query = new Parse.Query(parseObject)
     query.equalTo('user', Parse.User.current())
     query.equalTo('tradeId', 'week')
     query.descending('dateUnix')
-    query.limit(52) // a year of weeks is plenty
+    query.limit(500) // one row per week, so the whole history is still tiny
     const results = await query.find()
     return results.map((r) => ({
         dateUnix: r.get('dateUnix'),
@@ -64,7 +71,7 @@ function stubWeek(dateUnix) {
 
 export async function evaluateWeeklyGates() {
     if (!Parse.User.current()) return
-    const notes = await fetchWeekNotes()
+    const notes = await loadWeekNotes()
     const monday = thisMonday()
     const today = dayjs().tz(tz())
     const isMonday = today.isoWeekday() === 1

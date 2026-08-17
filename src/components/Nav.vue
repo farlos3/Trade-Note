@@ -63,6 +63,11 @@ const pages = [{
     icon: "uil uil-clapper-board"
 },
 {
+    id: "weeklyPlan",
+    name: "Weekly Plan",
+    icon: "uil uil-calendar-alt"
+},
+{
     id: "diary",
     name: "Diary",
     icon: "uil uil-diary"
@@ -139,6 +144,18 @@ const pages = [{
 }
 ]
 
+/* The nav title, with a fallback for a pageId this table does not list.
+ *
+ * This used to be four inline `pages.filter(...)[0].icon` lookups in the template.
+ * A route missing from the list above made that `undefined.icon` -- a throw inside
+ * a render function, which does not fail politely: it aborts the render and Vue
+ * re-mounts instead of patching, painting the whole app on the page a second time.
+ * Adding a route and forgetting this list should cost a plain heading, not the
+ * layout. (Same failure mode as the fullScreenModal date bug.) */
+const currentPage = computed(() =>
+    pages.find((item) => item.id === pageId.value) || { name: '', icon: 'uil uil-apps' }
+)
+
 // Every SideMenu link is a plain <a href> full-page reload, not client-side routing
 // (this app intentionally keeps full reloads -- see CLAUDE.md history), so there is
 // no SPA transition to prefetch on. What we CAN do: warm the browser's HTTP cache for
@@ -146,7 +163,7 @@ const pages = [{
 // never competes with this page's own render/data fetches. A reload discards the JS
 // module registry but not the HTTP cache, so the next real navigation to one of these
 // still gets a cache hit instead of a fresh fetch+transform.
-const MAIN_NAV_PATHS = ['/dashboard', '/live', '/daily', '/calendar', '/analysis', '/plan', '/plan-vs-actual', '/diary', '/screenshots', '/playbook']
+const MAIN_NAV_PATHS = ['/dashboard', '/live', '/daily', '/calendar', '/analysis', '/plan', '/plan-vs-actual', '/weekly-plan', '/diary', '/screenshots', '/playbook']
 
 function prefetchOtherPages() {
     const run = () => {
@@ -366,12 +383,10 @@ function getLatestVersion() {
         <div class="navTitle">
             <span v-if="screenType == 'mobile'">
                 <a v-on:click="useToggleMobileMenu">
-                    <i v-bind:class="pages.filter(item => item.id == pageId)[0].icon" class="me-2"></i>{{
-                        pages.filter(item => item.id == pageId)[0].name }}</a>
+                    <i v-bind:class="currentPage.icon" class="me-2"></i>{{ currentPage.name }}</a>
             </span>
             <span v-else>
-                <i v-bind:class="pages.filter(item => item.id == pageId)[0].icon" class="me-2"></i>{{
-                    pages.filter(item => item.id == pageId)[0].name }}</span>
+                <i v-bind:class="currentPage.icon" class="me-2"></i>{{ currentPage.name }}</span>
         </div>
         <div class="navActions">
             <div class="dropdown me-2">
