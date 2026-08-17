@@ -12,7 +12,7 @@ import Proxy from 'http-proxy'
 import { useImportTrades, useGetExistingTradesArray, useUploadTrades } from './src/utils/addTrades.js';
 import { currentUser, uploadMfePrices } from './src/stores/globals.js';
 import { useGetTimeZone } from './src/utils/utils.js';
-import { fetchDayDocs, fetchNotes, fetchTradesFingerprint } from './mcp-server/db.mjs';
+import { fetchDayDocs, fetchNotes, fetchTradesFingerprint, fetchDiaries, fetchEntryReviews } from './mcp-server/db.mjs';
 import Anthropic from '@anthropic-ai/sdk';
 import dayjs from 'dayjs';
 import dayjsUtc from 'dayjs/plugin/utc.js';
@@ -466,6 +466,57 @@ const setupApiRoutes = (app) => {
         return { notes, weeklyReviews }
     }
 
+    /* Diary entries, as plain text.
+     *
+     * Stored as Quill HTML. Handed to a model verbatim, the tags are noise it has
+     * to spend attention parsing, and <br>/</p> boundaries carry the line breaks
+     * that make a diary readable -- so those become newlines rather than being
+     * stripped to a single run-on paragraph. */
+    const htmlToText = (html) => String(html || '')
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
+        .replace(/<li[^>]*>/gi, '- ')
+        .replace(/<[^>]+>/g, '')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim()
+
+    const shapeDiaries = (raw, tz, limit = 15) => raw
+        .filter((d) => htmlToText(d.diary))
+        .sort((a, b) => (b.dateUnix || 0) - (a.dateUnix || 0))
+        .slice(0, limit)
+        .map((d) => ({
+            date: d.dateUnix ? new Date(d.dateUnix * 1000).toLocaleDateString('en-CA', { timeZone: tz }) : null,
+            entry: htmlToText(d.diary),
+        }))
+
+    /* Entry reviews, trimmed to what a coach would actually use.
+     *
+     * Deliberately not the raw rows: prices and pip distances are already in the
+     * trade statistics, and repeating them here would spend context re-stating
+     * numbers the model has. What is unique to this record is the trader's own
+     * judgement at the moment of entry, so that is what survives. */
+    const shapeEntryReviews = (raw, tz, limit = 40) => raw
+        .sort((a, b) => (b.dateUnix || 0) - (a.dateUnix || 0))
+        .slice(0, limit)
+        .map((r) => ({
+            date: r.dateUnix ? new Date(r.dateUnix * 1000).toLocaleDateString('en-CA', { timeZone: tz }) : null,
+            symbol: r.symbol || null,
+            side: r.side || null,
+            lot: r.lot ?? null,
+            hasStopLoss: !!r.hasSl,
+            hasTakeProfit: !!r.hasTp,
+            stopsAcceptable: !!r.tpSlAcceptable,
+            positionQuality: r.positionQuality || null,
+            oversized: !!r.oversized,
+            logicStillValid: !!r.logicValid,
+            emotion: r.entryEmotion || null,
+            // 1 = no urge, 10 = desperate to win it back.
+            revengeUrge: r.revengeScore ?? null,
+            reasoning: r.entryReasoning || null,
+        }))
+
     app.get('/api/analysis/behavior', requireAuth, async (req, res) => {
         try {
             const tz = req.query.tz || process.env.TRADENOTE_TZ || 'UTC'
@@ -493,6 +544,15 @@ const setupApiRoutes = (app) => {
                 weeklyReviews = shaped.weeklyReviews
             } catch (e) { /* notes are optional */ }
 
+            let diaries = []
+            let entryReviews = []
+            try {
+                diaries = shapeDiaries(await fetchDiaries({ fromUnix, toUnix, userId: req.tradenoteUserId }), tz)
+            } catch (e) { /* the diaries collection may not exist yet */ }
+            try {
+                entryReviews = shapeEntryReviews(await fetchEntryReviews({ fromUnix, toUnix, userId: req.tradenoteUserId }), tz)
+            } catch (e) { /* optional, same */ }
+
             res.status(200).json({
                 range: { from: req.query.from || null, to: req.query.to || null },
                 timezone: tz,
@@ -502,6 +562,8 @@ const setupApiRoutes = (app) => {
                 daily: computeDailyBreakdown(trades, tz), // per-day P&L: plan target vs reality
                 notes,
                 weeklyReviews,
+                diaries,
+                entryReviews,
             })
         } catch (error) {
             console.error(' -> Behavior analysis error', error)
@@ -578,7 +640,16 @@ const setupApiRoutes = (app) => {
                 weeklyReviews = shaped.weeklyReviews
             } catch (e) { /* notes optional */ }
 
-            const payload = { range: { from: req.query.from || null, to: req.query.to || null }, timezone: tz, stats, patterns, notes, weeklyReviews }
+            let diaries = []
+            let entryReviews = []
+            try {
+                diaries = shapeDiaries(await fetchDiaries({ fromUnix, toUnix, userId: req.tradenoteUserId }), tz)
+            } catch (e) { /* the diaries collection may not exist yet */ }
+            try {
+                entryReviews = shapeEntryReviews(await fetchEntryReviews({ fromUnix, toUnix, userId: req.tradenoteUserId }), tz)
+            } catch (e) { /* optional, same */ }
+
+            const payload = { range: { from: req.query.from || null, to: req.query.to || null }, timezone: tz, stats, patterns, notes, weeklyReviews, diaries, entryReviews }
             // Plain text, not Markdown: the card renders this with white-space
             // pre-wrap and no Markdown parser, so asterisks would show literally
             // (they did). Notes are called out explicitly -- they were already in
@@ -597,6 +668,19 @@ const setupApiRoutes = (app) => {
                 'useful thing you can point out. Say plainly which resolutions were kept and which were not.',
                 'reflectionWritten=false means a week was never reviewed at all -- worth naming if it is a pattern.',
                 'notes carries `scope`: "day" is a whole-day entry, "trade" is about one position.',
+                '',
+                'diaries are the trader\'s long-form write-ups for a day, in their own words and often not in English.',
+                'Read them for intent and state of mind, and answer in English regardless of what language they are in.',
+                '',
+                'entryReviews is the strongest evidence here, because unlike everything else it was recorded AT THE',
+                'MOMENT OF ENTRY rather than afterwards, so it is not coloured by knowing how the trade turned out.',
+                'Per entry: whether a stop and target were set, whether the trader judged the stops acceptable, whether',
+                'they called the position good or bad, whether they judged it oversized, whether the logic still held,',
+                'the emotion felt, revengeUrge from 1 (no urge) to 10 (desperate to win it back), and their reasoning.',
+                'Use it to separate bad luck from bad process: an entry the trader themselves marked "bad position" or',
+                'oversized, or took at a high revengeUrge, is a decision problem no matter what the P&L did. Losses on',
+                'entries they judged good are a different problem entirely, and should not be lumped in with them.',
+                'Where their own self-assessment disagrees with the outcome in either direction, say so.',
                 '',
                 'FORMAT: plain text only. No Markdown. Do not use asterisks, underscores, backticks or hash marks anywhere.',
                 'Reply using EXACTLY this skeleton, keeping all four headings, each alone on its line, spelled exactly:',
