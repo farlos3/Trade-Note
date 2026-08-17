@@ -80,7 +80,7 @@ changes.
 | `src/views/Plan.vue` | Create/edit growth plans (start balance, % per day, deposits, withdrawals). |
 | `src/views/Analysis.vue` | AI Analysis. Rule-based behavior summary (English) + fingerprint cache; "Analyze behavior" button calls LLM; export prompt+data JSON for Claude. |
 | `src/views/AddTrades.vue` / `Imports.vue` | Import trades (broker CSV / manual). |
-| `src/views/AddDiary.vue` / `Diary.vue` | Diary entries (rich text + day files preview). Four tabs: Day / Week / Plan / Entry reviews. |
+| `src/views/AddDiary.vue` / `Diary.vue` | Diary entries (rich text + day files preview). Three tabs: Day / Week / Entry reviews. Weekly plans live on WeeklyPlan.vue, not here. |
 | `src/views/WeeklyPlan.vue` | **Weekly Plan** page (Journal section). Next week + this week pinned as the two actionable cards, older weeks as history; Monday/Friday reminder banner. Same `notes` week records as the gate popup and Diary's Plan tab. |
 | `src/views/AddScreenshot.vue` / `Screenshots.vue` | Trade screenshots (stored in R2). |
 | `src/views/AddPlaybook.vue` / `Playbook.vue` | Trading playbooks. |
