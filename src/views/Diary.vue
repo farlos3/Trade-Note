@@ -12,6 +12,7 @@ import { useGetDiaries } from '../utils/diary';
 import { useGetTags, useGetTagInfo, useGetAvailableTags, useDailySatisfactionChange, useGetSatisfactions, useGetWeekNotes, useGetDayNotes, useSetWeekNoteCheck, useSaveWeekReflection, useAnalyzeWeekReflection } from '../utils/daily';
 import { useGetDayFiles, useDayFilesFor } from '../utils/dayFiles';
 import { saveWeeklyPlan } from '../utils/weeklyGates';
+import { loadEntryChecklists } from '../utils/entryChecklist';
 
 onBeforeMount(async () => {
 
@@ -42,7 +43,7 @@ const dayNotes = ref([])
    date" vs "what did the whole week amount to" -- and mixing both in one stream
    made the weekly summaries hard to find among the day cards. Persisted so the
    page opens on whichever one you actually use. */
-const VIEWS = [{ id: 'day', label: 'Day' }, { id: 'week', label: 'Week' }, { id: 'plan', label: 'Plan' }]
+const VIEWS = [{ id: 'day', label: 'Day' }, { id: 'week', label: 'Week' }, { id: 'plan', label: 'Plan' }, { id: 'review', label: 'Entry reviews' }]
 const view = ref(localStorage.getItem('diaryView') === 'week' ? 'week' : 'day')
 watch(view, (v) => localStorage.setItem('diaryView', v))
 
@@ -175,6 +176,30 @@ async function analyzeReflection(w) {
 
 const aiAnalysisTime = (t) => (t ? dayjs(t).tz(timeZoneTrade.value || 'UTC').format('MMM D, HH:mm') : '')
 
+/* Entry reviews tab: the answers given to the post-entry checklist, newest first.
+   Read-only on purpose -- the value of the questions is that they were answered in
+   the moment, and a record you can quietly revise afterwards is not evidence of
+   anything. Grouped by day so a day's entries can be read as one session. */
+const entryReviews = ref([])
+
+const EMOTION_COLORS = {
+    calm: '#22c55e', confident: '#38bdf8', nervous: '#ef4444',
+    excited: '#f59e0b', frustrated: '#94a3b8',
+}
+const reviewsByDay = computed(() => {
+    const byDay = new Map()
+    for (const r of entryReviews.value) {
+        const day = dayjs.unix(r.dateUnix).tz(timeZoneTrade.value || 'UTC').startOf('day').unix()
+        if (!byDay.has(day)) byDay.set(day, [])
+        byDay.get(day).push(r)
+    }
+    return [...byDay.entries()]
+        .map(([dateUnix, items]) => ({ dateUnix, items: items.sort((a, b) => b.dateUnix - a.dateUnix) }))
+        .sort((a, b) => b.dateUnix - a.dateUnix)
+})
+const reviewTime = (dateUnix) =>
+    dayjs.unix(dateUnix).tz(timeZoneTrade.value || 'UTC').format('HH:mm')
+
 /* Plan tab: history of every week's plan (written the Friday before, reviewed
    the Monday after -- see weeklyGates.js, which forces both). This tab is the
    browse-anytime view of the same records; editing here goes through the same
@@ -262,9 +287,10 @@ onMounted(async () => {
     await useGetDiaries(true)
     await Promise.all([useGetTags(), useGetAvailableTags(), useGetSatisfactions(), useGetDayFiles()])
     try {
-        const [wn, dn] = await Promise.all([useGetWeekNotes(), useGetDayNotes()])
+        const [wn, dn, ec] = await Promise.all([useGetWeekNotes(), useGetDayNotes(), loadEntryChecklists()])
         weekNotes.value = wn
         dayNotes.value = dn
+        entryReviews.value = ec
     } catch (e) { console.error('notes failed', e) }
     useInitPopover()
     window.addEventListener('scroll', () => {
@@ -293,6 +319,68 @@ onMounted(async () => {
                 <button v-for="v in VIEWS" :key="v.id" type="button"
                     :class="['viewBtn', { active: view === v.id }]" v-on:click="view = v.id">{{ v.label }}</button>
             </div>
+
+            <!-- ================= ENTRY REVIEWS ================= -->
+            <template v-if="view === 'review'">
+                <div v-if="reviewsByDay.length == 0">
+                    <NoData />
+                </div>
+
+                <div v-for="d in reviewsByDay" :key="'rv-' + d.dateUnix" class="mb-4">
+                    <div class="reviewDayHead">
+                        <i class="uil uil-calendar-alt me-2"></i>{{ useCreatedDateFormat(d.dateUnix) }}
+                        <span class="reviewDayCount">{{ d.items.length }} entr{{ d.items.length === 1 ? 'y' : 'ies' }}</span>
+                    </div>
+
+                    <div v-for="r in d.items" :key="r.objectId" class="dailyCard reviewCard mb-3">
+                        <div class="reviewHead">
+                            <span class="sideTag" :class="(r.side === 'sell' || r.side === 'short') ? 'sell' : 'buy'">
+                                {{ (r.side === 'sell' || r.side === 'short') ? 'SELL' : 'BUY' }}
+                            </span>
+                            <span class="reviewSymbol">{{ r.symbol }}</span>
+                            <span class="reviewLot">{{ r.lot }} lot</span>
+                            <span class="reviewTime ms-auto">{{ reviewTime(r.dateUnix) }}</span>
+                        </div>
+
+                        <!-- The judgment calls, as they were answered. Colour carries the
+                             answer so a run of bad entries is visible without reading. -->
+                        <div class="reviewFacts">
+                            <span class="reviewFact" :class="r.hasSl ? 'ok' : 'bad'">
+                                SL {{ r.hasSl ? r.slPrice : 'none' }}
+                                <em v-if="r.hasSl">{{ r.slPips.toFixed(1) }}p</em>
+                            </span>
+                            <span class="reviewFact" :class="r.hasTp ? 'ok' : 'bad'">
+                                TP {{ r.hasTp ? r.tpPrice : 'none' }}
+                                <em v-if="r.hasTp">{{ r.tpPips.toFixed(1) }}p</em>
+                            </span>
+                            <span class="reviewFact" :class="r.tpSlAcceptable ? 'ok' : 'bad'">
+                                SL/TP {{ r.tpSlAcceptable ? 'acceptable' : 'not acceptable' }}
+                            </span>
+                            <span class="reviewFact" :class="r.positionQuality === 'good' ? 'ok' : 'bad'">
+                                {{ r.positionQuality === 'good' ? 'Good position' : 'Bad position' }}
+                            </span>
+                            <span class="reviewFact" :class="r.oversized ? 'bad' : 'ok'">
+                                {{ r.oversized ? 'Oversized' : 'Size ok' }}
+                            </span>
+                            <span class="reviewFact" :class="r.logicValid ? 'ok' : 'bad'">
+                                Logic {{ r.logicValid ? 'valid' : 'broken' }}
+                            </span>
+                            <span v-if="r.entryEmotion" class="reviewFact emotion"
+                                :style="{ borderColor: EMOTION_COLORS[r.entryEmotion], color: EMOTION_COLORS[r.entryEmotion] }">
+                                {{ r.entryEmotion }}
+                            </span>
+                            <span class="reviewFact" :class="r.revengeScore >= 6 ? 'bad' : 'ok'">
+                                Revenge {{ r.revengeScore }}/10
+                            </span>
+                        </div>
+
+                        <div v-if="r.entryReasoning" class="reviewReason">
+                            <label class="reviewReasonLabel">Why you entered</label>
+                            <div class="reviewReasonText">{{ r.entryReasoning }}</div>
+                        </div>
+                    </div>
+                </div>
+            </template>
 
             <!-- ================= WEEK ================= -->
             <template v-if="view === 'week'">
@@ -520,6 +608,97 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.reviewDayHead {
+    display: flex;
+    align-items: center;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--white-87);
+    margin-bottom: 0.6rem;
+}
+
+.reviewDayCount {
+    margin-left: 0.6rem;
+    font-size: 0.72rem;
+    font-weight: 400;
+    color: var(--white-60);
+}
+
+.reviewCard {
+    height: auto;
+    padding: 14px 18px;
+    border-left: 3px solid #2f9bff;
+}
+
+.reviewHead {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    flex-wrap: wrap;
+}
+
+.sideTag {
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 0.15rem 0.5rem;
+    border-radius: 0.25rem;
+}
+
+.sideTag.buy { color: #00CA73; background: rgba(0, 202, 115, 0.12); }
+.sideTag.sell { color: #F6465D; background: rgba(246, 70, 93, 0.12); }
+
+.reviewSymbol { font-weight: 700; font-size: 0.92rem; }
+.reviewLot, .reviewTime { font-size: 0.8rem; color: var(--white-60); }
+
+.reviewFacts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.7rem;
+}
+
+/* Green/red rather than neutral chips: the point of keeping these is to see a run
+   of bad entries at a glance, which a uniform list of labels does not give you. */
+.reviewFact {
+    font-size: 0.72rem;
+    padding: 0.1rem 0.45rem;
+    border-radius: 0.25rem;
+    border: 1px solid transparent;
+    white-space: nowrap;
+}
+
+.reviewFact em {
+    font-style: normal;
+    opacity: 0.75;
+    margin-left: 0.2rem;
+}
+
+.reviewFact.ok { color: #00CA73; background: rgba(0, 202, 115, 0.1); border-color: rgba(0, 202, 115, 0.3); }
+.reviewFact.bad { color: #F6465D; background: rgba(246, 70, 93, 0.1); border-color: rgba(246, 70, 93, 0.3); }
+.reviewFact.emotion { background: transparent; text-transform: capitalize; }
+
+.reviewReason {
+    margin-top: 0.7rem;
+    padding-top: 0.6rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.reviewReasonLabel {
+    display: block;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--white-60);
+    margin-bottom: 0.25rem;
+}
+
+.reviewReasonText {
+    font-size: 0.88rem;
+    line-height: 1.55;
+    white-space: pre-wrap;
+}
+
+
 .diaryEntryCard {
     padding: 20px 24px;
     /* .dailyCard sets height:100%, which is meant for cards sitting side by side

@@ -80,7 +80,7 @@ changes.
 | `src/views/Plan.vue` | Create/edit growth plans (start balance, % per day, deposits, withdrawals). |
 | `src/views/Analysis.vue` | AI Analysis. Rule-based behavior summary (English) + fingerprint cache; "Analyze behavior" button calls LLM; export prompt+data JSON for Claude. |
 | `src/views/AddTrades.vue` / `Imports.vue` | Import trades (broker CSV / manual). |
-| `src/views/AddDiary.vue` / `Diary.vue` | Diary entries (rich text + day files preview). Three tabs: Day / Week / Plan. |
+| `src/views/AddDiary.vue` / `Diary.vue` | Diary entries (rich text + day files preview). Four tabs: Day / Week / Plan / Entry reviews. |
 | `src/views/WeeklyPlan.vue` | **Weekly Plan** page (Journal section). Next week + this week pinned as the two actionable cards, older weeks as history; Monday/Friday reminder banner. Same `notes` week records as the gate popup and Diary's Plan tab. |
 | `src/views/AddScreenshot.vue` / `Screenshots.vue` | Trade screenshots (stored in R2). |
 | `src/views/AddPlaybook.vue` / `Playbook.vue` | Trading playbooks. |
@@ -118,6 +118,7 @@ changes.
 | `src/utils/calendar.js` | Build calendar P&L data. |
 | `src/utils/charts.js` | ECharts helpers (line/double-line/pie renderers). |
 | `src/utils/daily.js` | Daily satisfaction + daily-page data helpers. |
+| `src/utils/entryChecklist.js` | Post-entry review queue + the shared today-only cutoff. Fed globally by `startEntryChecklistWatch()` (live positions, falling back to today's synced trades). `loadEntryChecklists()` reads answers back for Diary's Entry reviews tab. |
 | `src/utils/weeklyGates.js` | Weekly discipline gates (Friday plan / Monday review / missing reflection) + the shared read-write helpers for week plan records. `loadWeekNotes()` is the unfiltered loader; `daily.js`'s `useGetWeekNotes()` drops weeks with no summary and no plan text. |
 | `src/utils/dayFiles.js` | Upload/list/delete day-summary files (R2). Supports multiple files per day. |
 | `src/utils/diary.js` | Diary CRUD (upload is fire-and-forget; errors only logged). |
