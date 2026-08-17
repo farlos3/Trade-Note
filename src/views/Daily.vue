@@ -118,11 +118,23 @@ let tradesModal = null
 let tagsModal = null
 let dayNoteModal = null
 const dayNoteDateUnix = ref(null)
-const dayNoteText = ref('')
+
+/* Both note boxes are UNCONTROLLED: a template ref, filled when the modal opens
+   and read when Save is pressed, rather than v-model.
+ *
+ * v-model made every keystroke a reactive write owned by this component -- and
+ * this component renders every day card, all ~240 trade rows and the charts, so
+ * Vue re-ran that whole render function per character. Measured at ~165ms a
+ * keystroke (worst 209ms) against 5,400 DOM nodes, which is exactly the typing lag
+ * you feel. Nothing reads these values while typing; only Save does. Dropping the
+ * binding takes the per-keystroke cost to zero, and also stops a re-render landing
+ * in the middle of an IME composition, which matters for Thai input.
+ */
+const dayNoteEl = ref(null)
 
 // Week note: single fixed target (the real current ISO week), not per-list-item like day notes.
 let weekNoteModal = null
-const weekNoteText = ref('')
+const weekNoteEl = ref(null)
 const weekNoteDateUnix = computed(() => dayjs().tz(timeZoneTrade.value).startOf('isoWeek').unix())
 const weekNoteExisting = computed(() => {
     const existing = notes.find((n) => n.tradeId === 'week' && n.dateUnix === weekNoteDateUnix.value)
@@ -266,12 +278,12 @@ onMounted(async () => {
         const dateUnix = filteredTrades[index].dateUnix
         dayNoteDateUnix.value = dateUnix
         const existing = notes.find((n) => n.tradeId === 'day' && n.dateUnix === dateUnix)
-        dayNoteText.value = (existing && existing.note) || ''
+        if (dayNoteEl.value) dayNoteEl.value.value = (existing && existing.note) || ''
     })
 
     weekNoteModal = new bootstrap.Modal("#weekNoteModal")
     document.getElementById("weekNoteModal").addEventListener('shown.bs.modal', async () => {
-        weekNoteText.value = weekNoteExisting.value
+        if (weekNoteEl.value) weekNoteEl.value.value = weekNoteExisting.value
     })
 
     // History had no refresh at all: a trade synced while this page was open stayed
@@ -288,12 +300,12 @@ onUnmounted(() => {
 })
 
 async function saveDayNote() {
-    await useSaveDayNote(dayNoteDateUnix.value, dayNoteText.value)
+    await useSaveDayNote(dayNoteDateUnix.value, dayNoteEl.value ? dayNoteEl.value.value : '')
     dayNoteModal.hide()
 }
 
 async function saveWeekNote() {
-    await useSaveWeekNote(weekNoteDateUnix.value, weekNoteText.value)
+    await useSaveWeekNote(weekNoteDateUnix.value, weekNoteEl.value ? weekNoteEl.value.value : '')
     weekNoteModal.hide()
 }
 
@@ -1779,7 +1791,8 @@ function getOHLC(date, symbol, type) {
             <div class="modal-content">
                 <div class="container col mt-4">
                     <label class="dashInfoTitle mb-1"><i class="uil uil-bell me-1"></i>Day note</label>
-                    <textarea class="form-control" rows="5" v-model="dayNoteText"
+                    <!-- Uncontrolled on purpose -- see dayNoteEl. -->
+                    <textarea ref="dayNoteEl" class="form-control" rows="5"
                         placeholder="Anything worth flagging about this whole day..."></textarea>
                 </div>
                 <div class="col text-center mt-4 mb-4">
@@ -1797,7 +1810,8 @@ function getOHLC(date, symbol, type) {
             <div class="modal-content">
                 <div class="container col mt-4">
                     <label class="dashInfoTitle mb-1"><i class="uil uil-bell me-1"></i>Week note</label>
-                    <textarea class="form-control" rows="16" v-model="weekNoteText"
+                    <!-- Uncontrolled on purpose -- see weekNoteEl. -->
+                    <textarea ref="weekNoteEl" class="form-control" rows="16"
                         placeholder="Anything worth flagging about this whole week..."></textarea>
                 </div>
                 <div class="col text-center mt-4 mb-4">
