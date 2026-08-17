@@ -132,6 +132,49 @@ export async function fetchDayDocs({ fromUnix, toUnix, userId } = {}) {
     .toArray()
 }
 
+/**
+ * Diary entries in a dateUnix range.
+ *
+ * A separate collection from `notes`: notes are the short per-day/per-trade
+ * remarks, diaries are the long-form write-ups from the Diary page. Both are the
+ * trader's own account of what happened and the analysis wants each.
+ */
+export async function fetchDiaries({ fromUnix, toUnix, userId } = {}) {
+  const db = await getDb()
+  const q = { ...(await getUserFilter(db, userId)) }
+  if (fromUnix != null || toUnix != null) {
+    q.dateUnix = {}
+    if (fromUnix != null) q.dateUnix.$gte = fromUnix
+    if (toUnix != null) q.dateUnix.$lt = toUnix
+  }
+  return db.collection('diaries')
+    .find(q, { projection: { diary: 1, dateUnix: 1 } })
+    .sort({ dateUnix: 1 })
+    .toArray()
+}
+
+/**
+ * Post-entry reviews (the entry checklist) in a dateUnix range.
+ *
+ * The richest behavioural record the journal holds, and the only one recorded at
+ * the moment of entry rather than afterwards: what the trader was feeling, whether
+ * they judged the position good, whether the size was over, and how badly they
+ * wanted their money back. Keyed by dateUnix = the entry time.
+ */
+export async function fetchEntryReviews({ fromUnix, toUnix, userId } = {}) {
+  const db = await getDb()
+  const q = { ...(await getUserFilter(db, userId)) }
+  if (fromUnix != null || toUnix != null) {
+    q.dateUnix = {}
+    if (fromUnix != null) q.dateUnix.$gte = fromUnix
+    if (toUnix != null) q.dateUnix.$lt = toUnix
+  }
+  return db.collection('entryChecklists')
+    .find(q)
+    .sort({ dateUnix: 1 })
+    .toArray()
+}
+
 /** Fetch journal notes (reason / review note) in a dateUnix range. */
 export async function fetchNotes({ fromUnix, toUnix, userId } = {}) {
   const db = await getDb()
