@@ -461,15 +461,19 @@ async function createTempExecutions() {
                 temp2.quantity = parseFloat(tradesData[key].Qty);
                 temp2.price = parseFloat(tradesData[key].Price);
 
-                // The MT5 sync writes each deal's time as the broker's own wall-clock
-                // read back in UTC (see mt5_sync.py's build_report_xlsx) specifically so
-                // it survives the host/broker timezone gap untouched -- the digits here
-                // ARE the broker clock, not a time in the trade timezone. Parsing them
-                // as timeZoneTrade would re-shift by that timezone's UTC offset (e.g.
-                // Asia/Bangkok is UTC+7, so a trade closing at true broker-time 14:41
-                // gets stored as 07:41 -- 7 hours off, and close enough to midnight to
-                // land the trade on the wrong calendar day). Every other broker's export
+                // The MT5 sync writes each deal's time as real UTC: mt5_sync.py now
+                // subtracts the broker's clock offset at the point the data enters
+                // (broker_time_to_utc), so these digits are UTC and parsing them as
+                // UTC is correct. They used to be the BROKER's wall clock parsed the
+                // same way, which silently shifted every trade by the broker's offset
+                // -- a UTC+3 broker put a 16:41 Bangkok entry on screen as 19:41.
+                // Parsing as timeZoneTrade would be wrong for a different reason: it
+                // would re-shift by that timezone's offset. Every other broker's export
                 // genuinely is in the trade timezone, so only MT5 needs the UTC parse.
+                //
+                // NOTE: a report exported by hand from the MT5 terminal is still in
+                // BROKER time, so importing one directly is off by the broker offset.
+                // The sync path is the corrected one.
                 const execDateTime = formatedDateTD + " " + tradesData[key]['Exec Time']
                 temp2.execTime = selectedBroker.value === 'metaTrader5'
                     ? dayjs.utc(execDateTime).unix()

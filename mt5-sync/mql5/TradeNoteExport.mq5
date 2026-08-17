@@ -207,6 +207,20 @@ string BuildJson()
    }
    json += "],\n";
 
+   // ---- broker clock offset ------------------------------------------------
+   // Every timestamp above is MT5 server time, NOT UTC: TimeCurrent() on a UTC+3
+   // broker reads 12:41 for an event that happened at 09:41 UTC. Downstream those
+   // numbers are treated as real unix timestamps, so without this they land three
+   // hours into the future and every trade is displayed three hours late.
+   //
+   // The terminal is the only thing that knows the offset -- it changes with the
+   // broker's own DST, not the host's -- so it is exported rather than configured,
+   // and the Python side subtracts it. Rounded to the minute because TimeGMT() and
+   // TimeCurrent() are sampled a moment apart.
+   long gmtOffset = (long)TimeCurrent() - (long)TimeGMT();
+   gmtOffset = (long)MathRound((double)gmtOffset / 60.0) * 60;
+   json += "  \"gmt_offset\": " + IntegerToString(gmtOffset) + ",\n";
+
    json += "  \"exported_at\": " + IntegerToString((long)TimeCurrent()) + "\n";
    json += "}\n";
    return json;
