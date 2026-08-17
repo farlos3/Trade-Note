@@ -191,11 +191,15 @@ onBeforeMount(async () => {
 
 })
 onMounted(async () => {
-    useLoadChecklistedIds().then(() => {
-        checklistReady = true
-        offerRecentTradesForChecklist()
-    })
-    await useMountDaily()
+    // Await both, THEN offer. These used to race: the .then() fired as soon as the
+    // (small, fast) checklisted-ids query came back, which is normally well before
+    // useMountDaily() has filled filteredTrades -- so it walked an empty list and
+    // offered nothing. The checklist then simply never appeared on this page.
+    await Promise.all([
+        useLoadChecklistedIds().then(() => { checklistReady = true }),
+        useMountDaily(),
+    ])
+    offerRecentTradesForChecklist()
     await useGetDayFiles()
     await useInitTooltip()
     useCreateAvailableTagsArray()

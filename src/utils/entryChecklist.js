@@ -13,6 +13,7 @@
  */
 import { reactive, computed } from 'vue'
 import Parse from 'parse/dist/parse.min.js'
+import { useAuthHeaders } from './apiAuth'
 
 const pending = reactive([])   // [{ tradeId, dateUnix, symbol, side, entryPrice, tp, sl }]
 const queuedIds = new Set()    // tradeIds currently sitting in `pending`
@@ -54,6 +55,134 @@ export function offerEntryChecklist(trade) {
 }
 
 export const currentEntryChecklist = computed(() => pending[0] || null)
+
+/* How many are waiting. With the history fallback a backlog is now possible (a
+   spell with the live feed down leaves every trade of that period unreviewed), and
+   a gate that reappears with no sense of how many are left reads as broken rather
+   than as a queue. */
+export const entryChecklistQueueLength = computed(() => pending.length)
+
+/**
+ * Watch for new orders from ANY page.
+ *
+ * The queue used to be fed only by Live.vue and Daily.vue, so a fill that landed
+ * while the trader was on the Dashboard, the Calendar or anywhere else was simply
+ * never offered -- and since the point is to review an entry while it is still
+ * open, "only if you happened to be on the right page" is close to not working at
+ * all. The modal has always been mounted in DashboardLayout, i.e. on every page;
+ * only the trigger was missing. This supplies it.
+ *
+ * Polls rather than holding an EventSource: every nav in this app is a full page
+ * reload, so a stream would be torn down and re-established constantly, and
+ * /api/live only serves an in-memory snapshot. Live.vue keeps its own SSE feed for
+ * the per-second numbers -- offerEntryChecklist dedups by tradeId, so the two
+ * sources cannot double-queue the same position.
+ */
+const OPEN_POSITION_POLL_MS = 20000
+// How far back the history fallback looks. Bounded because it is a safety net for
+// trades missed while the feed was down, not a backfill of the whole account.
+const HISTORY_LOOKBACK_SECONDS = 72 * 3600
+
+let watchTimer = null
+
+/**
+ * Open positions from the live feed, or null when the feed is not usable.
+ *
+ * GET /api/live answers `{ stale, snapshot }` -- an envelope, not the snapshot
+ * itself, and the server has already decided whether the feed counts as live (see
+ * liveIsStale in index.mjs). Reading `stale` rather than re-deriving it from a
+ * timestamp here keeps one definition of "the feed is down" instead of two that
+ * can drift apart.
+ */
+async function liveOpenPositions() {
+    const res = await fetch('/api/live', { headers: useAuthHeaders() })
+    if (!res.ok) return null
+    const body = await res.json()
+    if (!body || body.stale || !body.snapshot) return null
+    return body.snapshot.positions || []
+}
+
+/**
+ * Closed trades from the last few days that were never reviewed.
+ *
+ * The fallback for a dead live feed. A trade seen only after it closed cannot be
+ * reviewed while it is running, but the questions that matter afterwards -- why
+ * you entered, how you felt, whether the size was right -- are the same ones, and
+ * an unanswered entry is worth catching late rather than not at all.
+ */
+async function unreviewedRecentTrades() {
+    const cutoff = Math.floor(Date.now() / 1000) - HISTORY_LOOKBACK_SECONDS
+    const query = new Parse.Query(Parse.Object.extend('trades'))
+    query.equalTo('user', currentUserOrNull())
+    query.greaterThanOrEqualTo('dateUnix', cutoff - 86400) // day docs are keyed to midnight
+    query.descending('dateUnix')
+    query.limit(10)
+    const days = await query.find()
+    const out = []
+    for (const day of days) {
+        for (const t of (day.get('trades') || [])) {
+            if (!t.positionId || !t.entryTime || t.entryTime < cutoff) continue
+            out.push({
+                tradeId: String(t.positionId),
+                dateUnix: t.entryTime,
+                symbol: t.symbol,
+                side: t.strategy,            // 'long' | 'short'
+                entryPrice: t.entryPrice,
+                // A closed trade carries no broker TP/SL to prefill.
+                tp: null,
+                sl: null,
+                lot: Math.max(t.buyQuantity || 0, t.sellQuantity || 0),
+            })
+        }
+    }
+    return out
+}
+
+/** Parse throws if it has not been initialised yet; a watcher must not care. */
+function currentUserOrNull() {
+    try {
+        return Parse.User.current()
+    } catch {
+        return null
+    }
+}
+
+export function startEntryChecklistWatch() {
+    if (watchTimer) return
+    const tick = async () => {
+        if (!currentUserOrNull()) return
+        try {
+            // Ids first: without them every open position looks unanswered and
+            // would be re-queued on every page load.
+            await useLoadChecklistedIds()
+
+            // Live is preferred -- reviewing an entry while it is still open is the
+            // whole point of doing this at entry rather than afterwards.
+            const live = await liveOpenPositions()
+            if (live && live.length) {
+                live.forEach(offerEntryChecklist)
+                return
+            }
+
+            // Nothing to review live, for one of two reasons, and BOTH need history:
+            // the feed is down (null), or it is up and flat (empty). The second case
+            // is not automatically "nothing happened" -- a trade opened and closed
+            // inside one poll interval leaves the feed flat at both ends, and would
+            // otherwise never be offered by anything. Re-offering a trade that WAS
+            // caught live is harmless: the live ticket and the synced positionId are
+            // the same value, so it dedups on tradeId.
+            const recent = await unreviewedRecentTrades()
+            recent.forEach(offerEntryChecklist)
+        } catch { /* feed down or logged out -- next tick tries again */ }
+    }
+    tick()
+    watchTimer = setInterval(tick, OPEN_POSITION_POLL_MS)
+}
+
+export function stopEntryChecklistWatch() {
+    clearInterval(watchTimer)
+    watchTimer = null
+}
 
 export async function saveEntryChecklist(trade, answers) {
     const parseObject = Parse.Object.extend('entryChecklists')
