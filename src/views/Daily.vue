@@ -10,7 +10,7 @@ import { spinnerLoadingPage, calendarData, filteredTrades, screenshots, diaries,
 
 import { useCreatedDateFormat, useTwoDecCurrencyFormat, useTimeFormat, useTimeDuration, useMountDaily, useRefreshDailyData, useGetSelectedRange, useLoadMore, useCheckVisibleScreen, useDecimalsArithmetic, useInitTooltip, useDateCalFormat, useSwingDuration, useStartOfDay, useInitTab } from '../utils/utils';
 import { useJournalUpdates } from '../utils/journalStream';
-import { offerEntryChecklist, useLoadChecklistedIds } from '../utils/entryChecklist';
+import { offerEntryChecklist, useLoadChecklistedIds, checklistCutoffUnix } from '../utils/entryChecklist';
 
 import { useSetupImageUpload, useSaveScreenshot, useGetScreenshots } from '../utils/screenshots';
 
@@ -165,10 +165,12 @@ const apiSource = ref(null)
    always few and current) or a first-ever page load would queue up every trade
    ever imported instead of just what "just arrived". */
 let checklistReady = false
-const CHECKLIST_LOOKBACK_SECONDS = 48 * 3600
 function offerRecentTradesForChecklist() {
     if (!checklistReady) return
-    const cutoff = dayjs().unix() - CHECKLIST_LOOKBACK_SECONDS
+    // Today only, and from the SHARED cutoff rather than this page's own rolling
+    // window -- three places offer this checklist, and a page with a wider window
+    // would keep re-queueing trades the other two have already stopped asking about.
+    const cutoff = checklistCutoffUnix()
     for (const day of filteredTrades) {
         for (const trade of (day.trades || [])) {
             if (!trade.positionId || !trade.entryTime || trade.entryTime < cutoff) continue

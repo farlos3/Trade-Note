@@ -13,7 +13,29 @@
  */
 import { reactive, computed } from 'vue'
 import Parse from 'parse/dist/parse.min.js'
+import dayjs from 'dayjs'
+import utc from 'dayjs/plugin/utc.js'
+import timezone from 'dayjs/plugin/timezone.js'
+dayjs.extend(utc)
+dayjs.extend(timezone)
+import { timeZoneTrade } from '../stores/globals.js'
 import { useAuthHeaders } from './apiAuth'
+
+/**
+ * Only today's trades are ever offered for review.
+ *
+ * Start of the trading day in the TRADE timezone, not UTC -- day documents are
+ * keyed to trade-tz midnight, and using UTC here would pull in part of yesterday
+ * (or drop part of this morning) depending on the offset.
+ *
+ * The bound is a day rather than a rolling window because the review is meant to
+ * be done while the trade is fresh. Anything older is water under the bridge: it
+ * cannot be honestly recalled, and a queue of stale trades only teaches you to
+ * click through the popup, which defeats the whole thing.
+ */
+export function checklistCutoffUnix() {
+    return dayjs().tz(timeZoneTrade.value || 'UTC').startOf('day').unix()
+}
 
 const pending = reactive([])   // [{ tradeId, dateUnix, symbol, side, entryPrice, tp, sl }]
 const queuedIds = new Set()    // tradeIds currently sitting in `pending`
@@ -79,10 +101,6 @@ export const entryChecklistQueueLength = computed(() => pending.length)
  * sources cannot double-queue the same position.
  */
 const OPEN_POSITION_POLL_MS = 20000
-// How far back the history fallback looks. Bounded because it is a safety net for
-// trades missed while the feed was down, not a backfill of the whole account.
-const HISTORY_LOOKBACK_SECONDS = 72 * 3600
-
 let watchTimer = null
 
 /**
@@ -99,24 +117,31 @@ async function liveOpenPositions() {
     if (!res.ok) return null
     const body = await res.json()
     if (!body || body.stale || !body.snapshot) return null
-    return body.snapshot.positions || []
+    // Same day bound as the history side. A position opened days ago and still
+    // running is not something to be asked about now -- the entry it is asking to
+    // review happened in a session that is already over.
+    const cutoff = checklistCutoffUnix()
+    return (body.snapshot.positions || []).filter((p) => !p.openTime || p.openTime >= cutoff)
 }
 
 /**
- * Closed trades from the last few days that were never reviewed.
+ * Today's trades that were never reviewed.
  *
  * The fallback for a dead live feed. A trade seen only after it closed cannot be
  * reviewed while it is running, but the questions that matter afterwards -- why
  * you entered, how you felt, whether the size was right -- are the same ones, and
- * an unanswered entry is worth catching late rather than not at all.
+ * an unanswered entry is worth catching late in the same day rather than not at
+ * all. See checklistCutoffUnix for why it stops at the day boundary.
  */
 async function unreviewedRecentTrades() {
-    const cutoff = Math.floor(Date.now() / 1000) - HISTORY_LOOKBACK_SECONDS
+    const cutoff = checklistCutoffUnix()
     const query = new Parse.Query(Parse.Object.extend('trades'))
     query.equalTo('user', currentUserOrNull())
-    query.greaterThanOrEqualTo('dateUnix', cutoff - 86400) // day docs are keyed to midnight
+    // The day doc IS keyed to this cutoff (trade-tz midnight), so an exact match
+    // would do -- >= is kept only so a trade filed under a later key is not lost.
+    query.greaterThanOrEqualTo('dateUnix', cutoff)
     query.descending('dateUnix')
-    query.limit(10)
+    query.limit(3)
     const days = await query.find()
     const out = []
     for (const day of days) {
