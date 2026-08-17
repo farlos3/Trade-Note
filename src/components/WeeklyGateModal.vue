@@ -5,7 +5,7 @@
  * -- static backdrop, no keyboard-close, no close button: the only way out is
  * completing the gate, which is what each Save/Reviewed handler does.
  */
-import { ref, reactive, computed, watch, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import dayjs from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek.js'
 import utc from 'dayjs/plugin/utc.js'
@@ -53,8 +53,10 @@ watch([weeklyGate, weeklyGateTarget], ([gate, week]) => {
         planDraftText.value = (week && week.planText) || ''
         planFile.value = null
         reflectionDraft.value = (week && week.reflection) || ''
+        reviewNote.value = ''
         displayedGate.value = gate
         displayedWeek.value = week
+        if (gate === 'review') startDwell()
         if (modal) modal.show()
     } else if (modal) {
         modal.hide() // displayedGate/displayedWeek cleared by 'hidden.bs.modal' above
@@ -99,8 +101,45 @@ async function submitPlan() {
     }
 }
 
+/* Monday cannot be satisfied by clicking a button.
+ *
+ * "Reviewed" used to be enabled unconditionally, so the whole gate could be
+ * cleared in one reflex click on a week with no plan at all -- which is the exact
+ * behaviour it exists to prevent. Three conditions now stand between the trader
+ * and that button:
+ *
+ *   1. a plan has to exist (text + PDF, the same bar Friday enforces). If Friday
+ *      was missed, Monday is where it gets written, not waved through.
+ *   2. a written re-check. This is the one that actually forces reading: you
+ *      cannot restate a plan you have not looked at, whereas a checkbox says
+ *      nothing about whether anyone read anything.
+ *   3. a few seconds on screen, so the button is not already under the cursor
+ *      before the text has been taken in.
+ */
+const REVIEW_NOTE_MIN = 25          // characters -- a sentence, not "ok"
+const REVIEW_DWELL_SECONDS = 8
+
+const reviewNote = ref('')
+const dwellLeft = ref(REVIEW_DWELL_SECONDS)
+let dwellTimer = null
+
+function startDwell() {
+    clearInterval(dwellTimer)
+    dwellLeft.value = REVIEW_DWELL_SECONDS
+    dwellTimer = setInterval(() => {
+        dwellLeft.value -= 1
+        if (dwellLeft.value <= 0) clearInterval(dwellTimer)
+    }, 1000)
+}
+onUnmounted(() => clearInterval(dwellTimer))
+
+const reviewNoteLeft = computed(() => Math.max(0, REVIEW_NOTE_MIN - reviewNote.value.trim().length))
+const isReviewComplete = computed(() =>
+    !!planDraftText.value.trim() && hasPdf.value && reviewNoteLeft.value === 0 && dwellLeft.value <= 0
+)
+
 async function submitReview() {
-    if (submitting.value || !displayedWeek.value) return
+    if (!isReviewComplete.value || submitting.value || !displayedWeek.value) return
     submitting.value = true
     try {
         // The Monday popup allows editing -- if the text or file changed, save
@@ -109,7 +148,7 @@ async function submitReview() {
         if (planDraftText.value !== (w.planText || '') || planFile.value) {
             await saveWeeklyPlan(w.dateUnix, { text: planDraftText.value, file: planFile.value })
         }
-        await markPlanReviewed(w.dateUnix)
+        await markPlanReviewed(w.dateUnix, reviewNote.value)
     } catch (e) {
         console.error('could not save plan review', e)
     } finally {
@@ -172,12 +211,31 @@ async function submitReflection() {
                         <a v-if="pdfHref" :href="pdfHref" target="_blank" rel="noopener" class="wgFileOk wgFileLink">
                             <i class="uil uil-file-alt me-1"></i>{{ pdfName }} <i class="uil uil-external-link-alt ms-1"></i>
                         </a>
-                        <div v-else class="wgIntro mb-2">No PDF was attached.</div>
+                        <div v-else class="wgIntro mb-2">No PDF was attached — attach it now.</div>
                         <input type="file" accept="application/pdf" class="form-control form-control-sm mt-2" v-on:change="onFileChange"
                             placeholder="Replace PDF (optional)">
+
+                        <label class="wgLabel mt-3">
+                            Re-check — in your own words, what are you trading this week?
+                            <span class="wgReq">required</span>
+                        </label>
+                        <textarea class="form-control form-control-sm" rows="3" v-model="reviewNote"
+                            placeholder="The levels that matter, what you're waiting for, and what would tell you to stand aside."></textarea>
+                        <div class="wgHint" :class="{ ok: reviewNoteLeft === 0 }">
+                            {{ reviewNoteLeft > 0 ? reviewNoteLeft + ' more characters' : 'Re-check written' }}
+                        </div>
                     </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-success btn-sm" :disabled="submitting" v-on:click="submitReview">
+                    <div class="modal-footer wgFooter">
+                        <!-- Named blockers rather than a silently dead button: the gate
+                             is meant to be unskippable, not unexplained. -->
+                        <div class="wgBlockers" v-if="!isReviewComplete">
+                            <span v-if="!planDraftText.trim()" class="wgBlocker">Plan is empty</span>
+                            <span v-if="!hasPdf" class="wgBlocker">Chart PDF missing</span>
+                            <span v-if="reviewNoteLeft > 0" class="wgBlocker">Re-check not written</span>
+                            <span v-else-if="dwellLeft > 0" class="wgBlocker">Read it — {{ dwellLeft }}s</span>
+                        </div>
+                        <button type="button" class="btn btn-sm" :class="isReviewComplete ? 'btn-success' : 'btn-outline-secondary'"
+                            :disabled="!isReviewComplete || submitting" v-on:click="submitReview">
                             <span v-if="submitting" class="spinner-border spinner-border-sm me-2" role="status"></span>Reviewed
                         </button>
                     </div>
@@ -222,6 +280,41 @@ async function submitReflection() {
     font-size: 0.82rem;
     font-weight: 600;
     margin-bottom: 0.4rem;
+}
+
+.wgHint {
+    font-size: 0.72rem;
+    color: #f59e0b;
+    margin-top: 0.25rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.wgHint.ok { color: #00CA73; }
+
+.wgFooter {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.wgBlockers {
+    display: flex;
+    gap: 0.3rem;
+    flex-wrap: wrap;
+    flex: 1;
+    min-width: 0;
+}
+
+.wgBlocker {
+    font-size: 0.72rem;
+    padding: 0.1rem 0.45rem;
+    border-radius: 0.25rem;
+    border: 1px solid rgba(245, 158, 11, 0.45);
+    background: rgba(245, 158, 11, 0.1);
+    color: #f59e0b;
+    white-space: nowrap;
 }
 
 .wgReq {

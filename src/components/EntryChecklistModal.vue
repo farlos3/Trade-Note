@@ -25,8 +25,12 @@ const MAX_ACCEPTABLE_LOT = 0.03
 
 function blankAnswers() {
     return {
-        hasTp: false, tpPrice: '',
-        hasSl: false, slPrice: '',
+        // null, not false: "I have no stop" and "I have not answered yet" are
+        // different states, and a checkbox defaulting to unticked conflates them --
+        // which let the single most important question on the form be skipped by
+        // simply not touching it.
+        hasTp: null, tpPrice: '',
+        hasSl: null, slPrice: '',
         tpSlAcceptable: null,
         positionQuality: null,
         entryEmotion: null,
@@ -56,6 +60,7 @@ onMounted(() => {
     modal = new bootstrap.Modal(el, { backdrop: 'static', keyboard: false })
     el.addEventListener('hidden.bs.modal', () => {
         displayed.value = null
+        showMissing.value = false
         Object.assign(answers, blankAnswers())
     })
 
@@ -80,6 +85,7 @@ onMounted(() => {
 watch(currentEntryChecklist, (t) => {
     if (t) {
         Object.assign(answers, blankAnswers())
+        showMissing.value = false
         // MT5 reports "no stop" as price 0 -- prefilled only when a real price
         // came from the live feed. History-sourced trades have no broker TP/SL
         // to prefill, so these stay blank for manual entry.
@@ -112,21 +118,56 @@ const sideLabel = computed(() => {
     return s === 'sell' || s === 'short' ? 'SELL' : 'BUY'
 })
 
-const isComplete = computed(() => {
-    if (!displayed.value) return false
-    if (answers.hasTp && !answers.tpPrice) return false
-    if (answers.hasSl && !answers.slPrice) return false
-    return answers.tpSlAcceptable !== null
-        && answers.positionQuality !== null
-        && answers.entryEmotion !== null
-        && answers.logicValid !== null
-        && answers.oversized !== null
-        && answers.revengeScore !== null
-        && !!answers.entryReasoning.trim()
-})
+/* Every question, and whether it has been answered.
+ *
+ * One list rather than a boolean, because "you may not skip anything" is only
+ * enforceable if the form can say WHICH thing is outstanding. A Save button that
+ * is simply disabled tells the trader they are not finished and nothing else, and
+ * on a form this long that is a hunt -- so the same list drives the gate, the
+ * counter, the jump-to chips and the per-block highlight. There is no way for
+ * them to disagree with each other.
+ *
+ * Order matches the form top to bottom, so "2 left" reads in the order they will
+ * be filled in.
+ */
+const REQUIREMENTS = [
+    { key: 'stops', block: 'stops', label: 'SL / TP', done: (a) => a.hasSl !== null && a.hasTp !== null && !(a.hasSl && !a.slPrice) && !(a.hasTp && !a.tpPrice) },
+    { key: 'tpSlAcceptable', block: 'judgment', label: 'SL/TP acceptable', done: (a) => a.tpSlAcceptable !== null },
+    { key: 'positionQuality', block: 'judgment', label: 'Position quality', done: (a) => a.positionQuality !== null },
+    { key: 'oversized', block: 'judgment', label: 'Oversized', done: (a) => a.oversized !== null },
+    { key: 'entryEmotion', block: 'emotion', label: 'Emotion', done: (a) => a.entryEmotion !== null },
+    { key: 'entryReasoning', block: 'reasoning', label: 'Why you entered', done: (a) => !!a.entryReasoning.trim() },
+    { key: 'logicValid', block: 'logic', label: 'Logic still valid', done: (a) => a.logicValid !== null },
+]
+
+const missing = computed(() =>
+    displayed.value ? REQUIREMENTS.filter((r) => !r.done(answers)) : REQUIREMENTS
+)
+const isComplete = computed(() => !!displayed.value && missing.value.length === 0)
+const answeredCount = computed(() => REQUIREMENTS.length - missing.value.length)
+
+// Blocks with something outstanding are only marked once the trader has tried to
+// finish. Flagging every unanswered question the instant the popup opens would
+// paint the whole form red before they have had a chance to answer anything.
+const showMissing = ref(false)
+const blockIncomplete = (block) =>
+    showMissing.value && missing.value.some((m) => m.block === block)
+
+function jumpTo(req) {
+    showMissing.value = true
+    const el = document.getElementById('ecBlock-' + req.block)
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
 
 async function save() {
-    if (!isComplete.value || submitting.value) return
+    if (submitting.value) return
+    if (!isComplete.value) {
+        // Reachable now that Save stays clickable while incomplete: pressing it is
+        // how the trader asks "what is left?", so answer that instead of nothing.
+        showMissing.value = true
+        jumpTo(missing.value[0])
+        return
+    }
     submitting.value = true
     try {
         await saveEntryChecklist(displayed.value, {
@@ -164,15 +205,19 @@ async function save() {
                     <div class="ecSectionLabel">The setup</div>
 
                     <!-- 1: TP/SL -->
-                    <div class="ecBlock">
+                    <div class="ecBlock" id="ecBlock-stops" :class="{ ecIncomplete: blockIncomplete('stops') }">
                         <label class="ecLabel">Stop loss / take profit — price and pips</label>
                         <div class="row g-2">
                             <div class="col-6">
                                 <div class="ecStopRow">
-                                    <div class="form-check">
-                                        <input class="form-check-input" type="checkbox" id="ecHasSl"
-                                            v-model="answers.hasSl">
-                                        <label class="form-check-label" for="ecHasSl">SL set</label>
+                                    <span class="ecStopName">SL</span>
+                                    <div class="ecChoice ecStopChoice">
+                                        <button type="button" class="btn btn-sm"
+                                            v-bind:class="answers.hasSl === true ? 'btn-success' : 'btn-outline-success'"
+                                            v-on:click="answers.hasSl = true">Set</button>
+                                        <button type="button" class="btn btn-sm"
+                                            v-bind:class="answers.hasSl === false ? 'btn-danger' : 'btn-outline-danger'"
+                                            v-on:click="answers.hasSl = false; answers.slPrice = ''">None</button>
                                     </div>
                                     <input v-if="answers.hasSl" type="number" step="any"
                                         class="form-control form-control-sm ecPriceInput" v-model="answers.slPrice"
@@ -182,10 +227,14 @@ async function save() {
                             </div>
                             <div class="col-6">
                                 <div class="ecStopRow">
-                                    <div class="form-check">
-                                        <input class="form-check-input" type="checkbox" id="ecHasTp"
-                                            v-model="answers.hasTp">
-                                        <label class="form-check-label" for="ecHasTp">TP set</label>
+                                    <span class="ecStopName">TP</span>
+                                    <div class="ecChoice ecStopChoice">
+                                        <button type="button" class="btn btn-sm"
+                                            v-bind:class="answers.hasTp === true ? 'btn-success' : 'btn-outline-success'"
+                                            v-on:click="answers.hasTp = true">Set</button>
+                                        <button type="button" class="btn btn-sm"
+                                            v-bind:class="answers.hasTp === false ? 'btn-danger' : 'btn-outline-danger'"
+                                            v-on:click="answers.hasTp = false; answers.tpPrice = ''">None</button>
                                     </div>
                                     <input v-if="answers.hasTp" type="number" step="any"
                                         class="form-control form-control-sm ecPriceInput" v-model="answers.tpPrice"
@@ -199,7 +248,7 @@ async function save() {
                     <!-- 2/3/4: three quick judgment calls on the setup itself, side by
                          side -- these used to be three separate full-width blocks and
                          made the modal feel much longer than a "quick review" should. -->
-                    <div class="ecBlock">
+                    <div class="ecBlock" id="ecBlock-judgment" :class="{ ecIncomplete: blockIncomplete('judgment') }">
                         <div class="row g-3">
                             <div class="col-md-4">
                                 <label class="ecLabel">SL/TP acceptable?</label>
@@ -245,7 +294,7 @@ async function save() {
                     <div class="ecSectionLabel">Your head right now</div>
 
                     <!-- 5: emotion at entry -->
-                    <div class="ecBlock">
+                    <div class="ecBlock" id="ecBlock-emotion" :class="{ ecIncomplete: blockIncomplete('emotion') }">
                         <label class="ecLabel">How did you feel entering this?</label>
                         <div class="ecChoice ecWrap">
                             <button v-for="e in EMOTIONS" :key="e.id" type="button" class="btn btn-sm ecEmotionBtn"
@@ -256,14 +305,14 @@ async function save() {
                     </div>
 
                     <!-- 6: reasoning, full width -->
-                    <div class="ecBlock">
+                    <div class="ecBlock" id="ecBlock-reasoning" :class="{ ecIncomplete: blockIncomplete('reasoning') }">
                         <label class="ecLabel">Why did you enter here? Does your logic still hold?</label>
                         <textarea class="form-control form-control-sm" rows="3" v-model="answers.entryReasoning"
                             placeholder="What was the setup / trigger, and is that logic still valid right now?"></textarea>
                     </div>
 
                     <!-- 7: logic still valid, its own row -->
-                    <div class="ecBlock">
+                    <div class="ecBlock" id="ecBlock-logic" :class="{ ecIncomplete: blockIncomplete('logic') }">
                         <label class="ecLabel">Logic still valid?</label>
                         <div class="ecChoice">
                             <button type="button" class="btn btn-sm"
@@ -289,11 +338,24 @@ async function save() {
                         </div>
                     </div>
                 </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-success btn-sm" :disabled="!isComplete || submitting"
-                        v-on:click="save">
+                <div class="modal-footer ecFooter">
+                    <div class="ecProgress">
+                        <span class="ecCount" :class="{ done: isComplete }">
+                            {{ answeredCount }} / {{ REQUIREMENTS.length }} answered
+                        </span>
+                        <!-- The outstanding questions, by name and clickable. Save
+                             cannot be reached without them, so saying which they are
+                             (and jumping there) is the whole difference between an
+                             enforced checklist and a stuck one. -->
+                        <span v-if="!isComplete" class="ecMissingList">
+                            <button v-for="m in missing" :key="m.key" type="button" class="ecMissingChip"
+                                v-on:click="jumpTo(m)">{{ m.label }}</button>
+                        </span>
+                    </div>
+                    <button type="button" class="btn btn-sm" :class="isComplete ? 'btn-success' : 'btn-outline-secondary'"
+                        :disabled="submitting" v-on:click="save">
                         <span v-if="submitting" class="spinner-border spinner-border-sm me-2" role="status"></span>
-                        Save
+                        {{ isComplete ? 'Save' : 'Answer all to save' }}
                     </button>
                 </div>
             </div>
@@ -423,6 +485,73 @@ async function save() {
 .ecRange {
     width: 100%;
     accent-color: #f59e0b;
+}
+
+/* Outstanding blocks, marked only after a save attempt (see showMissing). */
+.ecIncomplete {
+    border-left: 2px solid #f59e0b;
+    padding-left: 0.7rem;
+    margin-left: -0.7rem;
+}
+
+.ecStopName {
+    font-weight: 700;
+    font-size: 0.8rem;
+    color: var(--white-60);
+    min-width: 1.4rem;
+}
+
+.ecStopChoice .btn {
+    padding: 0.1rem 0.5rem;
+    font-size: 0.75rem;
+}
+
+/* Footer carries the progress read-out on the left and the action on the right,
+   rather than a lone button whose disabled state was the only feedback. */
+.ecFooter {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.ecProgress {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    flex: 1;
+    min-width: 0;
+}
+
+.ecCount {
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
+    color: #f59e0b;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.ecCount.done { color: #00CA73; }
+
+.ecMissingList {
+    display: flex;
+    gap: 0.3rem;
+    flex-wrap: wrap;
+}
+
+.ecMissingChip {
+    font-size: 0.72rem;
+    padding: 0.1rem 0.45rem;
+    border-radius: 0.25rem;
+    border: 1px solid rgba(245, 158, 11, 0.45);
+    background: rgba(245, 158, 11, 0.1);
+    color: #f59e0b;
+}
+
+.ecMissingChip:hover {
+    background: rgba(245, 158, 11, 0.2);
 }
 
 .ecRangeScale {

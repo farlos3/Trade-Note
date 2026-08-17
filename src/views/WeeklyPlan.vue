@@ -42,7 +42,7 @@ const weekday = computed(() => dayjs().tz(tz()).isoWeekday())   // 1 = Monday, 5
    the real record. */
 const stub = (dateUnix) => ({
     dateUnix, note: '', reflection: '', checkReflected: false,
-    planText: '', planPdfUrl: '', planPdfBase64: '', planPdfName: '', planReviewed: false,
+    planText: '', planPdfUrl: '', planPdfBase64: '', planPdfName: '', planReviewed: false, planReviewNote: '',
 })
 const weekAt = (dateUnix) =>
     weekNotes.value.find((n) => Number(n.dateUnix) === Number(dateUnix)) || stub(dateUnix)
@@ -150,13 +150,28 @@ async function save(w) {
     }
 }
 
+/* The written re-check, same requirement as the Monday popup.
+ *
+ * This page could otherwise be used to walk around the gate entirely: open it on
+ * Monday, click "Mark reviewed" on a plan nobody read, and the popup stops asking.
+ * A rule that only holds in one of the two places it can be answered is not a
+ * rule, so the bar is identical here. */
+const REVIEW_NOTE_MIN = 25
+const reviewNotes = reactive({})
+const reviewNoteFor = (w) => {
+    if (reviewNotes[w.dateUnix] === undefined) reviewNotes[w.dateUnix] = ''
+    return reviewNotes[w.dateUnix]
+}
+const setReviewNote = (dateUnix, v) => { reviewNotes[dateUnix] = v }
+const reviewNoteLeft = (w) => Math.max(0, REVIEW_NOTE_MIN - (reviewNotes[w.dateUnix] || '').trim().length)
+const canReview = (w) => !!(w.planText || '').trim() && hasPdf(w) && reviewNoteLeft(w) === 0
+
 async function markReviewed(w) {
+    if (!canReview(w)) return
     reviewing.value = w.dateUnix
     try {
-        await markPlanReviewed(w.dateUnix)
-        const target = weekNotes.value.find((n) => Number(n.dateUnix) === Number(w.dateUnix))
-        if (target) target.planReviewed = true
-        else weekNotes.value.push({ ...stub(w.dateUnix), planReviewed: true })
+        await markPlanReviewed(w.dateUnix, reviewNotes[w.dateUnix])
+        weekNotes.value = await loadWeekNotes()
     } catch (e) {
         console.error('could not mark the plan reviewed', e)
     } finally {
@@ -219,9 +234,28 @@ onBeforeMount(async () => {
                         v-on:change="onFileChange(w.dateUnix, $event)">
                 </div>
 
+                <!-- Written re-check: required before this week can be marked
+                     reviewed, exactly as the Monday popup requires it. -->
+                <div v-if="!w.planReviewed" class="reviewNoteBlock">
+                    <label class="planLabel">
+                        <i class="uil uil-repeat me-1"></i>Re-check — what are you trading this week?
+                    </label>
+                    <textarea class="form-control planInput" rows="2"
+                        placeholder="In your own words: the levels that matter and what would make you stand aside."
+                        :value="reviewNoteFor(w)"
+                        v-on:input="setReviewNote(w.dateUnix, $event.target.value)"></textarea>
+                    <div class="reviewHint" :class="{ ok: reviewNoteLeft(w) === 0 }">
+                        {{ reviewNoteLeft(w) > 0 ? reviewNoteLeft(w) + ' more characters' : 'Re-check written' }}
+                    </div>
+                </div>
+                <div v-else-if="w.planReviewNote" class="reviewNoteDone">
+                    <label class="planLabel"><i class="uil uil-repeat me-1"></i>Re-check</label>
+                    <div class="reviewNoteText">{{ w.planReviewNote }}</div>
+                </div>
+
                 <div class="planActions">
                     <button v-if="!w.planReviewed" class="btn btn-outline-secondary btn-sm me-2"
-                        :disabled="reviewing === w.dateUnix" v-on:click="markReviewed(w)">
+                        :disabled="!canReview(w) || reviewing === w.dateUnix" v-on:click="markReviewed(w)">
                         {{ reviewing === w.dateUnix ? 'Saving…' : 'Mark reviewed' }}
                     </button>
                     <button class="btn btn-outline-success btn-sm" :disabled="!isDirty(w) || saving === w.dateUnix"
@@ -439,6 +473,29 @@ onBeforeMount(async () => {
 
 .planFileInput {
     max-width: 16rem;
+}
+
+.reviewNoteBlock,
+.reviewNoteDone {
+    margin-top: 0.9rem;
+    padding-top: 0.7rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.reviewHint {
+    font-size: 0.72rem;
+    color: #f59e0b;
+    margin-top: 0.25rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.reviewHint.ok { color: #00CA73; }
+
+.reviewNoteText {
+    font-size: 0.88rem;
+    line-height: 1.55;
+    color: var(--white-60);
+    white-space: pre-wrap;
 }
 
 .planActions {

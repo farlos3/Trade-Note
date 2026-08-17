@@ -11,7 +11,7 @@ import { useCheckVisibleScreen, useCreatedDateFormat, useEditItem, useInitPopove
 import { useGetDiaries } from '../utils/diary';
 import { useGetTags, useGetTagInfo, useGetAvailableTags, useDailySatisfactionChange, useGetSatisfactions, useGetWeekNotes, useGetDayNotes, useSetWeekNoteCheck, useSaveWeekReflection, useAnalyzeWeekReflection } from '../utils/daily';
 import { useGetDayFiles, useDayFilesFor } from '../utils/dayFiles';
-import { saveWeeklyPlan, markPlanReviewed } from '../utils/weeklyGates';
+import { saveWeeklyPlan } from '../utils/weeklyGates';
 
 onBeforeMount(async () => {
 
@@ -223,15 +223,6 @@ async function savePlan(w) {
     }
 }
 
-async function markPlanReviewedHere(w) {
-    try {
-        await markPlanReviewed(w.dateUnix)
-        w.planReviewed = true
-    } catch (e) {
-        console.error('could not mark plan reviewed', e)
-    }
-}
-
 const weekLabel = (dateUnix) => {
     const s = dayjs.unix(dateUnix).tz(timeZoneTrade.value || 'UTC')
     return `Week of ${s.format('MMM D')} – ${s.add(6, 'day').format('MMM D, YYYY')}`
@@ -420,8 +411,13 @@ onMounted(async () => {
                         </div>
 
                         <div class="reflectionActions">
-                            <button v-if="!w.planReviewed" class="btn btn-outline-secondary btn-sm me-2"
-                                v-on:click="markPlanReviewedHere(w)">Mark reviewed</button>
+                            <!-- Reviewing happens on the Weekly Plan page (or the
+                                 Monday popup), both of which require the written
+                                 re-check. A bare "Mark reviewed" button here was a
+                                 way around that requirement, which made the rule
+                                 hold in two places out of three -- i.e. not at all. -->
+                            <a v-if="!w.planReviewed" href="/weekly-plan"
+                                class="btn btn-outline-secondary btn-sm me-2">Review on Weekly Plan</a>
                             <button class="btn btn-outline-success btn-sm" :disabled="!isPlanDirty(w) || savingPlan === w.dateUnix"
                                 v-on:click="savePlan(w)">
                                 {{ savingPlan === w.dateUnix ? 'Saving…' : 'Save plan' }}

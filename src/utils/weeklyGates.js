@@ -59,6 +59,7 @@ export async function loadWeekNotes() {
         planPdfBase64: r.get('planPdfBase64') || '',
         planPdfName: r.get('planPdfName') || '',
         planReviewed: !!r.get('planReviewed'),
+        planReviewNote: r.get('planReviewNote') || '',
     }))
 }
 
@@ -66,7 +67,7 @@ function findWeek(dateUnix, notes) {
     return notes.find((n) => Number(n.dateUnix) === Number(dateUnix)) || null
 }
 function stubWeek(dateUnix) {
-    return { dateUnix, note: '', reflection: '', checkReflected: false, planText: '', planPdfUrl: '', planPdfBase64: '', planPdfName: '', planReviewed: false }
+    return { dateUnix, note: '', reflection: '', checkReflected: false, planText: '', planPdfUrl: '', planPdfBase64: '', planPdfName: '', planReviewed: false, planReviewNote: '' }
 }
 
 export async function evaluateWeeklyGates() {
@@ -165,9 +166,20 @@ export async function saveWeeklyPlan(dateUnix, { text, file }) {
     await evaluateWeeklyGates()
 }
 
-export async function markPlanReviewed(dateUnix) {
+/**
+ * Monday's acknowledgement. The written re-check is the point, not the flag: a
+ * boolean can be set by a reflex click on a plan nobody looked at, whereas you
+ * cannot write what the plan says without having read it. So the note is required
+ * by every caller (the gate popup and the Weekly Plan page both collect one), and
+ * it is stored alongside the flag so the week can show WHAT was re-checked.
+ */
+export async function markPlanReviewed(dateUnix, note) {
+    const text = (note || '').trim()
+    if (!text) throw new Error('a written re-check is required to mark a plan reviewed')
     const obj = await findOrCreateWeekNote(dateUnix)
     obj.set('planReviewed', true)
+    obj.set('planReviewNote', text)
+    obj.set('planReviewedAt', new Date())
     await obj.save()
     await evaluateWeeklyGates()
 }
