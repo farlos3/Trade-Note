@@ -6,7 +6,7 @@ import ReturnToTopButton from '../components/ReturnToTopButton.vue'
 import AddOrderModal from '../components/AddOrderModal.vue'
 import EntryChecklistModal from '../components/EntryChecklistModal.vue'
 import WeeklyGateModal from '../components/WeeklyGateModal.vue'
-import { onBeforeMount } from 'vue'
+import { onBeforeMount, computed } from 'vue'
 import { useInitParse, usePageId, useScreenType, useGetTimeZone, useGetPeriods, useReconcileSelectedDateRange, useInitPostHog, useCreatedDateFormat, useTimeFormat, useHourMinuteFormat } from '../utils/utils.js'
 import { screenType, sideMenuMobileOut, screenshots, pageId, screenshot, selectedScreenshot, selectedScreenshotIndex, getMore } from '../stores/globals'
 import { useSelectedScreenshotFunction } from '../utils/screenshots'
@@ -23,6 +23,12 @@ onBeforeMount(async () => {
   useScreenType()
 })
 useInitPostHog()
+
+// Keyed off "has anything been assigned" rather than a particular field, because
+// useSelectedScreenshotFunction fills this object from two different shapes (a
+// carousel entry, or a single screenshot passed straight in) and they do not
+// share a guaranteed key.
+const hasSelectedScreenshot = computed(() => Object.keys(selectedScreenshot).length > 0)
 </script>
 <template>
   <ReturnToTopButton />
@@ -54,7 +60,13 @@ useInitPostHog()
     <div class="modal-dialog modal-fullscreen">
       <div class="modal-content">
         <div class="modal-body">
-          <Screenshot :index="selectedScreenshotIndex" source="fullScreen" :screenshot-data="selectedScreenshot" />
+          <!-- Only once something is actually selected. selectedScreenshot starts
+               as an empty reactive({}), and Screenshot renders its date header
+               unconditionally for source="fullScreen" -- so rendering it eagerly
+               meant formatting an undefined date on every single page load. There
+               is also nothing to show in an empty full-screen viewer. -->
+          <Screenshot v-if="hasSelectedScreenshot" :index="selectedScreenshotIndex" source="fullScreen"
+            :screenshot-data="selectedScreenshot" />
         </div>
         <div class="modal-footer">
           <!-- NEXT / PREVIOUS -->
