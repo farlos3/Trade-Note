@@ -13,7 +13,7 @@
 //|  Read-only: queries history and account state, never trades.       |
 //+------------------------------------------------------------------+
 #property copyright "TradeNote"
-#property version   "1.01"
+#property version   "1.02"
 #property strict
 
 // Also the refresh rate of the Live page on macOS, where this file is the only
@@ -30,6 +30,20 @@ input string OutFileName           = "tradenote_deals.json"; // name of the expo
 input bool   UseCommonFolder       = false;                  // true -> Terminal/Common/Files
 
 int CommonFlag() { return UseCommonFolder ? FILE_COMMON : 0; }
+
+// Export scheduling state. Timed off TimeLocal() (the host clock) rather than
+// TimeCurrent(), which is the last tick's server time and stops advancing when the
+// market is quiet -- that would stall the timer exactly when nothing is happening.
+datetime g_lastExport = 0;
+bool     g_dirty      = true;    // a trade event happened; export on the next tick
+
+// Deposits/withdrawals are re-read from the WHOLE account history, which is the
+// single most expensive thing this EA does. They also change a few times a year.
+// Rebuilding that on every write -- and OnTrade used to force one per trade event
+// -- is what made a burst of orders lock the terminal up.
+string   g_balanceOpsCache = "";
+datetime g_balanceOpsAt    = 0;
+#define  BALANCE_OPS_REFRESH_SECONDS 300
 
 //+------------------------------------------------------------------+
 //| JSON string escaping. Symbols and comments are broker-controlled  |
@@ -61,6 +75,48 @@ string JsonEscape(const string s)
 string Num(const double v, const int digits = 8)
 {
    return DoubleToString(v, digits);
+}
+
+//+------------------------------------------------------------------+
+//| Deposits and withdrawals over the account's whole life, cached.   |
+//|                                                                    |
+//| Complete, not windowed: the Dashboard and Plan vs Actual show      |
+//| lifetime totals, and LookbackDays would report only the most recent |
+//| top-up. But re-selecting the entire history costs the same whether  |
+//| it is done once a minute or five times inside one order click, so   |
+//| the result is held for BALANCE_OPS_REFRESH_SECONDS. A deposit shows |
+//| up a few minutes late; nothing else notices.                        |
+//|                                                                    |
+//| Runs AFTER the deals loop in BuildJson, because HistorySelect here  |
+//| replaces the window that loop is reading.                           |
+//+------------------------------------------------------------------+
+string BalanceOpsJson()
+{
+   if(g_balanceOpsAt > 0 && (TimeLocal() - g_balanceOpsAt) < BALANCE_OPS_REFRESH_SECONDS)
+      return g_balanceOpsCache;
+
+   string out = "";
+   bool first = true;
+   if(HistorySelect(0, TimeCurrent() + 2 * 24 * 60 * 60))
+   {
+      int total = HistoryDealsTotal();
+      for(int i = 0; i < total; i++)
+      {
+         ulong ticket = HistoryDealGetTicket(i);
+         if(ticket == 0) continue;
+         if(HistoryDealGetInteger(ticket, DEAL_TYPE) != DEAL_TYPE_BALANCE) continue;
+         double profit = HistoryDealGetDouble(ticket, DEAL_PROFIT);
+         if(profit == 0) continue;
+         if(!first) out += ", ";
+         out += "{\"time\": "   + IntegerToString((long)HistoryDealGetInteger(ticket, DEAL_TIME));
+         out += ", \"profit\": " + Num(profit, 2);
+         out += ", \"comment\": \"" + JsonEscape(HistoryDealGetString(ticket, DEAL_COMMENT)) + "\"}";
+         first = false;
+      }
+      g_balanceOpsCache = out;
+      g_balanceOpsAt    = TimeLocal();
+   }
+   return g_balanceOpsCache;
 }
 
 //+------------------------------------------------------------------+
@@ -186,26 +242,7 @@ string BuildJson()
    // the most recent top-up. Re-selecting the whole history is cheap here because
    // an account has a handful of these, versus thousands of trade deals -- which
    // is why they are exported separately instead of just widening LookbackDays.
-   json += "  \"balance_ops\": [";
-   bool firstBal = true;
-   if(HistorySelect(0, TimeCurrent() + 2 * 24 * 60 * 60))
-   {
-      int totalBal = HistoryDealsTotal();
-      for(int i = 0; i < totalBal; i++)
-      {
-         ulong ticket = HistoryDealGetTicket(i);
-         if(ticket == 0) continue;
-         if(HistoryDealGetInteger(ticket, DEAL_TYPE) != DEAL_TYPE_BALANCE) continue;
-         double profit = HistoryDealGetDouble(ticket, DEAL_PROFIT);
-         if(profit == 0) continue;
-         if(!firstBal) json += ", ";
-         json += "{\"time\": "   + IntegerToString((long)HistoryDealGetInteger(ticket, DEAL_TIME));
-         json += ", \"profit\": " + Num(profit, 2);
-         json += ", \"comment\": \"" + JsonEscape(HistoryDealGetString(ticket, DEAL_COMMENT)) + "\"}";
-         firstBal = false;
-      }
-   }
-   json += "],\n";
+   json += "  \"balance_ops\": [" + BalanceOpsJson() + "],\n";
 
    // ---- broker clock offset ------------------------------------------------
    // Every timestamp above is MT5 server time, NOT UTC: TimeCurrent() on a UTC+3
@@ -260,12 +297,17 @@ void ExportNow()
 {
    if(WriteJson(BuildJson()))
       Comment("TradeNote export: ", TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS));
+   g_lastExport = TimeLocal();
+   g_dirty      = false;
 }
 
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   EventSetTimer(ExportIntervalSeconds < 1 ? 1 : ExportIntervalSeconds);
+   // Ticks every second regardless of ExportIntervalSeconds: the timer is now the
+   // ONLY thing that writes, so it has to wake often enough to pick up a trade
+   // event promptly. It still only exports when something is due (see OnTimer).
+   EventSetTimer(1);
    ExportNow();                              // don't make the first sync wait a full interval
    Print("TradeNoteExport running. Writing ", OutFileName,
          UseCommonFolder ? " to the Common Files folder" : " to this terminal's MQL5/Files",
@@ -279,8 +321,24 @@ void OnDeinit(const int reason)
    Comment("");
 }
 
-void OnTimer() { ExportNow(); }
+void OnTimer()
+{
+   int interval = ExportIntervalSeconds < 1 ? 1 : ExportIntervalSeconds;
+   if(g_dirty || (TimeLocal() - g_lastExport) >= interval)
+      ExportNow();
+}
 
-// A closing deal lands in history on a trade transaction, so export immediately
-// instead of waiting up to ExportIntervalSeconds for the timer.
-void OnTrade() { ExportNow(); }
+/* A trade event only RAISES A FLAG -- it must not export.
+ *
+ * MT5 fires OnTrade several times for a single order (the order appears, it fills,
+ * the deal lands, the position opens), and one-click trading fires that burst as
+ * fast as you can click. ExportNow walks the history window, every open position
+ * and -- until this was cached -- the entire account history, then writes a file.
+ * Doing that synchronously per event, on the thread the terminal draws its UI
+ * with, is what made the platform hang and drop out mid-click.
+ *
+ * The flag collapses a whole burst into one export on the next one-second tick.
+ * A fill still reaches TradeNote about as fast as before, because what it was
+ * really waiting on was the file write, not the event.
+ */
+void OnTrade() { g_dirty = true; }

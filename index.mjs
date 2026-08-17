@@ -131,7 +131,12 @@ const setupApiRoutes = (app) => {
                     const user = session.get('user')
                     // Downstream handlers read currentUser (fetchNotes scopes its
                     // query by it), so it has to be populated here as well.
-                    if (user) currentUser.value = JSON.parse(JSON.stringify(user))
+                    if (user) {
+                        currentUser.value = JSON.parse(JSON.stringify(user))
+                        // Scope data reads to whoever actually logged in, rather
+                        // than to TRADENOTE_USER (see getUserFilter in db.mjs).
+                        req.tradenoteUserId = user.id
+                    }
                     return next()
                 }
             } catch (e) {
@@ -466,7 +471,7 @@ const setupApiRoutes = (app) => {
             const tz = req.query.tz || process.env.TRADENOTE_TZ || 'UTC'
             const fromUnix = isoToUnix(req.query.from, tz)
             const toUnix = isoToUnix(req.query.to, tz)
-            const days = await fetchDayDocs({ fromUnix, toUnix })
+            const days = await fetchDayDocs({ fromUnix, toUnix, userId: req.tradenoteUserId })
             const trades = flattenTrades(days)
             const stats = computeStats(trades, tz)
             const patterns = findBehaviorPatterns(trades, { revengeWindowMinutes: 15, tz, overtradeLotCap: Number(process.env.OVERTRADE_LOT_CAP) || 0.1 })
@@ -482,7 +487,7 @@ const setupApiRoutes = (app) => {
             let notes = []
             let weeklyReviews = []
             try {
-                const raw = await fetchNotes({ fromUnix, toUnix })
+                const raw = await fetchNotes({ fromUnix, toUnix, userId: req.tradenoteUserId })
                 const shaped = shapeJournal(raw, tz)
                 notes = shaped.notes
                 weeklyReviews = shaped.weeklyReviews
@@ -517,7 +522,7 @@ const setupApiRoutes = (app) => {
             const tz = req.query.tz || process.env.TRADENOTE_TZ || 'UTC'
             const fromUnix = isoToUnix(req.query.from, tz)
             const toUnix = isoToUnix(req.query.to, tz)
-            const fp = await fetchTradesFingerprint({ fromUnix, toUnix })
+            const fp = await fetchTradesFingerprint({ fromUnix, toUnix, userId: req.tradenoteUserId })
             res.status(200).json({ fingerprint: `${fp.count}:${fp.lastUpdate}` })
         } catch (error) {
             console.error(' -> Fingerprint error', error)
@@ -548,7 +553,7 @@ const setupApiRoutes = (app) => {
             const tz = req.query.tz || process.env.TRADENOTE_TZ || 'UTC'
             const fromUnix = isoToUnix(req.query.from, tz)
             const toUnix = isoToUnix(req.query.to, tz)
-            const days = await fetchDayDocs({ fromUnix, toUnix })
+            const days = await fetchDayDocs({ fromUnix, toUnix, userId: req.tradenoteUserId })
             const trades = flattenTrades(days)
             const stats = computeStats(trades, tz)
             const patterns = findBehaviorPatterns(trades, { revengeWindowMinutes: 15, tz, overtradeLotCap: Number(process.env.OVERTRADE_LOT_CAP) || 0.1 })
@@ -564,7 +569,7 @@ const setupApiRoutes = (app) => {
             let notes = []
             let weeklyReviews = []
             try {
-                const raw = await fetchNotes({ fromUnix, toUnix })
+                const raw = await fetchNotes({ fromUnix, toUnix, userId: req.tradenoteUserId })
                 // Dates are formatted in the TRADE timezone, not UTC: toISOString()
                 // would label a Bangkok-evening note with the previous day, so the
                 // model would tie a reflection to the wrong trading day.
@@ -680,7 +685,7 @@ const setupApiRoutes = (app) => {
                 return res.status(400).send({ error: 'Write a reflection for this week before analyzing it.' })
             }
 
-            const days = await fetchDayDocs({ fromUnix: weekStart, toUnix: weekEnd })
+            const days = await fetchDayDocs({ fromUnix: weekStart, toUnix: weekEnd, userId: req.tradenoteUserId })
             const trades = flattenTrades(days)
             const stats = computeStats(trades, tz)
             const patterns = findBehaviorPatterns(trades, { revengeWindowMinutes: 15, tz, overtradeLotCap: Number(process.env.OVERTRADE_LOT_CAP) || 0.1 })
