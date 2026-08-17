@@ -98,6 +98,62 @@ class NativeBackend:
     def positions_get(self):
         return mt5.positions_get()
 
+    def refresh(self):
+        """No-op: every read queries the terminal directly, so the data is never
+        stale. Exists so a live loop can call refresh() without asking which
+        backend it holds (BridgeBackend has real work to do here)."""
+        return True
+
+    def live_snapshot(self):
+        """Open positions + equity, in the shape POST /api/live expects.
+
+        Lives on the backend rather than in mt5_live.py because it is exactly the
+        part that differs per platform: here the terminal is queried directly, in
+        BridgeBackend the same numbers are read back out of the EA's file."""
+        ai = mt5.account_info()
+        if ai is None:
+            return None
+
+        positions = []
+        symbols = set()
+        for p in (mt5.positions_get() or []):
+            symbols.add(p.symbol)
+            positions.append({
+                "ticket": p.ticket,
+                "symbol": p.symbol,
+                # MT5 encodes direction as 0=buy, 1=sell.
+                "side": "buy" if p.type == DEAL_TYPE_BUY else "sell",
+                "volume": p.volume,
+                "priceOpen": p.price_open,
+                "priceCurrent": p.price_current,
+                "sl": p.sl,
+                "tp": p.tp,
+                "profit": p.profit,
+                "swap": p.swap,
+                "openTime": p.time,
+            })
+
+        ticks = {}
+        for sym in symbols:
+            t = mt5.symbol_info_tick(sym)
+            if t:
+                ticks[sym] = {"bid": t.bid, "ask": t.ask}
+
+        return {
+            "login": ai.login,
+            "currency": ai.currency,
+            # balance excludes open trades; equity includes their floating P&L.
+            # Both are sent so the UI can show "banked vs on the table".
+            "balance": ai.balance,
+            "equity": ai.equity,
+            "profit": ai.profit,
+            "margin": ai.margin,
+            "marginFree": ai.margin_free,
+            "positions": positions,
+            "ticks": ticks,
+            "t": int(time.time()),
+        }
+
     def balance_deals(self):
         """Every deposit/withdrawal the account has ever had. The native package
         can query the real history, so this is simply an unbounded window."""
@@ -226,6 +282,60 @@ class BridgeBackend:
     def positions_get(self):
         return [_Obj({"ticket": t, "identifier": t})
                 for t in (self._data or {}).get("open_positions", [])]
+
+    def refresh(self):
+        """Re-read the file. initialize() loaded one snapshot into memory, which
+        the EA has already overwritten by the next tick -- so for a live loop this
+        re-read IS how new data arrives."""
+        return self.initialize()
+
+    def live_snapshot(self):
+        """Same shape as NativeBackend.live_snapshot, rebuilt from the EA's file.
+
+        Freshness is whatever the EA's ExportIntervalSeconds is, so this cannot be
+        more current than the file -- polling faster only re-reads the same bytes.
+        Returns None when the EA predates the `positions` key, so the caller says
+        "recompile the EA" instead of streaming an account that looks flat."""
+        data = self._data or {}
+        detail = data.get("positions")
+        if detail is None:
+            return None
+        a = data.get("account") or {}
+
+        positions = []
+        ticks = {}
+        for p in detail:
+            sym = p.get("symbol", "")
+            positions.append({
+                "ticket": p.get("ticket", 0),
+                "symbol": sym,
+                "side": "buy" if int(p.get("type", 0)) == DEAL_TYPE_BUY else "sell",
+                "volume": float(p.get("volume", 0) or 0),
+                "priceOpen": float(p.get("price_open", 0) or 0),
+                "priceCurrent": float(p.get("price_current", 0) or 0),
+                "sl": float(p.get("sl", 0) or 0),
+                "tp": float(p.get("tp", 0) or 0),
+                "profit": float(p.get("profit", 0) or 0),
+                "swap": float(p.get("swap", 0) or 0),
+                "openTime": int(p.get("time", 0) or 0),
+            })
+            if sym and "bid" in p and "ask" in p:
+                ticks[sym] = {"bid": float(p["bid"]), "ask": float(p["ask"])}
+
+        return {
+            "login": a.get("login", 0),
+            "currency": a.get("currency", "USD"),
+            "balance": float(a.get("balance", 0) or 0),
+            "equity": float(a.get("equity", 0) or 0),
+            "profit": float(a.get("profit", 0) or 0),
+            "margin": float(a.get("margin", 0) or 0),
+            "marginFree": float(a.get("margin_free", 0) or 0),
+            "positions": positions,
+            "ticks": ticks,
+            # The EA's own write time, not now(): this snapshot describes the
+            # terminal as of then, and the UI should not age it from the read.
+            "t": int(data.get("exported_at") or time.time()),
+        }
 
     def balance_deals(self):
         """Deposits/withdrawals over the account's whole life.

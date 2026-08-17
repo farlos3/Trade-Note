@@ -15,9 +15,18 @@ Keeping them apart is the point: a tick-rate feed must never touch the journal's
 database (millions of rows a week to describe a value that is already stale), and
 the journal's once-a-minute cadence is far too slow to watch a position move.
 
-Windows only: the MetaTrader5 package binds to the terminal's DLL, so this runs on
-the host, never in the app container. It attaches to the already-open terminal and
-never launches one -- if MT5 is closed it waits and retries rather than waking it.
+Runs on the host, never in the app container, and reads MT5 through whichever of
+the two backends mt5_sync.py picked (see pick_backend there -- this deliberately
+reuses that module rather than keeping a second copy of the logic):
+
+  MetaTrader5 package   Windows only. The wheel binds to terminal64.dll.
+  TradeNoteExport EA    Everywhere, macOS included. The EA writes open positions
+                        into its JSON bridge file and this reads them back out.
+                        Refresh rate is the EA's ExportIntervalSeconds, so
+                        polling faster than that just re-reads the same file.
+
+It attaches to an already-open terminal and never launches one -- if MT5 is closed
+it waits and retries rather than waking it.
 
 Usage:
     python mt5-sync/mt5_live.py                # loop until stopped
@@ -25,7 +34,6 @@ Usage:
     python mt5-sync/mt5_live.py --once         # single read, for testing
 """
 import argparse
-import configparser
 import os
 import subprocess
 import sys
@@ -33,100 +41,32 @@ import time
 from datetime import datetime
 
 try:
-    import MetaTrader5 as mt5
-except ImportError:
-    sys.exit("MetaTrader5 package missing. Run: pip install MetaTrader5 requests")
-try:
     import requests
 except ImportError:
     sys.exit("requests package missing. Run: pip install requests")
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mt5_sync import load_config, pick_backend  # noqa: E402
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(HERE, "config.ini")
 
 
 def log(msg):
     print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
 
 
-def load_config():
-    if not os.path.exists(CONFIG_PATH):
-        sys.exit(f"Missing {CONFIG_PATH}. Copy config.example.ini -> config.ini and fill it in.")
-    cfg = configparser.ConfigParser()
-    cfg.read(CONFIG_PATH, encoding="utf-8")
-    return cfg
+def read_live(backend):
+    """One snapshot of the terminal, or None when it isn't reachable.
 
-
-def terminal_running():
-    """True if an MT5 terminal process is already open.
-
-    mt5.initialize() LAUNCHES the terminal when none is running. In a loop that
-    calls it once a second, that means closing MT5 just makes it reappear -- you
-    cannot actually shut the platform down while this agent is alive. So the
-    terminal is only ever attached to, never started: no process, no snapshot.
-
-    mt5_sync.py has the same guard (mt5_terminal_running) for the same reason.
-    On a detection failure assume it IS running, so a glitch in tasklist degrades
-    to "keep syncing" rather than silently killing the feed.
+    Never launches MT5: mt5.initialize() starts the terminal when none is running,
+    so in a once-a-second loop that would make the platform impossible to close --
+    it would just reappear. No running terminal, no snapshot.
     """
-    try:
-        out = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq terminal64.exe", "/NH"],
-            capture_output=True, text=True, timeout=10,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        return "terminal64.exe" in (out.stdout or "").lower()
-    except Exception:  # noqa: BLE001
-        return True
-
-
-def read_live():
-    """One snapshot of the terminal, or None when it isn't reachable."""
-    if not terminal_running():
+    if not backend.terminal_running():
         return None
-    ai = mt5.account_info()
-    if ai is None:
+    if not backend.refresh():
         return None
-
-    positions = []
-    symbols = set()
-    for p in (mt5.positions_get() or []):
-        symbols.add(p.symbol)
-        positions.append({
-            "ticket": p.ticket,
-            "symbol": p.symbol,
-            # MT5 encodes direction as 0=buy, 1=sell.
-            "side": "buy" if p.type == 0 else "sell",
-            "volume": p.volume,
-            "priceOpen": p.price_open,
-            "priceCurrent": p.price_current,
-            "sl": p.sl,
-            "tp": p.tp,
-            "profit": p.profit,
-            "swap": p.swap,
-            "openTime": p.time,
-        })
-
-    ticks = {}
-    for sym in symbols:
-        t = mt5.symbol_info_tick(sym)
-        if t:
-            ticks[sym] = {"bid": t.bid, "ask": t.ask}
-
-    return {
-        "login": ai.login,
-        "currency": ai.currency,
-        # balance excludes open trades; equity includes their floating P&L. Both are
-        # sent so the UI can show "banked vs on the table" without recomputing.
-        "balance": ai.balance,
-        "equity": ai.equity,
-        "profit": ai.profit,
-        "margin": ai.margin,
-        "marginFree": ai.margin_free,
-        "positions": positions,
-        "ticks": ticks,
-        "t": int(time.time()),
-    }
+    return backend.live_snapshot()
 
 
 def trigger_journal_sync():
@@ -166,10 +106,14 @@ def main():
     api_key = cfg.get("tradenote", "api_key")
     headers = {"api-key": api_key, "Content-Type": "application/json"}
 
-    # Only ever ATTACH to a terminal that is already open (see terminal_running).
-    if terminal_running():
-        if not mt5.initialize():
-            log(f"mt5.initialize failed: {mt5.last_error()} — is the terminal logged in?")
+    # pick_backend, not connect(): connect() sys.exit()s when MT5 is unreachable,
+    # which is right for a one-shot sync and wrong for an agent that is supposed to
+    # sit and wait for the terminal to be opened.
+    backend = pick_backend(cfg)
+    log(f"Reading MT5 via {backend.name}.")
+    if backend.terminal_running():
+        if not backend.initialize():
+            log(f"Could not attach: {backend.last_error()}")
             if args.once:
                 sys.exit(1)
     else:
@@ -194,17 +138,13 @@ def main():
     try:
         while True:
             try:
-                snap = read_live()
+                snap = read_live(backend)
                 if snap is None:
                     if last_err != "no-terminal":
-                        log("MT5 terminal not available — waiting (will not launch it).")
+                        log("MT5 terminal not available — waiting (will not launch it). "
+                            "If MT5 IS open, the TradeNoteExport EA may predate the "
+                            "'positions' key: recompile it (F7) and re-attach.")
                         last_err = "no-terminal"
-                    # Reconnect ONLY to a terminal that is already open. The old
-                    # unconditional initialize() re-launched MT5 every second, so
-                    # closing the platform was impossible while this ran.
-                    mt5.shutdown()
-                    if terminal_running():
-                        mt5.initialize()
                 else:
                     r = session.post(url, headers=headers, json=snap, timeout=5)
                     if r.status_code != 200:
@@ -244,7 +184,7 @@ def main():
     except KeyboardInterrupt:
         log("Stopped.")
     finally:
-        mt5.shutdown()
+        backend.shutdown()
 
 
 if __name__ == "__main__":
