@@ -1534,15 +1534,34 @@ export function useDateNumberFormat(param) {
 }
 
 export function useDateCalFormat(param) {
-    return dayjs.unix(param).tz(timeZoneTrade.value).format("YYYY-MM-DD")
+    return formatUnixInTz(param, "YYYY-MM-DD")
 }
 
 export function useDateCalFormatMonth(param) {
-    return dayjs.unix(param).tz(timeZoneTrade.value).format("YYYY-MM")
+    return formatUnixInTz(param, "YYYY-MM")
+}
+
+/* Format a unix timestamp, or return '' if there isn't a usable one.
+ *
+ * These formatters are called straight from templates, on data that is often not
+ * loaded yet -- and `dayjs.unix(undefined).tz(...)` does not degrade politely, it
+ * hands an Invalid Date to Intl.DateTimeFormat, which THROWS "RangeError: Invalid
+ * time value". A throw inside a render function is not a local problem: it aborts
+ * the render of the whole subtree, and Vue then re-mounts rather than patching the
+ * half-built tree, which is how a single undefined date ended up painting the
+ * entire app twice on the page (see the fullScreenModal in layouts/Dashboard.vue).
+ *
+ * So: no date is a blank, never an exception. A wrong-looking empty label is
+ * infinitely easier to notice and diagnose than a torn-down render.
+ */
+function formatUnixInTz(param, pattern) {
+    if (param === null || param === undefined || param === '' || !isFinite(Number(param))) return ''
+    const d = dayjs.unix(Number(param)).tz(timeZoneTrade.value)
+    return d.isValid() ? d.format(pattern) : ''
 }
 
 export function useTimeFormat(param) {
-    return dayjs.unix(param).tz(timeZoneTrade.value).format("HH:mm:ss")
+    return formatUnixInTz(param, "HH:mm:ss")
 }
 
 export function useTimeFormatFromDate(param) {
@@ -1561,11 +1580,11 @@ export function useSwingDuration(param) {
 }
 
 export function useHourMinuteFormat(param) {
-    return dayjs.unix(param).tz(timeZoneTrade.value).format("HH:mm")
+    return formatUnixInTz(param, "HH:mm")
 }
 
 export function useDateTimeFormat(param) {
-    return dayjs.unix(param).tz(timeZoneTrade.value).format("YYYY-MM-DD HH:mm:ss")
+    return formatUnixInTz(param, "YYYY-MM-DD HH:mm:ss")
 }
 
 export function useChartFormat(param) {
@@ -1581,7 +1600,7 @@ export function useMonthFormatShort(param) {
 }
 
 export function useCreatedDateFormat(param) {
-    return dayjs.unix(param).tz(timeZoneTrade.value).format("ddd DD MMMM YYYY")
+    return formatUnixInTz(param, "ddd DD MMMM YYYY")
 }
 
 export function useDatetimeLocalFormat(param) {
