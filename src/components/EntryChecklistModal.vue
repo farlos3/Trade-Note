@@ -6,7 +6,7 @@
  * instance here (mounted once in DashboardLayout) serves both pages.
  */
 import { reactive, ref, computed, watch, onMounted } from 'vue'
-import { currentEntryChecklist, saveEntryChecklist, offerEntryChecklist } from '../utils/entryChecklist'
+import { currentEntryChecklist, entryChecklistQueueLength, saveEntryChecklist, offerEntryChecklist } from '../utils/entryChecklist'
 import { usePipSize } from '../utils/addOrder'
 
 const EMOTIONS = [
@@ -191,6 +191,7 @@ async function save() {
                 <div class="modal-header">
                     <h5 class="modal-title" id="entryChecklistModalLabel">
                         <i class="uil uil-clipboard-notes me-2"></i>New order — quick review
+                        <span v-if="entryChecklistQueueLength > 1" class="ecQueue">{{ entryChecklistQueueLength }} waiting</span>
                     </h5>
                 </div>
                 <div class="modal-body">
@@ -370,6 +371,17 @@ async function save() {
 
 .modal-footer {
     border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.ecQueue {
+    font-size: 0.7rem;
+    font-weight: 600;
+    margin-left: 0.5rem;
+    padding: 0.1rem 0.45rem;
+    border-radius: 0.25rem;
+    color: #f59e0b;
+    background: rgba(245, 158, 11, 0.12);
+    vertical-align: middle;
 }
 
 .ecHead {
