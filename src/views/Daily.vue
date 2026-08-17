@@ -171,6 +171,20 @@ const apiSource = ref(null)
 const entryReviews = ref({})
 const reviewFor = (trade) => (trade && trade.positionId) ? entryReviews.value[String(trade.positionId)] : null
 
+/* Every review belonging to the orders of one day card, in the order they were
+   entered. Driven off the day's own trades rather than the review timestamps, so a
+   swing trade filed under this day shows its review here and only here -- matching
+   whatever the Trades tab above is listing. */
+const reviewsForDay = (itemTrade) => {
+    const out = []
+    const seen = new Set()
+    for (const t of (itemTrade.trades || [])) {
+        const r = reviewFor(t)
+        if (r && !seen.has(r.objectId)) { seen.add(r.objectId); out.push(r) }
+    }
+    return out.sort((a, b) => a.dateUnix - b.dateUnix)
+}
+
 const REVIEW_EMOTION_COLORS = {
     calm: '#22c55e', confident: '#38bdf8', nervous: '#ef4444',
     excited: '#f59e0b', frustrated: '#94a3b8',
@@ -1203,9 +1217,8 @@ function getOHLC(date, symbol, type) {
                                                         <!-- the page loads faster than the video blob => check if blob, that is after slash, is not null, and then load -->
                                                         <!--<tr v-if="/[^/]*$/.exec(videoBlob)[0]!='null'&&trade.videoStart&&trade.videoEnd">-->
 
-                                                        <template v-for="(trade, index2) in itemTrade.trades"
-                                                            :key="trade.id || index2">
-                                                        <tr data-bs-toggle="modal" data-bs-target="#tradesModal"
+                                                        <tr v-for="(trade, index2) in itemTrade.trades"
+                                                            data-bs-toggle="modal" data-bs-target="#tradesModal"
                                                             class="pointerClass" :data-index="index"
                                                             :data-indextwo="index2">
 
@@ -1290,52 +1303,6 @@ function getOHLC(date, symbol, type) {
                                                             </td>
 
                                                         </tr>
-
-                                                        <!-- The entry review for THIS order, if one was written. Its own
-                                                             row rather than a column: the answers do not fit a cell, and
-                                                             it deliberately has no modal toggle, so reading a review
-                                                             never opens the trade popup by accident. -->
-                                                        <tr v-if="reviewFor(trade)" class="reviewRow">
-                                                            <td colspan="9">
-                                                                <div class="reviewInline">
-                                                                    <span class="reviewInlineLabel">
-                                                                        <i class="uil uil-clipboard-notes me-1"></i>Entry review
-                                                                    </span>
-                                                                    <span class="reviewChip"
-                                                                        :class="reviewFor(trade).hasSl ? 'ok' : 'bad'">
-                                                                        SL {{ reviewFor(trade).hasSl ? reviewFor(trade).slPrice : 'none' }}
-                                                                    </span>
-                                                                    <span class="reviewChip"
-                                                                        :class="reviewFor(trade).hasTp ? 'ok' : 'bad'">
-                                                                        TP {{ reviewFor(trade).hasTp ? reviewFor(trade).tpPrice : 'none' }}
-                                                                    </span>
-                                                                    <span class="reviewChip"
-                                                                        :class="reviewFor(trade).positionQuality === 'good' ? 'ok' : 'bad'">
-                                                                        {{ reviewFor(trade).positionQuality === 'good' ? 'Good position' : 'Bad position' }}
-                                                                    </span>
-                                                                    <span class="reviewChip"
-                                                                        :class="reviewFor(trade).oversized ? 'bad' : 'ok'">
-                                                                        {{ reviewFor(trade).oversized ? 'Oversized' : 'Size ok' }}
-                                                                    </span>
-                                                                    <span class="reviewChip"
-                                                                        :class="reviewFor(trade).logicValid ? 'ok' : 'bad'">
-                                                                        Logic {{ reviewFor(trade).logicValid ? 'valid' : 'broken' }}
-                                                                    </span>
-                                                                    <span v-if="reviewFor(trade).entryEmotion" class="reviewChip emotion"
-                                                                        :style="{ borderColor: REVIEW_EMOTION_COLORS[reviewFor(trade).entryEmotion], color: REVIEW_EMOTION_COLORS[reviewFor(trade).entryEmotion] }">
-                                                                        {{ reviewFor(trade).entryEmotion }}
-                                                                    </span>
-                                                                    <span class="reviewChip"
-                                                                        :class="reviewFor(trade).revengeScore >= 6 ? 'bad' : 'ok'">
-                                                                        Revenge {{ reviewFor(trade).revengeScore }}/10
-                                                                    </span>
-                                                                </div>
-                                                                <div v-if="reviewFor(trade).entryReasoning" class="reviewInlineReason">
-                                                                    {{ reviewFor(trade).entryReasoning }}
-                                                                </div>
-                                                            </td>
-                                                        </tr>
-                                                        </template>
                                                     </tbody>
                                                 </table>
                                             </div>
@@ -1401,6 +1368,51 @@ function getOHLC(date, symbol, type) {
                                                 <div
                                                     v-for="itemDiary in diaries.filter(obj => obj.dateUnix == itemTrade.dateUnix)">
                                                     <p v-html="itemDiary.diary"></p>
+                                                </div>
+
+                                                <!-- What was answered at each entry that day. Here rather than in the
+                                                     Trades tab because this is writing, not a figure: three lines per
+                                                     order turned that table into something you scroll past instead of
+                                                     read. The tab is already the day's written record. -->
+                                                <div v-if="reviewsForDay(itemTrade).length" class="dayReviews">
+                                                    <label class="dayReviewsLabel">
+                                                        <i class="uil uil-clipboard-notes me-1"></i>Entry reviews
+                                                        <span class="dayReviewsCount">{{ reviewsForDay(itemTrade).length }}</span>
+                                                    </label>
+
+                                                    <div v-for="r in reviewsForDay(itemTrade)" :key="r.objectId"
+                                                        class="dayReview">
+                                                        <div class="dayReviewHead">
+                                                            <span class="sideTag" :class="(r.side === 'sell' || r.side === 'short') ? 'sell' : 'buy'">
+                                                                {{ (r.side === 'sell' || r.side === 'short') ? 'SELL' : 'BUY' }}
+                                                            </span>
+                                                            <span class="dayReviewTime">{{ useTimeFormat(r.dateUnix) }}</span>
+                                                            <span class="dayReviewLot">{{ r.lot }} lot</span>
+                                                            <span class="reviewChip" :class="r.hasSl ? 'ok' : 'bad'">
+                                                                SL {{ r.hasSl ? r.slPrice : 'none' }}
+                                                            </span>
+                                                            <span class="reviewChip" :class="r.hasTp ? 'ok' : 'bad'">
+                                                                TP {{ r.hasTp ? r.tpPrice : 'none' }}
+                                                            </span>
+                                                            <span class="reviewChip" :class="r.positionQuality === 'good' ? 'ok' : 'bad'">
+                                                                {{ r.positionQuality === 'good' ? 'Good position' : 'Bad position' }}
+                                                            </span>
+                                                            <span class="reviewChip" :class="r.oversized ? 'bad' : 'ok'">
+                                                                {{ r.oversized ? 'Oversized' : 'Size ok' }}
+                                                            </span>
+                                                            <span class="reviewChip" :class="r.logicValid ? 'ok' : 'bad'">
+                                                                Logic {{ r.logicValid ? 'valid' : 'broken' }}
+                                                            </span>
+                                                            <span v-if="r.entryEmotion" class="reviewChip emotion"
+                                                                :style="{ borderColor: REVIEW_EMOTION_COLORS[r.entryEmotion], color: REVIEW_EMOTION_COLORS[r.entryEmotion] }">
+                                                                {{ r.entryEmotion }}
+                                                            </span>
+                                                            <span class="reviewChip" :class="r.revengeScore >= 6 ? 'bad' : 'ok'">
+                                                                Revenge {{ r.revengeScore }}/10
+                                                            </span>
+                                                        </div>
+                                                        <div v-if="r.entryReasoning" class="dayReviewText">{{ r.entryReasoning }}</div>
+                                                    </div>
                                                 </div>
                                             </div>
 
@@ -1799,30 +1811,56 @@ function getOHLC(date, symbol, type) {
 </template>
 
 <style scoped>
-/* Entry review, shown under its own order row. Indented and un-hovered so it reads
-   as belonging to the trade above rather than as another trade. */
-.reviewRow > td {
-    padding-top: 0;
-    padding-bottom: 0.7rem;
-    border-top: 0;
+/* Entry reviews inside the day's Diary tab. */
+.dayReviews {
+    margin-top: 1rem;
+    padding-top: 0.8rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.reviewInline {
+.dayReviewsLabel {
+    display: block;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--white-60);
+    margin-bottom: 0.6rem;
+}
+
+.dayReviewsCount {
+    margin-left: 0.35rem;
+    padding: 0.05rem 0.35rem;
+    border-radius: 0.25rem;
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.dayReview {
+    padding-left: 0.65rem;
+    border-left: 2px solid rgba(47, 155, 255, 0.5);
+    margin-bottom: 0.9rem;
+}
+
+.dayReviewHead {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 0.3rem;
-    padding-left: 0.6rem;
-    border-left: 2px solid rgba(47, 155, 255, 0.5);
 }
 
-.reviewInlineLabel {
+.sideTag {
     font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    font-weight: 700;
+    padding: 0.05rem 0.4rem;
+    border-radius: 0.25rem;
+}
+
+.sideTag.buy { color: #00CA73; background: rgba(0, 202, 115, 0.12); }
+.sideTag.sell { color: #F6465D; background: rgba(246, 70, 93, 0.12); }
+
+.dayReviewTime, .dayReviewLot {
+    font-size: 0.75rem;
     color: var(--white-60);
-    margin-right: 0.2rem;
-    white-space: nowrap;
+    margin-right: 0.15rem;
 }
 
 .reviewChip {
@@ -1837,15 +1875,14 @@ function getOHLC(date, symbol, type) {
 .reviewChip.bad { color: #F6465D; background: rgba(246, 70, 93, 0.1); border-color: rgba(246, 70, 93, 0.3); }
 .reviewChip.emotion { background: transparent; text-transform: capitalize; }
 
-.reviewInlineReason {
+.dayReviewText {
     margin-top: 0.35rem;
-    padding-left: 0.6rem;
-    border-left: 2px solid rgba(47, 155, 255, 0.5);
-    font-size: 0.8rem;
-    line-height: 1.5;
+    font-size: 0.82rem;
+    line-height: 1.55;
     color: var(--white-60);
     white-space: pre-wrap;
 }
+
 
 
 .weekNoteCard {
