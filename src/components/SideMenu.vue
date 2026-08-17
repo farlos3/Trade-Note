@@ -1,6 +1,16 @@
 <script setup>
+import { computed } from "vue"
 import { pageId, screenType } from "../stores/globals"
 import { useToggleMobileMenu } from "../utils/utils";
+import { weeklyGate } from "../utils/weeklyGates"
+
+/* Dot on Weekly Plan when the weekly cycle owes something -- Monday's review or
+   Friday's plan. Read straight off the gate rather than re-deriving the dates, so
+   the badge cannot drift from what the gate actually enforces. It is already
+   evaluated once per page load by WeeklyGateModal in the layout, so this costs no
+   extra query. 'reflection' is left out on purpose: that one belongs to Diary's
+   week notes, not to planning. */
+const weeklyPlanDue = computed(() => weeklyGate.value === 'review' || weeklyGate.value === 'plan')
 
 </script>
 
@@ -42,6 +52,11 @@ import { useToggleMobileMenu } from "../utils/utils";
         <div class="sideMenuDiv">
             <div class="sideMenuDivContent">
                 <label class="sideMenuSection">Journal</label>
+                <a id="step6b" v-bind:class="[pageId === 'weeklyPlan' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
+                    href="/weekly-plan">
+                    <i class="uil uil-calendar-alt me-2"></i>Weekly Plan
+                    <span v-if="weeklyPlanDue" class="dueDot" title="Weekly plan needs attention"></span>
+                </a>
                 <a id="step6" v-bind:class="[pageId === 'diary' ? 'activeNavCss' : '', 'nav-link', 'mb-1']" href="/diary">
                     <i class="uil uil-diary me-2"></i>Diary
                 </a>
@@ -53,3 +68,16 @@ import { useToggleMobileMenu } from "../utils/utils";
         </div>
     </div>
 </template>
+<style scoped>
+/* Amber, and inline after the label rather than a corner badge: the sidebar is
+   scanned top-to-bottom, so the dot has to sit where the eye already is. */
+.dueDot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #f59e0b;
+    margin-left: 0.45rem;
+    vertical-align: middle;
+}
+</style>

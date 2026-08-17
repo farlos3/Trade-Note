@@ -120,6 +120,16 @@ const routes = [{
             import('../views/Daily.vue')
     },
     {
+        path: '/weekly-plan',
+        name: 'weeklyPlan',
+        meta: {
+            title: "Weekly Plan",
+            layout: DashboardLayout
+        },
+        component: () =>
+            import('../views/WeeklyPlan.vue')
+    },
+    {
         path: '/diary',
         name: 'diary',
         meta: {
