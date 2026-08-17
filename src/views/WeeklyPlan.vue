@@ -15,7 +15,7 @@
  * only two weeks that are ever actionable, with everything older kept below as
  * history.
  */
-import { ref, reactive, computed, onBeforeMount } from 'vue'
+import { ref, reactive, computed, onBeforeMount, onUnmounted } from 'vue'
 import dayjs from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek.js'
 import utc from 'dayjs/plugin/utc.js'
@@ -26,7 +26,7 @@ dayjs.extend(timezone)
 
 import NoData from '../components/NoData.vue'
 import { timeZoneTrade } from '../stores/globals'
-import { saveWeeklyPlan, markPlanReviewed, evaluateWeeklyGates, loadWeekNotes } from '../utils/weeklyGates'
+import { saveWeeklyPlan, markPlanReviewed, evaluateWeeklyGates, loadWeekNotes, planAttachmentIsImage } from '../utils/weeklyGates'
 
 const loaded = ref(false)
 const weekNotes = ref([])
@@ -62,9 +62,33 @@ const weekLabel = (dateUnix) => {
     return start.format('DD MMM') + ' – ' + start.add(6, 'day').format('DD MMM YYYY')
 }
 
-const hasPdf = (w) => !!(w.planPdfUrl || w.planPdfBase64)
-const pdfHref = (w) => w.planPdfUrl || w.planPdfBase64 || ''
+/* A picked-but-unsaved file wins over what is stored, for all three of these.
+ *
+ * They have to agree: showing the new file's NAME next to the OLD file's image is
+ * worse than showing neither, because it reads as confirmation that the right
+ * chart is attached. Object URLs are cached per week and revoked when replaced or
+ * when the page goes away, so picking repeatedly does not leak them. */
+const pickedUrls = reactive({})
+function pickedUrlFor(dateUnix) {
+    const file = files[dateUnix]
+    if (!file || !file.type.startsWith('image/')) return ''
+    if (!pickedUrls[dateUnix] || pickedUrls[dateUnix].file !== file) {
+        if (pickedUrls[dateUnix]) URL.revokeObjectURL(pickedUrls[dateUnix].url)
+        pickedUrls[dateUnix] = { file, url: URL.createObjectURL(file) }
+    }
+    return pickedUrls[dateUnix].url
+}
+onUnmounted(() => {
+    Object.values(pickedUrls).forEach((p) => URL.revokeObjectURL(p.url))
+})
+
+const hasPdf = (w) => !!(files[w.dateUnix] || w.planPdfUrl || w.planPdfBase64)
+const pdfHref = (w) => pickedUrlFor(w.dateUnix) || w.planPdfUrl || w.planPdfBase64 || ''
 const pdfName = (w) => (files[w.dateUnix] && files[w.dateUnix].name) || w.planPdfName || 'plan.pdf'
+const isImageAttachment = (w) => {
+    const file = files[w.dateUnix]
+    return file ? file.type.startsWith('image/') : planAttachmentIsImage(w)
+}
 
 /* ---- Reminder ---------------------------------------------------------------
    Deliberately NOT a re-implementation of evaluateWeeklyGates' rules: this only
@@ -85,7 +109,7 @@ const reminder = computed(() => {
             tone: 'due',
             icon: 'uil-edit',
             title: 'Friday — next week’s plan is due',
-            body: 'Write the plan and attach the chart PDF while this week is still fresh.',
+            body: 'Write the plan and attach the chart (PDF or image) while this week is still fresh.',
         }
     }
     if (!isPlanComplete(upcomingWeek.value)) {
@@ -105,7 +129,10 @@ const reminder = computed(() => {
 })
 
 function isPlanComplete(w) {
-    return !!(w.planText || '').trim() && hasPdf(w)
+    // Deliberately reads the STORED attachment, not hasPdf(): a file sitting in the
+    // picker is not a plan until it has been saved, and the reminder must not go
+    // green on one.
+    return !!(w.planText || '').trim() && !!(w.planPdfUrl || w.planPdfBase64)
 }
 
 /* ---- Editing ----------------------------------------------------------------
@@ -164,7 +191,10 @@ const reviewNoteFor = (w) => {
 }
 const setReviewNote = (dateUnix, v) => { reviewNotes[dateUnix] = v }
 const reviewNoteLeft = (w) => Math.max(0, REVIEW_NOTE_MIN - (reviewNotes[w.dateUnix] || '').trim().length)
-const canReview = (w) => !!(w.planText || '').trim() && hasPdf(w) && reviewNoteLeft(w) === 0
+// isPlanComplete, not hasPdf: marking reviewed does not upload the picker's file,
+// so accepting an unsaved one would flag the week reviewed against a chart that
+// was never stored.
+const canReview = (w) => isPlanComplete(w) && reviewNoteLeft(w) === 0
 
 async function markReviewed(w) {
     if (!canReview(w)) return
@@ -226,13 +256,22 @@ onBeforeMount(async () => {
 
                 <div class="planFileRow">
                     <a v-if="hasPdf(w)" :href="pdfHref(w)" target="_blank" rel="noopener" class="planFileLink">
-                        <i class="uil uil-file-alt me-1"></i>{{ pdfName(w) }}
+                        <i class="uil me-1" :class="isImageAttachment(w) ? 'uil-image-v' : 'uil-file-alt'"></i>{{ pdfName(w) }}
                         <i class="uil uil-external-link-alt ms-1"></i>
                     </a>
-                    <span v-else class="planFileNone">No chart PDF attached</span>
-                    <input type="file" accept="application/pdf" class="form-control form-control-sm planFileInput"
+                    <span v-else class="planFileNone">No chart attached</span>
+                    <input type="file" accept="application/pdf,.pdf,image/*"
+                        class="form-control form-control-sm planFileInput"
                         v-on:change="onFileChange(w.dateUnix, $event)">
                 </div>
+                <!-- An image chart is shown in place. A chart you can see without
+                     opening anything is the difference between re-reading the plan
+                     and clicking past it. A PDF stays a link -- browsers cannot be
+                     relied on to render one inline. -->
+                <a v-if="hasPdf(w) && isImageAttachment(w)" :href="pdfHref(w)" target="_blank"
+                    rel="noopener" class="planChartLink">
+                    <img :src="pdfHref(w)" :alt="pdfName(w)" class="planChart" loading="lazy">
+                </a>
 
                 <!-- Written re-check: required before this week can be marked
                      reviewed, exactly as the Monday popup requires it. -->
@@ -290,13 +329,22 @@ onBeforeMount(async () => {
                     :value="draftFor(w)" v-on:input="setDraft(w.dateUnix, $event.target.value)"></textarea>
                 <div class="planFileRow">
                     <a v-if="hasPdf(w)" :href="pdfHref(w)" target="_blank" rel="noopener" class="planFileLink">
-                        <i class="uil uil-file-alt me-1"></i>{{ pdfName(w) }}
+                        <i class="uil me-1" :class="isImageAttachment(w) ? 'uil-image-v' : 'uil-file-alt'"></i>{{ pdfName(w) }}
                         <i class="uil uil-external-link-alt ms-1"></i>
                     </a>
-                    <span v-else class="planFileNone">No chart PDF attached</span>
-                    <input type="file" accept="application/pdf" class="form-control form-control-sm planFileInput"
+                    <span v-else class="planFileNone">No chart attached</span>
+                    <input type="file" accept="application/pdf,.pdf,image/*"
+                        class="form-control form-control-sm planFileInput"
                         v-on:change="onFileChange(w.dateUnix, $event)">
                 </div>
+                <!-- An image chart is shown in place. A chart you can see without
+                     opening anything is the difference between re-reading the plan
+                     and clicking past it. A PDF stays a link -- browsers cannot be
+                     relied on to render one inline. -->
+                <a v-if="hasPdf(w) && isImageAttachment(w)" :href="pdfHref(w)" target="_blank"
+                    rel="noopener" class="planChartLink">
+                    <img :src="pdfHref(w)" :alt="pdfName(w)" class="planChart" loading="lazy">
+                </a>
                 <div class="planActions">
                     <button class="btn btn-outline-success btn-sm" :disabled="!isDirty(w) || saving === w.dateUnix"
                         v-on:click="save(w)">
@@ -496,6 +544,19 @@ onBeforeMount(async () => {
     line-height: 1.55;
     color: var(--white-60);
     white-space: pre-wrap;
+}
+
+.planChartLink {
+    display: block;
+    margin-top: 0.6rem;
+}
+
+.planChart {
+    display: block;
+    max-width: 100%;
+    max-height: 22rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-subtle);
 }
 
 .planActions {
