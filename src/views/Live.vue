@@ -14,7 +14,7 @@ import dayjs from 'dayjs'
 import { useTwoDecCurrencyFormat } from '../utils/utils'
 import { usePipSize } from '../utils/addOrder'
 import { useAuthHeaders, useAuthedUrl } from '../utils/apiAuth'
-import { offerEntryChecklist, useLoadChecklistedIds } from '../utils/entryChecklist'
+import { offerEntryChecklist, useLoadChecklistedIds, checklistCutoffUnix } from '../utils/entryChecklist'
 
 const snapshot = ref(null)
 const connected = ref(false)
@@ -91,7 +91,10 @@ function fmtPips(v) {
 let checklistReady = false
 function offerPositionsForChecklist(list) {
     if (!checklistReady) return
+    // Today only, matching the global watcher (see checklistCutoffUnix).
+    const cutoff = checklistCutoffUnix()
     for (const p of list) {
+        if (p.openTime && p.openTime < cutoff) continue
         offerEntryChecklist({
             tradeId: String(p.ticket),
             dateUnix: p.openTime,
