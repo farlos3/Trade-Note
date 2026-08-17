@@ -11,7 +11,6 @@ import { useCheckVisibleScreen, useCreatedDateFormat, useEditItem, useInitPopove
 import { useGetDiaries } from '../utils/diary';
 import { useGetTags, useGetTagInfo, useGetAvailableTags, useDailySatisfactionChange, useGetSatisfactions, useGetWeekNotes, useGetDayNotes, useSetWeekNoteCheck, useSaveWeekReflection, useAnalyzeWeekReflection } from '../utils/daily';
 import { useGetDayFiles, useDayFilesFor } from '../utils/dayFiles';
-import { saveWeeklyPlan } from '../utils/weeklyGates';
 import { loadEntryChecklists } from '../utils/entryChecklist';
 
 onBeforeMount(async () => {
@@ -43,8 +42,13 @@ const dayNotes = ref([])
    date" vs "what did the whole week amount to" -- and mixing both in one stream
    made the weekly summaries hard to find among the day cards. Persisted so the
    page opens on whichever one you actually use. */
-const VIEWS = [{ id: 'day', label: 'Day' }, { id: 'week', label: 'Week' }, { id: 'plan', label: 'Plan' }, { id: 'review', label: 'Entry reviews' }]
-const view = ref(localStorage.getItem('diaryView') === 'week' ? 'week' : 'day')
+const VIEWS = [{ id: 'day', label: 'Day' }, { id: 'week', label: 'Week' }, { id: 'review', label: 'Entry reviews' }]
+/* Restore whichever tab was last used, but only if it still exists -- a stored id
+   for a removed tab (the old 'plan') would match no template and render a blank
+   page. The previous form hardcoded 'week', so every tab added since silently
+   failed to persist. */
+const storedView = localStorage.getItem('diaryView')
+const view = ref(VIEWS.some((v) => v.id === storedView) ? storedView : 'day')
 watch(view, (v) => localStorage.setItem('diaryView', v))
 
 const weekStartOf = (dateUnix) =>
@@ -199,54 +203,6 @@ const reviewsByDay = computed(() => {
 })
 const reviewTime = (dateUnix) =>
     dayjs.unix(dateUnix).tz(timeZoneTrade.value || 'UTC').format('HH:mm')
-
-/* Plan tab: history of every week's plan (written the Friday before, reviewed
-   the Monday after -- see weeklyGates.js, which forces both). This tab is the
-   browse-anytime view of the same records; editing here goes through the same
-   saveWeeklyPlan/markPlanReviewed calls the forced popup uses. */
-const planFeed = computed(() => [...weekNotes.value].sort((a, b) => b.dateUnix - a.dateUnix))
-
-const planDrafts = reactive({})     // dateUnix -> draft text
-const planFiles = reactive({})      // dateUnix -> newly chosen File (not yet saved)
-const savingPlan = ref(null)
-const savedPlan = ref(null)
-
-const planDraftFor = (w) => {
-    if (planDrafts[w.dateUnix] === undefined) planDrafts[w.dateUnix] = w.planText || ''
-    return planDrafts[w.dateUnix]
-}
-const setPlanDraft = (dateUnix, v) => { planDrafts[dateUnix] = v }
-const isPlanDirty = (w) => planDraftFor(w) !== (w.planText || '') || !!planFiles[w.dateUnix]
-
-function onPlanFileChange(dateUnix, event) {
-    planFiles[dateUnix] = (event.target.files && event.target.files[0]) || null
-}
-
-const planPdfName = (w) => (planFiles[w.dateUnix] && planFiles[w.dateUnix].name) || w.planPdfName || 'plan.pdf'
-const planPdfHref = (w) => w.planPdfUrl || w.planPdfBase64 || ''
-
-async function savePlan(w) {
-    const text = planDrafts[w.dateUnix] ?? ''
-    const file = planFiles[w.dateUnix] || null
-    savingPlan.value = w.dateUnix
-    try {
-        await saveWeeklyPlan(w.dateUnix, { text, file })
-        w.planText = text
-        if (file) {
-            // Local echo only -- the real url/base64 lives in the DB now; next
-            // load of this page re-fetches it. Good enough so the "attached"
-            // state doesn't flicker back to empty right after saving.
-            w.planPdfName = file.name
-        }
-        planFiles[w.dateUnix] = null
-        savedPlan.value = w.dateUnix
-        setTimeout(() => { if (savedPlan.value === w.dateUnix) savedPlan.value = null }, 2000)
-    } catch (e) {
-        console.error('could not save plan', e)
-    } finally {
-        savingPlan.value = null
-    }
-}
 
 const weekLabel = (dateUnix) => {
     const s = dayjs.unix(dateUnix).tz(timeZoneTrade.value || 'UTC')
@@ -464,57 +420,6 @@ onMounted(async () => {
             </template>
 
             <!-- ================= PLAN ================= -->
-            <template v-if="view === 'plan'">
-                <div v-if="planFeed.length == 0">
-                    <NoData />
-                </div>
-
-                <div v-for="w in planFeed" :key="'p-' + w.dateUnix" class="dailyCard weekNoteCard planCard mb-4">
-                    <div class="weekNoteHead">
-                        <i class="uil uil-calendar-alt me-2"></i>
-                        <span class="weekNoteTitle">{{ weekLabel(w.dateUnix) }}</span>
-                        <span class="planReviewedBadge ms-auto" v-bind:class="{ done: w.planReviewed }">
-                            {{ w.planReviewed ? 'Reviewed' : 'Not reviewed' }}
-                        </span>
-                    </div>
-
-                    <div class="reflectionBlock" style="margin-top: 0;">
-                        <label class="reflectionLabel">
-                            <i class="uil uil-clipboard-notes me-1"></i>Plan
-                            <span v-if="savedPlan === w.dateUnix" class="savedTag">saved</span>
-                            <span v-else-if="isPlanDirty(w)" class="unsavedTag">unsaved</span>
-                        </label>
-                        <textarea class="form-control reflectionInput" rows="4" v-auto-grow
-                            placeholder="No plan written for this week yet."
-                            :value="planDraftFor(w)"
-                            v-on:input="setPlanDraft(w.dateUnix, $event.target.value); autoGrow($event.target)"></textarea>
-
-                        <div class="planFileRow">
-                            <a v-if="planPdfHref(w)" :href="planPdfHref(w)" target="_blank" rel="noopener" class="planFileLink">
-                                <i class="uil uil-file-alt me-1"></i>{{ planPdfName(w) }} <i class="uil uil-external-link-alt ms-1"></i>
-                            </a>
-                            <span v-else class="planFileNone">No PDF attached</span>
-                            <input type="file" accept="application/pdf" class="form-control form-control-sm planFileInput"
-                                v-on:change="onPlanFileChange(w.dateUnix, $event)">
-                        </div>
-
-                        <div class="reflectionActions">
-                            <!-- Reviewing happens on the Weekly Plan page (or the
-                                 Monday popup), both of which require the written
-                                 re-check. A bare "Mark reviewed" button here was a
-                                 way around that requirement, which made the rule
-                                 hold in two places out of three -- i.e. not at all. -->
-                            <a v-if="!w.planReviewed" href="/weekly-plan"
-                                class="btn btn-outline-secondary btn-sm me-2">Review on Weekly Plan</a>
-                            <button class="btn btn-outline-success btn-sm" :disabled="!isPlanDirty(w) || savingPlan === w.dateUnix"
-                                v-on:click="savePlan(w)">
-                                {{ savingPlan === w.dateUnix ? 'Saving…' : 'Save plan' }}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </template>
-
             <!-- ================= DAY ================= -->
             <template v-else>
             <div v-if="dayFeed.length == 0">
@@ -819,57 +724,6 @@ onMounted(async () => {
     height: auto;
     padding: 16px 20px;
     border-left: 3px solid #f59e0b;
-}
-
-/* Plan cards get their own accent (blue) so the Plan tab doesn't read as a
-   re-skinned Week tab -- different question (what's coming) vs (what happened). */
-.planCard {
-    border-left-color: #2f9bff;
-}
-
-.planCard .weekNoteHead {
-    color: #2f9bff;
-}
-
-.planReviewedBadge {
-    font-size: 0.68rem;
-    text-transform: none;
-    letter-spacing: 0;
-    padding: 0.1rem 0.5rem;
-    border-radius: 0.25rem;
-    color: var(--white-60);
-    background: rgba(255, 255, 255, 0.05);
-}
-
-.planReviewedBadge.done {
-    color: #00CA73;
-    background: rgba(0, 202, 115, 0.1);
-}
-
-.planFileRow {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    flex-wrap: wrap;
-    margin-top: 0.6rem;
-}
-
-.planFileLink {
-    font-size: 0.85rem;
-    color: #2f9bff;
-}
-
-.planFileLink:hover {
-    text-decoration: underline;
-}
-
-.planFileNone {
-    font-size: 0.85rem;
-    color: var(--white-60);
-}
-
-.planFileInput {
-    max-width: 16rem;
 }
 
 .weekNoteHead {
