@@ -94,7 +94,16 @@ async function getDb() {
  * analysis to that account; otherwise all trades in the DB are analyzed
  * (fine for a single-user journal). Parse stores the pointer as `_p_user`.
  */
-async function getUserFilter(db) {
+async function getUserFilter(db, userId) {
+  /* An explicit user id wins over TRADENOTE_USER.
+   *
+   * The env var is how the MCP server, which has no session, says who it is. The
+   * web endpoints DO have a session, and using the env var there made them answer
+   * for whoever it named rather than whoever was logged in -- so a value that does
+   * not match the account holding the trades (an easy typo: .local vs .lock)
+   * silently returned an empty journal, which reads as "the page is broken"
+   * rather than "wrong user". Not cached: it varies per request. */
+  if (userId) return { _p_user: '_User$' + userId }
   if (userFilterCache !== undefined) return userFilterCache
   const who = readEnv('TRADENOTE_USER')
   if (!who) return (userFilterCache = {})
@@ -109,9 +118,9 @@ async function getUserFilter(db) {
 const HEAVY = { executions: 0, blotter: 0, pAndL: 0 }
 
 /** Fetch day documents whose dateUnix falls in [fromUnix, toUnix). */
-export async function fetchDayDocs({ fromUnix, toUnix } = {}) {
+export async function fetchDayDocs({ fromUnix, toUnix, userId } = {}) {
   const db = await getDb()
-  const q = { ...(await getUserFilter(db)) }
+  const q = { ...(await getUserFilter(db, userId)) }
   if (fromUnix != null || toUnix != null) {
     q.dateUnix = {}
     if (fromUnix != null) q.dateUnix.$gte = fromUnix
@@ -124,9 +133,9 @@ export async function fetchDayDocs({ fromUnix, toUnix } = {}) {
 }
 
 /** Fetch journal notes (reason / review note) in a dateUnix range. */
-export async function fetchNotes({ fromUnix, toUnix } = {}) {
+export async function fetchNotes({ fromUnix, toUnix, userId } = {}) {
   const db = await getDb()
-  const q = { ...(await getUserFilter(db)) }
+  const q = { ...(await getUserFilter(db, userId)) }
   if (fromUnix != null || toUnix != null) {
     q.dateUnix = {}
     if (fromUnix != null) q.dateUnix.$gte = fromUnix
@@ -146,9 +155,9 @@ export async function fetchNotes({ fromUnix, toUnix } = {}) {
  * a brand-new day bumps the count; adding orders to an existing day re-writes
  * that day doc (import upserts), bumping its _updated_at. No heavy fields read.
  */
-export async function fetchTradesFingerprint({ fromUnix, toUnix } = {}) {
+export async function fetchTradesFingerprint({ fromUnix, toUnix, userId } = {}) {
   const db = await getDb()
-  const q = { ...(await getUserFilter(db)) }
+  const q = { ...(await getUserFilter(db, userId)) }
   if (fromUnix != null || toUnix != null) {
     q.dateUnix = {}
     if (fromUnix != null) q.dateUnix.$gte = fromUnix
