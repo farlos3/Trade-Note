@@ -30,6 +30,11 @@ function blankPlan(id) {
         // Ad-hoc withdrawals: { id, date, amount, note }. Money taken out mid-way,
         // with a note for what it was for.
         withdrawals: [],
+        // Recurring cost of running the operation itself -- hosting, the VPS the
+        // terminal sits on, data. Money that leaves every month whether or not a
+        // trade is taken, and which never appears in the account's own cash flows
+        // because it is paid from somewhere else. Blank = not tracked.
+        fixedCostMonthly: '',
         // Translates the $/day target into pips/day, using the same pip-size /
         // contract-size conventions as manual order entry (see addOrder.js).
         symbol: 'XAUUSD',
