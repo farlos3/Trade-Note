@@ -80,6 +80,25 @@ class _Obj:
         self.__dict__.update(data)
 
 
+# Broker clocks are not UTC. MT5 reports every time -- deals, positions, the
+# account snapshot -- in SERVER time, so on a UTC+3 broker a trade that happened at
+# 09:41 UTC comes back reading 12:41. Those numbers then travel downstream as if
+# they were real unix timestamps, which puts every trade three hours into the
+# future and displays it three hours late in the app.
+#
+# So the offset is subtracted HERE, at the one boundary where MT5 data enters, and
+# everything past this point is true UTC: the XLSX, the account snapshot, the live
+# feed and the state watermark all become consistent at once. Fixing it further
+# downstream would mean applying the same correction in several places and getting
+# one of them wrong.
+def broker_time_to_utc(ts, offset_seconds):
+    """A broker-clock timestamp as a true unix timestamp."""
+    try:
+        return int(ts) - int(offset_seconds or 0)
+    except (TypeError, ValueError):
+        return ts
+
+
 class NativeBackend:
     name = "MetaTrader5 package"
 
@@ -92,8 +111,43 @@ class NativeBackend:
     def account_info(self):
         return mt5.account_info()
 
+    def broker_offset(self):
+        """Seconds the broker clock runs ahead of UTC.
+
+        The Python package exposes no equivalent of MQL5's TimeGMT(), so it is read
+        off a live tick: tick.time is broker time for an event happening right now,
+        so its distance from this machine's clock IS the offset. Rounded to the
+        quarter hour, since real offsets are whole or half hours and this comparison
+        carries a little latency. Cached -- it only changes at a broker DST switch.
+        """
+        if getattr(self, "_offset", None) is not None:
+            return self._offset
+        self._offset = 0
+        try:
+            symbols = mt5.symbols_get() or []
+            for sym in symbols[:20]:
+                tick = mt5.symbol_info_tick(sym.name)
+                if tick and tick.time:
+                    self._offset = int(round((tick.time - time.time()) / 900.0) * 900)
+                    break
+        except Exception as e:  # noqa: BLE001 - never let clock detection kill a sync
+            log(f"Could not determine the broker clock offset ({e}); assuming UTC.")
+        return self._offset
+
     def history_deals_get(self, frm, to):
-        return mt5.history_deals_get(frm, to)
+        """Deals in the window, with their times converted to true UTC.
+
+        The window arguments stay in broker time on purpose: that is what the
+        terminal filters on. Only the times coming back are corrected, so that
+        everything downstream of this backend is UTC."""
+        offset = self.broker_offset()
+        out = []
+        for d in (mt5.history_deals_get(frm, to) or []):
+            fields = {k: getattr(d, k) for k in dir(d)
+                      if not k.startswith("_") and not callable(getattr(d, k))}
+            fields["time"] = broker_time_to_utc(d.time, offset)
+            out.append(_Obj(fields))
+        return out
 
     def positions_get(self):
         return mt5.positions_get()
@@ -114,6 +168,7 @@ class NativeBackend:
         if ai is None:
             return None
 
+        offset = self.broker_offset()
         positions = []
         symbols = set()
         for p in (mt5.positions_get() or []):
@@ -130,7 +185,7 @@ class NativeBackend:
                 "tp": p.tp,
                 "profit": p.profit,
                 "swap": p.swap,
-                "openTime": p.time,
+                "openTime": broker_time_to_utc(p.time, offset),
             })
 
         ticks = {}
@@ -159,7 +214,7 @@ class NativeBackend:
         can query the real history, so this is simply an unbounded window."""
         frm = dt.datetime(2000, 1, 1)
         to = dt.datetime.now() + dt.timedelta(days=2)
-        deals = mt5.history_deals_get(frm, to) or []
+        deals = self.history_deals_get(frm, to)   # already UTC-corrected
         return [d for d in deals if d.type == DEAL_TYPE_BALANCE and d.profit != 0]
 
     def shutdown(self):
@@ -242,6 +297,31 @@ class BridgeBackend:
     def last_error(self):
         return getattr(self, "_err", f"bridge file not found (looked for {BRIDGE_FILENAME})")
 
+    def broker_offset(self):
+        """Seconds the broker clock runs ahead of UTC.
+
+        From the EA when it is new enough to export it. Otherwise inferred from how
+        far the file's own `exported_at` (a broker clock reading) sits ahead of this
+        machine's clock, rounded to the nearest quarter hour -- every real broker
+        offset is a whole or half hour, so rounding turns the second or two of write
+        latency into an exact answer. Inference is a fallback, not the design: it
+        assumes the host clock is right, which is why the EA reports it directly."""
+        data = self._data or {}
+        if data.get("gmt_offset") is not None:
+            return int(data["gmt_offset"])
+        exported = data.get("exported_at")
+        if not exported:
+            return 0
+        drift = float(exported) - time.time()
+        guessed = int(round(drift / 900.0) * 900)
+        if guessed and not getattr(self, "_warned_offset", False):
+            log(f"Bridge file has no 'gmt_offset' -- inferring the broker clock is "
+                f"UTC{guessed / 3600:+.2f}h from the file's own timestamp. Recompile "
+                f"TradeNoteExport.mq5 (F7) and re-attach it to have the terminal "
+                f"report this exactly.")
+            self._warned_offset = True
+        return guessed
+
     def account_info(self):
         a = (self._data or {}).get("account") or {}
         return _Obj({
@@ -259,8 +339,10 @@ class BridgeBackend:
         frm_unix = frm.timestamp() if isinstance(frm, dt.datetime) else float(frm)
         to_unix = to.timestamp() if isinstance(to, dt.datetime) else float(to)
         out = []
+        offset = self.broker_offset()
         for d in (self._data or {}).get("deals", []):
-            t = float(d.get("time", 0))
+            # Broker clock -> UTC before anything compares or stores it.
+            t = float(broker_time_to_utc(d.get("time", 0), offset))
             if frm_unix <= t <= to_unix:
                 out.append(_Obj({
                     "ticket": d.get("ticket", 0),
@@ -301,6 +383,7 @@ class BridgeBackend:
         if detail is None:
             return None
         a = data.get("account") or {}
+        offset = self.broker_offset()
 
         positions = []
         ticks = {}
@@ -317,7 +400,7 @@ class BridgeBackend:
                 "tp": float(p.get("tp", 0) or 0),
                 "profit": float(p.get("profit", 0) or 0),
                 "swap": float(p.get("swap", 0) or 0),
-                "openTime": int(p.get("time", 0) or 0),
+                "openTime": int(broker_time_to_utc(p.get("time", 0) or 0, offset)),
             })
             if sym and "bid" in p and "ask" in p:
                 ticks[sym] = {"bid": float(p["bid"]), "ask": float(p["ask"])}
@@ -334,7 +417,10 @@ class BridgeBackend:
             "ticks": ticks,
             # The EA's own write time, not now(): this snapshot describes the
             # terminal as of then, and the UI should not age it from the read.
-            "t": int(data.get("exported_at") or time.time()),
+            # Converted too, or a broker ahead of UTC makes every snapshot look
+            # like it came from the future and never stale.
+            "t": int(broker_time_to_utc(data.get("exported_at"), offset)
+                     if data.get("exported_at") else time.time()),
         }
 
     def balance_deals(self):
@@ -354,8 +440,9 @@ class BridgeBackend:
             return [d for d in self.history_deals_get(dt.datetime(2000, 1, 1),
                                                       dt.datetime.now() + dt.timedelta(days=2))
                     if d.type == DEAL_TYPE_BALANCE and d.profit != 0]
+        offset = self.broker_offset()
         return [_Obj({
-            "time": int(o.get("time", 0)),
+            "time": int(broker_time_to_utc(o.get("time", 0), offset)),
             "type": DEAL_TYPE_BALANCE,
             "profit": float(o.get("profit", 0) or 0),
             "comment": o.get("comment", ""),
@@ -390,10 +477,24 @@ def load_config():
 
 
 def load_state():
-    if os.path.exists(STATE_PATH):
-        with open(STATE_PATH, encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+    if not os.path.exists(STATE_PATH):
+        return {}
+    with open(STATE_PATH, encoding="utf-8") as f:
+        state = json.load(f)
+
+    # One-time migration. The watermark used to hold a BROKER-clock timestamp;
+    # deal times are now true UTC, which on a broker ahead of UTC makes every new
+    # deal look older than the watermark -- so the sync would report "nothing new"
+    # for exactly the broker's offset after every trade, silently. Dropping the
+    # watermark once costs a single re-send of the sliding window, and TradeNote
+    # dedups imports, so it is the cheap side of the trade.
+    if not state.get("times_are_utc"):
+        if state.pop("last_deal_unix", None) is not None:
+            log("State watermark was in broker time; clearing it once so the "
+                "UTC-corrected deals are not mistaken for old ones.")
+        state["times_are_utc"] = True
+        save_state(state)
+    return state
 
 
 def save_state(state):
@@ -512,11 +613,12 @@ def build_report_xlsx(account_login, server, deals):
                "Order", "Commission", "Fee", "Swap", "Profit", "Balance", "Comment"])
 
     for d in deals:
-        # d.time is broker-server time expressed as a UTC-based unix timestamp.
-        # Reading it back in UTC (not the host's local tz) recovers the exact
-        # broker wall-clock the MT5 terminal shows — e.g. 2026.07.24 21:37:28,
-        # not 07.25 04:37 as datetime.fromtimestamp() would render on a UTC+7 box.
-        # This keeps TradeNote's dates/times matching the terminal.
+        # d.time is a TRUE unix timestamp here -- the backend already subtracted
+        # the broker's clock offset (see broker_time_to_utc), so this renders real
+        # UTC. That is exactly what TradeNote's MT5 importer parses these digits
+        # as (dayjs.utc in addTrades.js), which is what makes the app finally agree
+        # with the wall clock. Note the string therefore no longer matches what the
+        # terminal displays, because the terminal shows broker time.
         ts = dt.datetime.fromtimestamp(d.time, dt.timezone.utc).strftime("%Y.%m.%d %H:%M:%S")
         side = "buy" if d.type == DEAL_TYPE_BUY else "sell"
         direction = "in" if d.entry == DEAL_ENTRY_IN else "out"
@@ -562,8 +664,8 @@ def account_financials(backend):
     deals = backend.balance_deals() or []
     deposit = sum(float(d.profit) for d in deals if d.profit > 0)
     withdrawal = sum(-float(d.profit) for d in deals if d.profit < 0)
-    # d.time is a UTC-based unix timestamp (broker server time); keep it raw so the
-    # frontend buckets it in the trade timezone, same as trades.
+    # d.time is a true UTC unix timestamp by now; keep it raw so the frontend
+    # buckets it in the trade timezone, same as trades.
     cashflows = [
         {"t": int(d.time), "amount": float(d.profit),
          "type": "deposit" if d.profit > 0 else "withdrawal"}
@@ -601,7 +703,7 @@ def _build_email_html(deals, total_profit, account_line, tradenote_url):
     it renders the same in Gmail/Outlook which strip <style> blocks)."""
     rows = []
     for d in sorted(deals, key=lambda x: x.time):
-        # UTC read = broker wall-clock, matching the terminal and TradeNote.
+        # d.time is true UTC by now, so this is a real UTC time (not broker time).
         when = dt.datetime.fromtimestamp(d.time, dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         side = "BUY" if d.type == DEAL_TYPE_BUY else "SELL"
         side_color = "#16a34a" if d.type == DEAL_TYPE_BUY else "#dc2626"

@@ -76,10 +76,19 @@ open + close legs even if they arrived in different runs. `state.json` keeps a
 small watermark (the newest deal already pushed) used only to skip the push/email
 when nothing new has closed, so a 1-minute schedule stays quiet between trades.
 
-> **Broker time:** MT5 reports deal times in *broker-server* time, which the API
-> returns ahead of your PC clock (HFMarkets is UTC+3). The sync pads its query
-> window into the future to account for this — don't be surprised if `state.json`
-> holds a timestamp that looks a few hours ahead.
+> **Broker time:** MT5 reports every time — deals, positions, the account snapshot
+> — in *broker-server* time, not UTC (HFMarkets is UTC+3). The EA exports the
+> terminal's own `gmt_offset` and the sync subtracts it as the data comes in, so
+> everything downstream is true UTC and the app shows the wall-clock time you
+> actually traded at. An EA compiled before `gmt_offset` existed makes the sync
+> infer the offset from the file's timestamp instead, and say so in the log —
+> recompile (F7) to have the terminal report it exactly.
+>
+> The query window is still padded into the future, because the window is matched
+> against the terminal's own clock.
+>
+> This applies to the sync only. A report you export by hand from the terminal and
+> import through the Imports page is still in broker time.
 
 ## One-time setup
 
