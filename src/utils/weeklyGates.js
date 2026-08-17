@@ -63,6 +63,25 @@ export async function loadWeekNotes() {
     }))
 }
 
+/**
+ * Does a week's chart attachment hold an image rather than a PDF?
+ *
+ * The stored fields are still named planPdf* -- they predate images being allowed,
+ * and renaming them would mean migrating every existing week for no behavioural
+ * gain. So the type is read from the value: a data URL states its own mime, and a
+ * stored URL or filename is judged by extension.
+ *
+ * Worth distinguishing because an image can be shown in place, and a chart you can
+ * see without opening anything is the difference between re-reading the plan on
+ * Monday and clicking past it.
+ */
+export function planAttachmentIsImage(week) {
+    if (!week) return false
+    if (week.planPdfBase64) return week.planPdfBase64.startsWith('data:image/')
+    const source = week.planPdfUrl || week.planPdfName || ''
+    return /\.(png|jpe?g|gif|webp|avif)(\?|#|$)/i.test(source)
+}
+
 function findWeek(dateUnix, notes) {
     return notes.find((n) => Number(n.dateUnix) === Number(dateUnix)) || null
 }

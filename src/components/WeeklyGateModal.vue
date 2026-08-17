@@ -16,7 +16,7 @@ dayjs.extend(timezone)
 import { timeZoneTrade } from '../stores/globals.js'
 import {
     weeklyGate, weeklyGateTarget, evaluateWeeklyGates, previewWeeklyGate,
-    saveWeeklyPlan, markPlanReviewed, saveReflectionForGate,
+    saveWeeklyPlan, markPlanReviewed, saveReflectionForGate, planAttachmentIsImage,
 } from '../utils/weeklyGates'
 
 const submitting = ref(false)
@@ -37,6 +37,7 @@ onMounted(() => {
     el.addEventListener('hidden.bs.modal', () => {
         displayedGate.value = null
         displayedWeek.value = null
+        releasePicked()
     })
 
     // Console-callable preview: testWeeklyGate('plan' | 'review' | 'reflection').
@@ -52,6 +53,7 @@ watch([weeklyGate, weeklyGateTarget], ([gate, week]) => {
     if (gate) {
         planDraftText.value = (week && week.planText) || ''
         planFile.value = null
+        releasePicked()
         reflectionDraft.value = (week && week.reflection) || ''
         reviewNote.value = ''
         displayedGate.value = gate
@@ -70,9 +72,35 @@ const weekLabel = computed(() => {
     return `${s.format('MMM D')} – ${s.add(6, 'day').format('MMM D, YYYY')}`
 })
 
-function onFileChange(e) {
-    planFile.value = (e.target.files && e.target.files[0]) || null
+/* Preview of the file just chosen, before it has been saved anywhere.
+ *
+ * The stored href only exists after an upload, so without this the chart you just
+ * attached shows nothing until the modal has been through a save-and-reopen --
+ * exactly when you most want to check you picked the right screenshot. Object URLs
+ * are revoked on replace and on close, or each pick would leak one for the life of
+ * the page. */
+const pickedUrl = ref('')
+function releasePicked() {
+    if (pickedUrl.value) URL.revokeObjectURL(pickedUrl.value)
+    pickedUrl.value = ''
 }
+onUnmounted(releasePicked)
+
+function onFileChange(e) {
+    releasePicked()
+    planFile.value = (e.target.files && e.target.files[0]) || null
+    if (planFile.value && planFile.value.type.startsWith('image/')) {
+        pickedUrl.value = URL.createObjectURL(planFile.value)
+    }
+}
+
+// A freshly picked file wins over whatever is stored -- it is what will be saved.
+const attachmentIsImage = computed(() =>
+    planFile.value
+        ? planFile.value.type.startsWith('image/')
+        : planAttachmentIsImage(displayedWeek.value)
+)
+const pdfHrefLive = computed(() => pickedUrl.value || pdfHref.value)
 
 const hasPdf = computed(() => {
     const w = displayedWeek.value
@@ -180,14 +208,16 @@ async function submitReflection() {
                         <h5 class="modal-title"><i class="uil uil-calendar-alt me-2"></i>Weekend chart review — plan for next week</h5>
                     </div>
                     <div class="modal-body">
-                        <p class="wgIntro">Week of {{ weekLabel }}. Write the plan and attach the chart PDF before this
-                            closes -- both are required.</p>
+                        <p class="wgIntro">Week of {{ weekLabel }}. Write the plan and attach the chart before this
+                            closes -- both are required. A PDF or an image (PNG, JPG) is fine.</p>
                         <label class="wgLabel">Plan — what's the setup, how are you reading the chart?</label>
                         <textarea class="form-control form-control-sm mb-3" rows="5" v-model="planDraftText"
                             placeholder="Levels, bias, what would confirm or invalidate it, how you're reading the chart..."></textarea>
-                        <label class="wgLabel">Chart PDF <span class="wgReq">required</span></label>
-                        <input type="file" accept="application/pdf" class="form-control form-control-sm" v-on:change="onFileChange">
+                        <label class="wgLabel">Chart <span class="wgReq">required</span></label>
+                        <input type="file" accept="application/pdf,.pdf,image/*" class="form-control form-control-sm"
+                            v-on:change="onFileChange">
                         <div v-if="hasPdf" class="wgFileOk"><i class="uil uil-check-circle me-1"></i>{{ pdfName }}</div>
+                        <img v-if="hasPdf && attachmentIsImage" :src="pdfHrefLive" :alt="pdfName" class="wgChart">
                     </div>
                     <div class="modal-footer">
                         <button type="button" class="btn btn-success btn-sm" :disabled="!isPlanComplete || submitting" v-on:click="submitPlan">
@@ -207,13 +237,18 @@ async function submitReflection() {
                         <label class="wgLabel">Plan</label>
                         <textarea class="form-control form-control-sm mb-3" rows="5" v-model="planDraftText"
                             placeholder="No plan was written for this week -- write one now."></textarea>
-                        <label class="wgLabel">Chart PDF</label>
+                        <label class="wgLabel">Chart</label>
                         <a v-if="pdfHref" :href="pdfHref" target="_blank" rel="noopener" class="wgFileOk wgFileLink">
-                            <i class="uil uil-file-alt me-1"></i>{{ pdfName }} <i class="uil uil-external-link-alt ms-1"></i>
+                            <i class="uil me-1" :class="attachmentIsImage ? 'uil-image-v' : 'uil-file-alt'"></i>{{ pdfName }}
+                            <i class="uil uil-external-link-alt ms-1"></i>
                         </a>
-                        <div v-else class="wgIntro mb-2">No PDF was attached — attach it now.</div>
-                        <input type="file" accept="application/pdf" class="form-control form-control-sm mt-2" v-on:change="onFileChange"
-                            placeholder="Replace PDF (optional)">
+                        <div v-else class="wgIntro mb-2">No chart was attached — attach it now.</div>
+                        <!-- Shown inline on Monday above all: this is the gate that
+                             exists to make the chart get looked at, and a link that
+                             opens a new tab is a link that gets skipped. -->
+                        <img v-if="hasPdf && attachmentIsImage" :src="pdfHrefLive" :alt="pdfName" class="wgChart">
+                        <input type="file" accept="application/pdf,.pdf,image/*" class="form-control form-control-sm mt-2"
+                            v-on:change="onFileChange">
 
                         <label class="wgLabel mt-3">
                             Re-check — in your own words, what are you trading this week?
@@ -280,6 +315,15 @@ async function submitReflection() {
     font-size: 0.82rem;
     font-weight: 600;
     margin-bottom: 0.4rem;
+}
+
+.wgChart {
+    display: block;
+    margin-top: 0.5rem;
+    max-width: 100%;
+    max-height: 24rem;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
 .wgHint {
