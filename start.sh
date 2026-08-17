@@ -421,9 +421,35 @@ start_live_feed() {
     return 0
   fi
   # One agent is enough; a second would just double the POST rate.
-  if pgrep -f "mt5_live.py" >/dev/null 2>&1; then
-    printf '\033[32mLive feed already running.\033[0m\n'
-    return 0
+  # An already-running agent is only good if it is running the CURRENT code.
+  #
+  # Python reads a module once, at import: an agent started before an edit keeps
+  # executing the old version for as long as it lives, and this agent is meant to
+  # live for days. That is not theoretical -- it shipped wrong timestamps for
+  # hours after the broker-clock conversion was fixed, because ./start.sh saw a
+  # live process and said "already running" every time.
+  #
+  # So compare the process's start time against the sources it loaded, and replace
+  # it when they are newer. Restarting is cheap: the feed is stateless, the next
+  # snapshot arrives within a second.
+  live_pid="$(pgrep -f "mt5-sync/mt5_live.py" | head -n1)"
+  if [[ -n "$live_pid" ]]; then
+    started_at="$(ps -p "$live_pid" -o lstart= 2>/dev/null)"
+    started_epoch="$(date -j -f "%a %b %d %T %Y" "$started_at" +%s 2>/dev/null \
+                     || date -d "$started_at" +%s 2>/dev/null || echo 0)"
+    newest_src=0
+    for f in "$ROOT_DIR/mt5-sync/mt5_live.py" "$ROOT_DIR/mt5-sync/mt5_sync.py"; do
+      m="$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)"
+      [[ "$m" -gt "$newest_src" ]] && newest_src="$m"
+    done
+    if [[ "$started_epoch" -gt 0 && "$newest_src" -gt "$started_epoch" ]]; then
+      printf '\033[33mLive feed is older than mt5-sync/ — restarting it to pick up the changes.\033[0m\n'
+      kill "$live_pid" 2>/dev/null || true
+      sleep 1
+    else
+      printf '\033[32mLive feed already running.\033[0m\n'
+      return 0
+    fi
   fi
   nohup "$PY" "$ROOT_DIR/mt5-sync/mt5_live.py" >"$LIVE_LOG" 2>&1 &
   disown 2>/dev/null || true
