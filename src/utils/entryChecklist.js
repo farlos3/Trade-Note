@@ -67,6 +67,44 @@ export async function useLoadChecklistedIds() {
     return loadingChecklistedIds
 }
 
+/**
+ * Every saved review, newest entry first.
+ *
+ * Until this existed the class was write-only: the answers went in and the only
+ * thing ever read back was `tradeId`, to avoid asking twice. Which meant the
+ * questions were being answered into a hole -- and a trading journal whose whole
+ * argument is "notice your own patterns" has to be able to show you the answers
+ * next to each other.
+ */
+export async function loadEntryChecklists(limit = 500) {
+    const query = new Parse.Query(Parse.Object.extend('entryChecklists'))
+    query.equalTo('user', currentUserOrNull())
+    query.descending('dateUnix')
+    query.limit(limit)
+    const results = await query.find()
+    return results.map((r) => ({
+        objectId: r.id,
+        tradeId: r.get('tradeId'),
+        dateUnix: r.get('dateUnix') || 0,
+        symbol: r.get('symbol') || '',
+        side: r.get('side') || '',
+        lot: r.get('lot') || 0,
+        hasTp: !!r.get('hasTp'),
+        hasSl: !!r.get('hasSl'),
+        tpPrice: r.get('tpPrice') || 0,
+        slPrice: r.get('slPrice') || 0,
+        tpPips: r.get('tpPips') || 0,
+        slPips: r.get('slPips') || 0,
+        tpSlAcceptable: !!r.get('tpSlAcceptable'),
+        positionQuality: r.get('positionQuality') || '',
+        entryEmotion: r.get('entryEmotion') || '',
+        entryReasoning: r.get('entryReasoning') || '',
+        logicValid: !!r.get('logicValid'),
+        oversized: !!r.get('oversized'),
+        revengeScore: r.get('revengeScore') || 0,
+    }))
+}
+
 /** Queue a trade for review. No-ops if it is already answered or already queued. */
 export function offerEntryChecklist(trade) {
     if (!trade || !trade.tradeId) return
