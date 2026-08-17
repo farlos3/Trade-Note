@@ -98,6 +98,52 @@ const actual = computed(() => {
     }
 })
 
+/* ---- Running cost of the operation ------------------------------------------
+ *
+ * Hosting, the VPS the terminal runs on, data feeds: money that leaves every month
+ * whether or not a trade is taken. It never shows up in the account's own cash
+ * flows because it is paid from somewhere else, so without this the page reports a
+ * profit the operation as a whole did not actually make.
+ *
+ * Charged over CALENDAR time, not traded days -- the bill arrives whether the
+ * market was open or not. The span used is first traded day to last, inclusive,
+ * which is the window the actual figures already describe and works for the "All"
+ * period where there is no explicit from/to.
+ */
+const DAYS_PER_MONTH = 30.4375   // 365.25 / 12, so a year of months sums to a year
+
+const monthlyCost = computed(() => {
+    const n = numOrNull(activePlan.value.fixedCostMonthly)
+    return n != null && n > 0 ? n : null
+})
+
+const costSpanDays = computed(() => {
+    if (!daily.value || !daily.value.length) return null
+    const first = dayjs(daily.value[0].date)
+    const last = dayjs(daily.value[daily.value.length - 1].date)
+    if (!first.isValid() || !last.isValid()) return null
+    return last.diff(first, 'day') + 1   // inclusive: one traded day is one day, not zero
+})
+
+const cost = computed(() => {
+    if (monthlyCost.value == null || !actual.value || !costSpanDays.value) return null
+    const total = monthlyCost.value * (costSpanDays.value / DAYS_PER_MONTH)
+    return {
+        total,
+        spanDays: costSpanDays.value,
+        netAfter: actual.value.totalNet - total,
+        // What each traded day has to clear before the operation is even. Per
+        // TRADED day here, because that is the day you can actually do something
+        // about -- the cost itself accrued on the calendar.
+        breakEvenPerTradedDay: total / actual.value.tradedDays,
+        // And as a share of the balance the plan is measured against, so it can be
+        // read next to "target % per day".
+        breakEvenPctPerDay: start.value > 0
+            ? (total / actual.value.tradedDays / start.value) * 100
+            : null,
+    }
+})
+
 /** Real equity curve: your actual balance day by day, stepping by each traded
    day's real net P&L (real ups/downs — NOT a smoothed average). Real MT5 cash
    flows move it too: a withdrawal drops the line on the day money left, a deposit
@@ -260,7 +306,7 @@ const netCashFlow = computed(() =>
    grid takes its column count from this instead of a hard-coded 6 -- otherwise a
    plan with no daily target (5 tiles) would leave one empty column track. */
 const statTileCount = computed(() =>
-    4 + (target.value != null ? 1 : 0) + (hasCashFlow.value ? 1 : 0))
+    4 + (target.value != null ? 1 : 0) + (hasCashFlow.value ? 1 : 0) + (cost.value ? 1 : 0))
 
 /* Breakeven: how far the account still is from the money actually put into it,
    and how long earning that back takes at the pace being traded now.
@@ -646,6 +692,11 @@ watch([equity, chartMode, yScale], async () => {
                 <input type="number" step="0.1" placeholder="e.g. 1" class="form-control form-control-sm"
                     v-model="activePlan.dailyPct" />
             </div>
+            <div>
+                <label class="planLabel">Fixed cost / month</label>
+                <input type="number" min="0" step="1" placeholder="e.g. 25" class="form-control form-control-sm"
+                    v-model="activePlan.fixedCostMonthly" />
+            </div>
         </div>
 
         <div class="planCard mb-3">
@@ -711,6 +762,14 @@ watch([equity, chartMode, yScale], async () => {
                         </div>
                         <div class="statSub">target {{ fmt(target, 2) }}% / day</div>
                     </div>
+                    <!-- What is left once the operation pays for itself. Separate
+                         from "earned" because the cost is not a trading result --
+                         it accrues whether or not the terminal was even open. -->
+                    <div class="statTile" v-if="cost">
+                        <div class="statLabel">After fixed cost</div>
+                        <div class="statValue" v-bind:class="pnlClass(cost.netAfter)">{{ fmt(cost.netAfter) }}</div>
+                        <div class="statSub">cost {{ fmt(cost.total) }} over {{ cost.spanDays }}d</div>
+                    </div>
                     <!-- Money moved in/out. Kept out of "earned" so a top-up after
                          blowing the account never reads as trading profit. -->
                     <div class="statTile" v-if="hasCashFlow">
@@ -722,6 +781,14 @@ watch([equity, chartMode, yScale], async () => {
                         <div class="statSub">net {{ netCashFlow >= 0 ? '+' : '−' }}{{ fmt(Math.abs(netCashFlow)) }}</div>
                     </div>
                 </div>
+
+                <p v-if="cost" class="hintLine mb-0">
+                    Running cost is {{ fmt(monthlyCost, 2) }} a month, so a traded day has to clear
+                    <strong>{{ fmt(cost.breakEvenPerTradedDay) }}</strong><span v-if="cost.breakEvenPctPerDay != null">
+                    ({{ fmt(cost.breakEvenPctPerDay, 3) }}% of {{ fmt(start, 0) }})</span> before the operation is even.<span
+                        v-if="target != null && cost.breakEvenPctPerDay != null">
+                    Your {{ fmt(target, 2) }}%/day target {{ target > cost.breakEvenPctPerDay ? 'covers' : 'does not cover' }} it.</span>
+                </p>
 
                 <p v-if="equity && equity.withdrawnOutsideRange > 0" class="hintLine mb-0">
                     {{ fmt(equity.withdrawnOutsideRange) }} of withdrawals fall after the last traded day in this
