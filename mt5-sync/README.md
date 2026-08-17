@@ -50,10 +50,20 @@ does not work under the Wine build MT5 for Mac ships:
 A 🙂 in the chart corner means it is running, and the chart shows the time of the
 last export. `./start.sh` then picks the data up with no further setup.
 
-The EA writes `tradenote_deals.json` into `<data folder>/MQL5/Files` every 15
-seconds, and immediately whenever a deal closes. The sync treats a file older
-than 90 seconds as "terminal not running" and skips the run, so a closed
-terminal never gets pushed as an empty account.
+The EA writes `tradenote_deals.json` into `<data folder>/MQL5/Files` every
+`ExportIntervalSeconds` (5 by default), and immediately whenever a deal opens or
+closes. The sync treats a file older than 90 seconds as "terminal not running"
+and skips the run, so a closed terminal never gets pushed as an empty account.
+
+That one file feeds both halves of the bridge: `mt5_sync.py` reads `deals` and
+`balance_ops` for the journal, `mt5_live.py` reads `positions` for the Live page.
+So on macOS the Live page refreshes at the EA's interval, not per tick — lower
+`ExportIntervalSeconds` if you want it smoother.
+
+> **After updating this repo, recompile the EA.** MT5 runs the `.ex5` it compiled
+> earlier, not the `.mq5` on disk, so a pulled change does nothing until you redo
+> steps 1–4 above. A live feed that logs `MT5 terminal not available` while MT5 is
+> plainly open is the usual sign: the old build has no `positions` key.
 
 > **Scope of the export:** the EA exports its own `LookbackDays` window (7 by
 > default). Deposits and withdrawals older than that window are not visible to

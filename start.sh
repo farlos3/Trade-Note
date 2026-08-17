@@ -37,8 +37,17 @@
 #   ./start.sh --skip-backup  # don't push the result back to R2
 set -o pipefail
 
+# WHICH STACK to run. This is NOT the bundled-vs-hot switch -- see APP_ENV below.
+#   dev   this fork, built from source (docker-compose-dev.yml) + a local mongo
+#   local this fork, built from source, against the .env MONGO_URI
+#   prod  the PUBLISHED UPSTREAM image eleventrading/tradenote
+# "prod" is almost never what you want here: the upstream image is plain TradeNote,
+# so none of this fork's code is in it -- no /api/trades, no /api/account, no mongo
+# service -- and pointing start.sh at it makes the sync 404 and the restore/backup
+# skip. Leave this on dev; use --hot if what you wanted was the Vite dev server.
 MODE="dev"
-# NODE_ENV handed to the container. Only docker-compose-dev.yml reads it
+# NODE_ENV handed to the container: "prod" serves the bundled build, "dev" runs the
+# Vite dev server (--hot). Only docker-compose-dev.yml reads it
 # (`NODE_ENV: ${NODE_ENV:-dev}`); the other compose files pin their own.
 APP_ENV="prod"
 UPDATE_IP=0; SKIP_DOCKER=0; SKIP_SYNC=0; IP_ONLY=0; SKIP_RESTORE=0; SKIP_BACKUP=0
@@ -110,6 +119,19 @@ if [[ "$SUPPORTS_APP_ENV" -eq 0 ]]; then
   APP_ENV=""   # leave the compose file's own NODE_ENV alone
 fi
 
+# All three compose files share `name: tradenote` and `container_name: tradenote_app`,
+# so they are not separate stacks: switching --mode REPLACES the running container in
+# place with a different image. Going to prod therefore silently swaps this fork's
+# build for stock upstream TradeNote (and orphans tradenote_mongo, which only the
+# dev/local files define). Worth saying out loud, because the symptom -- 404s from
+# the sync and "could not reach MongoDB" -- does not point at the image.
+if [[ "$MODE" == "prod" ]]; then
+  warn "--mode prod runs the PUBLISHED image eleventrading/tradenote, not this fork."
+  warn "None of this repo's code is in it: /api/trades and /api/account will 404, and"
+  warn "there is no mongo service. If you wanted the bundled build, that is the default"
+  warn "already (--hot opts out). Ctrl-C now unless you really want stock upstream."
+fi
+
 PORT="$(read_env TRADENOTE_PORT)"; [[ -n "$PORT" ]] || PORT="8080"
 APP_URL="http://localhost:$PORT"
 
@@ -136,7 +158,7 @@ fi
 
 # 2. --- Docker: start the app ------------------------------------------------
 if [[ "$SKIP_DOCKER" -eq 0 ]]; then
-  section "Starting TradeNote (Docker, mode=$MODE)"
+  section "Starting TradeNote (Docker, --mode $MODE${APP_ENV:+, NODE_ENV=$APP_ENV})"
 
   if ! docker info >/dev/null 2>&1; then
     echo "ERROR: Docker does not appear to be running. Start Docker Desktop and re-run." >&2
@@ -410,7 +432,11 @@ start_live_feed() {
     printf '\033[32mLive feed running -> %s\033[0m\n' "$APP_URL/live"
     printf '\033[90mLog:   %s\033[0m\n' "${LIVE_LOG#$ROOT_DIR/}"
   else
+    # Echo the reason rather than only the path: the log is usually one line, and
+    # "did not stay up" on its own sends you looking for a crash when the real
+    # cause is normally something ordinary like the terminal being closed.
     warn "Live feed did not stay up. See ${LIVE_LOG#$ROOT_DIR/}"
+    [[ -s "$LIVE_LOG" ]] && tail -n 3 "$LIVE_LOG" | sed 's/^/  /' >&2
   fi
   return 0
 }

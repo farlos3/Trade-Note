@@ -1,7 +1,8 @@
 //+------------------------------------------------------------------+
 //|                                            TradeNoteExport.mq5   |
-//|  Exports closed deals, the account snapshot and dated balance     |
-//|  operations to a JSON file that mt5-sync/mt5_sync.py reads.       |
+//|  Exports closed deals, the account snapshot, open positions and    |
+//|  dated balance operations to a JSON file that mt5-sync/ reads:     |
+//|  mt5_sync.py takes the history, mt5_live.py takes the positions.   |
 //|                                                                   |
 //|  Why this exists: the official `MetaTrader5` Python package is a   |
 //|  Windows-only wheel that binds to terminal64.dll, so on macOS the  |
@@ -12,10 +13,14 @@
 //|  Read-only: queries history and account state, never trades.       |
 //+------------------------------------------------------------------+
 #property copyright "TradeNote"
-#property version   "1.00"
+#property version   "1.01"
 #property strict
 
-input int    ExportIntervalSeconds = 15;                     // how often to refresh the file
+// Also the refresh rate of the Live page on macOS, where this file is the only
+// source of open-position data -- opens and closes are pushed immediately by
+// OnTrade, but a moving floating P&L only updates this often. Lower it for a
+// smoother Live page; the write is a few KB, so a handful of seconds is cheap.
+input int    ExportIntervalSeconds = 5;                      // how often to refresh the file
 input int    LookbackDays          = 7;                      // window of history to export
 input string OutFileName           = "tradenote_deals.json"; // name of the exported file
 // false -> <data folder>/MQL5/Files, which is deterministic in every install
@@ -76,11 +81,24 @@ string BuildJson()
    json += ", \"currency\": \"" + JsonEscape(AccountInfoString(ACCOUNT_CURRENCY)) + "\"";
    json += ", \"balance\": "  + Num(AccountInfoDouble(ACCOUNT_BALANCE), 2);
    json += ", \"equity\": "   + Num(AccountInfoDouble(ACCOUNT_EQUITY), 2);
+   // Floating P&L and margin: the Live page shows these next to equity, and only
+   // the terminal can compute them (they depend on current prices, not history).
+   json += ", \"profit\": "      + Num(AccountInfoDouble(ACCOUNT_PROFIT), 2);
+   json += ", \"margin\": "      + Num(AccountInfoDouble(ACCOUNT_MARGIN), 2);
+   json += ", \"margin_free\": " + Num(AccountInfoDouble(ACCOUNT_MARGIN_FREE), 2);
    json += "},\n";
 
    // ---- open positions ---------------------------------------------------
-   // The Python side drops deals whose position is still open, so a half-filled
-   // round trip is never imported as a finished trade.
+   // Two shapes of the same thing, because two consumers want different halves:
+   //   open_positions  bare tickets. mt5_sync.py drops deals whose position is
+   //                   still open, so a half-filled round trip is never imported
+   //                   as a finished trade. It only needs to ask "is this open?".
+   //   positions       full detail + current price. mt5_live.py streams this to
+   //                   /api/live for the Live page. On Windows that data comes
+   //                   from the MetaTrader5 package instead; on macOS there is no
+   //                   such package, so it has to come through here.
+   // Kept as two keys rather than one so that an older mt5_sync.py, which reads
+   // open_positions as a list of ints, keeps working against a newer EA.
    json += "  \"open_positions\": [";
    int totalPos = PositionsTotal();
    bool firstPos = true;
@@ -91,6 +109,39 @@ string BuildJson()
       if(!firstPos) json += ", ";
       json += IntegerToString((long)ticket);
       firstPos = false;
+   }
+   json += "],\n";
+
+   json += "  \"positions\": [";
+   bool firstDet = true;
+   for(int i = 0; i < totalPos; i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      string sym = PositionGetString(POSITION_SYMBOL);
+      if(!firstDet) json += ", ";
+      json += "{\"ticket\": "     + IntegerToString((long)ticket);
+      json += ", \"symbol\": \""  + JsonEscape(sym) + "\"";
+      // POSITION_TYPE matches DEAL_TYPE for buy/sell: 0 = buy, 1 = sell.
+      json += ", \"type\": "      + IntegerToString(PositionGetInteger(POSITION_TYPE));
+      json += ", \"volume\": "    + Num(PositionGetDouble(POSITION_VOLUME));
+      json += ", \"price_open\": "    + Num(PositionGetDouble(POSITION_PRICE_OPEN));
+      json += ", \"price_current\": " + Num(PositionGetDouble(POSITION_PRICE_CURRENT));
+      json += ", \"sl\": "        + Num(PositionGetDouble(POSITION_SL));
+      json += ", \"tp\": "        + Num(PositionGetDouble(POSITION_TP));
+      json += ", \"profit\": "    + Num(PositionGetDouble(POSITION_PROFIT), 2);
+      json += ", \"swap\": "      + Num(PositionGetDouble(POSITION_SWAP), 2);
+      json += ", \"time\": "      + IntegerToString(PositionGetInteger(POSITION_TIME));
+      // Bid/ask for the symbol, so the Live page can show the spread without
+      // needing a second data source.
+      MqlTick tick;
+      if(SymbolInfoTick(sym, tick))
+      {
+         json += ", \"bid\": " + Num(tick.bid);
+         json += ", \"ask\": " + Num(tick.ask);
+      }
+      json += "}";
+      firstDet = false;
    }
    json += "],\n";
 
