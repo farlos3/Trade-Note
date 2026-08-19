@@ -6,11 +6,12 @@ import timezone from 'dayjs/plugin/timezone.js'; dayjs.extend(timezone)
 import isoWeek from 'dayjs/plugin/isoWeek.js'; dayjs.extend(isoWeek)
 import SpinnerLoadingPage from '../components/SpinnerLoadingPage.vue';
 import NoData from '../components/NoData.vue';
+import FpDate from '../components/FpDate.vue';
 import { spinnerLoadingPage, diaries, selectedItem, spinnerLoadMore, endOfList, tags, satisfactionArray, dayFiles, timeZoneTrade } from '../stores/globals';
 import { useCheckVisibleScreen, useCreatedDateFormat, useEditItem, useInitPopover, useLoadMore } from '../utils/utils';
 import { useGetDiaries } from '../utils/diary';
 import { useGetTags, useGetTagInfo, useGetAvailableTags, useDailySatisfactionChange, useGetSatisfactions, useGetWeekNotes, useGetDayNotes, useSetWeekNoteCheck, useSaveWeekReflection, useAnalyzeWeekReflection } from '../utils/daily';
-import { useGetDayFiles, useDayFilesFor } from '../utils/dayFiles';
+import { useGetDayFiles, useDayFilesFor, useUploadDayFile } from '../utils/dayFiles';
 import { loadEntryChecklists } from '../utils/entryChecklist';
 
 onBeforeMount(async () => {
@@ -59,15 +60,65 @@ const dayNoteFor = (dateUnix) => {
     return n ? n.note : ''
 }
 
-// Day view: one card per day that has a diary, a file, or a day note.
+/* Days opened by hand, so a day with nothing on it yet can still be given files.
+ *
+ * A card only ever appeared for a day that already had a diary, a file or a note,
+ * and the only place to upload a day's files was History -- which lists days you
+ * TRADED. So a day off, or a day you only reviewed charts, had no way in at all.
+ *
+ * Held in local state rather than written anywhere: the moment a file is attached
+ * the day has a file, and so it appears on its own from then on. There is nothing
+ * worth persisting about "I opened this date and then did nothing". */
+const extraDays = ref([])
+const newDayDate = ref(dayjs().format('YYYY-MM-DD'))
+
+const startOfDayUnix = (isoDate) =>
+    dayjs.tz(isoDate, timeZoneTrade.value || 'UTC').startOf('day').unix()
+
+function addDay() {
+    if (!newDayDate.value) return
+    const d = startOfDayUnix(newDayDate.value)
+    // Already in the feed (or already added) -- nothing to do but make sure the Day
+    // view is the one being looked at.
+    if (!extraDays.value.includes(d)) extraDays.value = [...extraDays.value, d]
+    view.value = 'day'
+}
+
+// Day view: one card per day that has a diary, a file, a day note, or was opened
+// by hand above.
 const dayFeed = computed(() => {
     const byDay = new Map(diaryEntries.value.map((e) => [Number(e.dateUnix), e]))
     dayNotes.value.forEach((n) => {
         const d = Number(n.dateUnix)
         if (!byDay.has(d)) byDay.set(d, { dateUnix: d, diary: '', objectId: null })
     })
+    extraDays.value.forEach((d) => {
+        if (!byDay.has(d)) byDay.set(d, { dateUnix: d, diary: '', objectId: null })
+    })
     return [...byDay.values()].sort((a, b) => b.dateUnix - a.dateUnix)
 })
+
+/* Attach files to a day, from the day's own card.
+ *
+ * Re-reads the list afterwards rather than assuming success: useUploadDayFile
+ * decides where the file actually lands (R2, or inline when R2 is off), and the
+ * card renders straight off that list. */
+const uploadingDay = ref(null)
+async function onDayFileChange(event, dateUnixDay) {
+    const files = event.target && event.target.files
+    if (files && files.length) {
+        uploadingDay.value = dateUnixDay
+        try {
+            await useUploadDayFile(files, dateUnixDay)
+            await useGetDayFiles()
+        } catch (e) {
+            console.error('could not upload the day file', e)
+        } finally {
+            uploadingDay.value = null
+        }
+    }
+    if (event.target) event.target.value = ''
+}
 
 /* Week view: one card per week note, with the days it covers listed underneath
    so the summary can be read against what actually happened. */
@@ -274,6 +325,16 @@ onMounted(async () => {
                 <span class="viewLabel">VIEW BY</span>
                 <button v-for="v in VIEWS" :key="v.id" type="button"
                     :class="['viewBtn', { active: view === v.id }]" v-on:click="view = v.id">{{ v.label }}</button>
+
+                <!-- Open a day that has nothing on it yet, so files can be attached
+                     to it. Days you traded arrive on their own. -->
+                <span v-if="view === 'day'" class="addDayGroup">
+                    <span class="addDayLabel">OPEN A DAY</span>
+                    <FpDate mode="date" v-model="newDayDate" />
+                    <button type="button" class="btn btn-outline-primary btn-sm" v-on:click="addDay">
+                        <i class="uil uil-plus me-1"></i>Add
+                    </button>
+                </span>
             </div>
 
             <!-- ================= ENTRY REVIEWS ================= -->
@@ -469,11 +530,26 @@ onMounted(async () => {
                 </div>
 
                 <!-- Day summary files: an overview list first (what/where), and the
-                     file itself only once a row is opened. -->
-                <div v-if="useDayFilesFor(itemDiary.dateUnix).length" class="dayFileBlock mt-3">
+                     file itself only once a row is opened. The block renders even
+                     with nothing attached, because it carries the upload control --
+                     hiding it on empty days is what left a non-trading day with no
+                     way to add anything. -->
+                <div class="dayFileBlock mt-3">
                     <div class="dayFileCount">
                         <i class="uil uil-paperclip me-1"></i>
-                        {{ useDayFilesFor(itemDiary.dateUnix).length }} file(s) attached
+                        <span v-if="useDayFilesFor(itemDiary.dateUnix).length">
+                            {{ useDayFilesFor(itemDiary.dateUnix).length }} file(s) attached
+                        </span>
+                        <span v-else class="dayFileEmpty">No files for this day yet</span>
+                        <label class="dayFileAdd" title="Attach one or more files for this whole day">
+                            <span v-if="uploadingDay === itemDiary.dateUnix">
+                                <span class="spinner-border spinner-border-sm me-1" role="status"></span>Uploading…
+                            </span>
+                            <span v-else><i class="uil uil-file-upload-alt me-1"></i>Add files</span>
+                            <input type="file" multiple accept="application/pdf,.pdf,image/*" class="d-none"
+                                :disabled="uploadingDay === itemDiary.dateUnix"
+                                @change="onDayFileChange($event, itemDiary.dateUnix)" />
+                        </label>
                     </div>
 
                     <div v-for="f in useDayFilesFor(itemDiary.dateUnix)" :key="f.objectId" class="fileRow">
@@ -513,6 +589,44 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.addDayGroup {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-left: auto;
+}
+
+.addDayLabel {
+    font-size: 0.66rem;
+    letter-spacing: 0.05em;
+    color: var(--white-60);
+}
+
+/* The date input renders as a full-width .form-control, which would push the
+   button off the row -- pin it to something sensible. */
+.addDayGroup :deep(input) {
+    width: 9.5rem;
+    font-size: 0.8rem;
+    padding: 0.15rem 0.5rem;
+}
+
+.dayFileEmpty {
+    color: var(--white-60);
+}
+
+.dayFileAdd {
+    margin-left: auto;
+    font-size: 0.78rem;
+    color: #2f9bff;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.dayFileAdd:hover {
+    text-decoration: underline;
+}
+
+
 .reviewDayHead {
     display: flex;
     align-items: center;
@@ -662,6 +776,10 @@ onMounted(async () => {
 }
 
 .dayFileCount {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-wrap: wrap;
     font-size: 0.78rem;
     color: var(--white-60);
     margin-bottom: 0.4rem;
@@ -788,6 +906,7 @@ onMounted(async () => {
 .viewToolbar {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 0.5rem;
     padding: 0.3rem 0.6rem;
     border-radius: 0.5rem;
