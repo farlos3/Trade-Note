@@ -1,7 +1,8 @@
 <script setup>
 /**
  * Weekly Plan page -- the standing home for the weekly planning cycle that
- * weeklyGates.js otherwise only surfaces as a forced popup on Friday and Monday.
+ * weeklyGates.js otherwise only surfaces as a forced popup over the weekend and
+ * on Monday.
  *
  * The popup is a gate: it appears when an obligation is overdue and disappears the
  * moment it is met, which makes it useless for the ordinary case of wanting to
@@ -11,11 +12,11 @@
  * the popup, Diary's Plan tab and this page can never disagree about a week.
  *
  * Laid out as the cycle actually runs rather than as a flat list: next week (write
- * it on Friday) and this week (re-read it on Monday) are pinned at the top as the
+ * it over the weekend) and this week (re-read it on Monday) are pinned at the top as the
  * only two weeks that are ever actionable, with everything older kept below as
  * history.
  */
-import { ref, reactive, computed, onBeforeMount, onUnmounted } from 'vue'
+import { ref, reactive, computed, onBeforeMount, onMounted, onUnmounted } from 'vue'
 import dayjs from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek.js'
 import utc from 'dayjs/plugin/utc.js'
@@ -26,7 +27,7 @@ dayjs.extend(timezone)
 
 import NoData from '../components/NoData.vue'
 import { timeZoneTrade } from '../stores/globals'
-import { saveWeeklyPlan, markPlanReviewed, evaluateWeeklyGates, loadWeekNotes, planAttachmentIsImage } from '../utils/weeklyGates'
+import { saveWeeklyPlan, markPlanReviewed, evaluateWeeklyGates, loadWeekNotes, planAttachmentIsImage, isWeekendPlanningWindow } from '../utils/weeklyGates'
 
 const loaded = ref(false)
 const weekNotes = ref([])
@@ -34,10 +35,23 @@ const weekNotes = ref([])
 const tz = () => timeZoneTrade.value || 'UTC'
 const thisMonday = computed(() => dayjs().tz(tz()).startOf('isoWeek'))
 const nextMonday = computed(() => thisMonday.value.add(7, 'day'))
-const weekday = computed(() => dayjs().tz(tz()).isoWeekday())   // 1 = Monday, 5 = Friday
+const weekday = computed(() => now.value.isoWeekday())   // 1 = Monday ... 7 = Sunday
+
+/* Ticked, not read once at setup.
+ *
+ * The window opens at 23:59 on a Friday. A page left open across that minute --
+ * which is exactly what a Friday evening looks like -- would otherwise keep
+ * showing "not due yet" while the popup had already begun firing elsewhere. A
+ * minute is fine: nothing here changes faster than that. */
+const now = ref(dayjs().tz(tz()))
+let clockTimer = null
+onMounted(() => { clockTimer = setInterval(() => { now.value = dayjs().tz(tz()) }, 60000) })
+onUnmounted(() => { if (clockTimer) clearInterval(clockTimer) })
+
+const inPlanningWindow = computed(() => isWeekendPlanningWindow(now.value))
 
 /* A week the user has not touched yet has no row in the database, but it still has
-   to be editable -- the Friday plan is written into a week that does not exist yet
+   to be editable -- the weekend plan is written into a week that does not exist yet
    by definition. Stubs fill that gap; saveWeeklyPlan upserts, so saving one creates
    the real record. */
 const stub = (dateUnix) => ({
@@ -104,12 +118,13 @@ const reminder = computed(() => {
             body: 'Read what you wrote on Friday before the first entry, then mark it reviewed.',
         }
     }
-    if (weekday.value === 5 && !isPlanComplete(upcomingWeek.value)) {
+    // Same window the gate enforces, so the two can never describe different days.
+    if (inPlanningWindow.value && !isPlanComplete(upcomingWeek.value)) {
         return {
             tone: 'due',
             icon: 'uil-edit',
-            title: 'Friday — next week’s plan is due',
-            body: 'Write the plan and attach the chart (PDF or image) while this week is still fresh.',
+            title: 'Weekend chart review — next week’s plan is due',
+            body: 'The market is shut and the week is finished. Write the plan and attach the chart (PDF or image) before Monday.',
         }
     }
     if (!isPlanComplete(upcomingWeek.value)) {
@@ -117,7 +132,7 @@ const reminder = computed(() => {
             tone: 'soft',
             icon: 'uil-calendar-alt',
             title: 'Next week has no plan yet',
-            body: 'It is due Friday. Writing it early is fine — you can keep editing until then.',
+            body: 'It is due once Friday closes. Writing it early is fine — you can keep editing until then.',
         }
     }
     return {
