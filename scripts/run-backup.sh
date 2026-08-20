@@ -30,8 +30,21 @@ fi
 
 cd "$ROOT_DIR" || exit 1
 
+# launchd hands a job PATH=/usr/bin:/bin:/usr/sbin:/sbin and nothing else, and
+# Docker Desktop installs its CLI at /usr/local/bin/docker -- which is not on
+# that list. So `docker info` failed as "command not found" on EVERY scheduled
+# run, the script logged "Docker not running", and no backup was ever taken. The
+# log looked like a healthy job politely skipping while Docker Desktop started;
+# it had simply never been able to see it.
+export PATH="/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin:$PATH"
+
 # Docker Desktop may not be up yet after a login; that is a normal skip, not an
-# error worth a stack of noise in the log.
+# error worth a stack of noise in the log. Say WHICH of the two it is, so a
+# missing binary can never masquerade as a stopped daemon again.
+if ! command -v docker >/dev/null 2>&1; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] docker CLI not found on PATH ($PATH) -- skipping backup." >> "$LOG"
+  exit 0
+fi
 if ! docker info >/dev/null 2>&1; then
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] Docker not running -- skipping backup." >> "$LOG"
   exit 0
