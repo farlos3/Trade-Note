@@ -37,9 +37,18 @@ read_env() {
 
 DB_NAME="$(read_env TRADENOTE_DATABASE)"; [[ -n "$DB_NAME" ]] || DB_NAME="tradenote"
 
+# Pick the interpreter that can actually import the dependencies, not whichever
+# python3 happens to be first on PATH. A Mac has several, and these packages are
+# installed into exactly one of them (here /usr/bin/python3, via pip --user), so
+# choosing by path order silently selects a Homebrew python without them and the
+# job fails every time it runs. mt5-sync/run-sync.sh resolves its own interpreter
+# the same way, for the same reason.
 PY=""
-if command -v python3 >/dev/null 2>&1; then PY="python3"
-elif command -v python >/dev/null 2>&1; then PY="python"; fi
+for cand in /usr/bin/python3 /opt/homebrew/bin/python3 /usr/local/bin/python3 \
+            "$(command -v python3 2>/dev/null)" "$(command -v python 2>/dev/null)"; do
+  [[ -n "$cand" && -x "$cand" ]] || continue
+  if "$cand" -c "import pymongo, pyarrow, boto3" >/dev/null 2>&1; then PY="$cand"; break; fi
+done
 
 # Prints a number, or NOTHING when the count could not be established. A blank
 # result must never be read as "empty" -- see the guard below.

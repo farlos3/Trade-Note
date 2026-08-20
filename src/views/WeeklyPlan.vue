@@ -159,10 +159,18 @@ const saving = ref(null)
 const savedAt = ref(null)
 const reviewing = ref(null)
 
-const draftFor = (w) => {
-    if (drafts[w.dateUnix] === undefined) drafts[w.dateUnix] = w.planText || ''
-    return drafts[w.dateUnix]
-}
+/* The stored text until the trader types, and only then their draft.
+ *
+ * This used to seed `drafts` on first read -- inside a render -- which quietly
+ * froze whatever was on screen at that instant. The two cards at the top always
+ * render, from empty stubs, BEFORE loadWeekNotes() resolves, so the seed was
+ * always the empty string, and every later read returned it because the key now
+ * existed. A saved plan therefore came back as a blank box marked "unsaved", with
+ * Save enabled -- one click from overwriting the real plan with nothing.
+ *
+ * Reading a value must not write one. The draft is created by setDraft, i.e. by an
+ * actual keystroke, and until then this reflects the database. */
+const draftFor = (w) => (drafts[w.dateUnix] !== undefined ? drafts[w.dateUnix] : (w.planText || ''))
 const setDraft = (dateUnix, v) => { drafts[dateUnix] = v }
 const isDirty = (w) => draftFor(w) !== (w.planText || '') || !!files[w.dateUnix]
 
@@ -171,7 +179,9 @@ function onFileChange(dateUnix, event) {
 }
 
 async function save(w) {
-    const text = drafts[w.dateUnix] ?? ''
+    // draftFor, not drafts[...]: attaching a file without touching the text leaves
+    // no draft, and `?? ''` would have saved that as an empty plan.
+    const text = draftFor(w)
     const file = files[w.dateUnix] || null
     saving.value = w.dateUnix
     try {
@@ -200,10 +210,10 @@ async function save(w) {
  * rule, so the bar is identical here. */
 const REVIEW_NOTE_MIN = 25
 const reviewNotes = reactive({})
-const reviewNoteFor = (w) => {
-    if (reviewNotes[w.dateUnix] === undefined) reviewNotes[w.dateUnix] = ''
-    return reviewNotes[w.dateUnix]
-}
+// Same rule as draftFor: no writing from a read. This one always starts empty, so
+// it was harmless -- but leaving one accessor that mutates during render is how the
+// pattern comes back.
+const reviewNoteFor = (w) => reviewNotes[w.dateUnix] ?? ''
 const setReviewNote = (dateUnix, v) => { reviewNotes[dateUnix] = v }
 const reviewNoteLeft = (w) => Math.max(0, REVIEW_NOTE_MIN - (reviewNotes[w.dateUnix] || '').trim().length)
 // isPlanComplete, not hasPdf: marking reviewed does not upload the picker's file,

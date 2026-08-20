@@ -164,10 +164,11 @@ const drafts = reactive({})
 const savingWeek = ref(null)
 const savedWeek = ref(null)
 
-const draftFor = (w) => {
-    if (drafts[w.dateUnix] === undefined) drafts[w.dateUnix] = w.reflection || ''
-    return drafts[w.dateUnix]
-}
+// Stored reflection until the trader types, then their draft. Reading must not
+// write: seeding the draft during a render freezes whatever happened to be loaded
+// at that instant, which on WeeklyPlan meant saved text coming back as an empty
+// box marked "unsaved". Same shape here, so same fix.
+const draftFor = (w) => (drafts[w.dateUnix] !== undefined ? drafts[w.dateUnix] : (w.reflection || ''))
 const setDraft = (dateUnix, v) => { drafts[dateUnix] = v }
 const isDirty = (w) => draftFor(w) !== (w.reflection || '')
 
@@ -184,7 +185,7 @@ const autoGrow = (el) => {
 const vAutoGrow = { mounted: autoGrow, updated: autoGrow }
 
 async function saveReflection(w) {
-    const text = drafts[w.dateUnix] ?? ''
+    const text = draftFor(w)
     savingWeek.value = w.dateUnix
     try {
         await useSaveWeekReflection(Number(w.dateUnix), text)
