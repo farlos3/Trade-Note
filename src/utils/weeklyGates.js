@@ -10,7 +10,8 @@
  * Three gates, in this priority when more than one applies on the same day:
  *   1. reflection  - last week has a summary but no written reflection
  *   2. review      - today is Monday and this week's plan hasn't been re-read
- *   3. plan        - today is Friday and next week's plan (text + PDF) is missing
+ *   3. plan        - the weekend has started (Friday 23:59 through Sunday) and
+ *                    next week's plan (text + PDF) is missing
  */
 import { ref, computed } from 'vue'
 import Parse from 'parse/dist/parse.min.js'
@@ -82,6 +83,32 @@ export function planAttachmentIsImage(week) {
     return /\.(png|jpe?g|gif|webp|avif)(\?|#|$)/i.test(source)
 }
 
+/**
+ * Is it the weekend planning window -- Friday 23:59 through the end of Sunday?
+ *
+ * The gate used to fire from Friday midnight, i.e. all through Friday's session.
+ * That is precisely the wrong time: it interrupts trading to demand a plan for a
+ * week that has not started, using a chart that is still moving. It is called a
+ * WEEKEND chart review because the market being shut is the point -- the week is
+ * finished, the closing prints are final, and there is nothing to react to.
+ *
+ * So it opens once Friday is effectively over and stays open across Saturday and
+ * Sunday. Monday is deliberately not included: by then the review gate has taken
+ * over, and a plan written after the week has started is a different thing.
+ *
+ * Exported because the Weekly Plan page describes this window to the trader, and
+ * a banner that says "due Friday" while the popup arrives on Saturday is worse
+ * than either alone.
+ */
+const FRIDAY_OPENS_AT_MINUTE = 23 * 60 + 59   // 23:59 in the trade timezone
+
+export function isWeekendPlanningWindow(now) {
+    const t = now || dayjs().tz(tz())
+    const day = t.isoWeekday()                 // 1 = Monday ... 7 = Sunday
+    if (day === 6 || day === 7) return true
+    return day === 5 && (t.hour() * 60 + t.minute()) >= FRIDAY_OPENS_AT_MINUTE
+}
+
 function findWeek(dateUnix, notes) {
     return notes.find((n) => Number(n.dateUnix) === Number(dateUnix)) || null
 }
@@ -95,7 +122,7 @@ export async function evaluateWeeklyGates() {
     const monday = thisMonday()
     const today = dayjs().tz(tz())
     const isMonday = today.isoWeekday() === 1
-    const isFriday = today.isoWeekday() === 5
+    const planningWindow = isWeekendPlanningWindow(today)
 
     // 1. reflection: last week had a summary written but no reflection on it.
     const lastWeek = findWeek(monday.subtract(7, 'day').unix(), notes)
@@ -115,8 +142,9 @@ export async function evaluateWeeklyGates() {
         }
     }
 
-    // 3. plan: Friday, next week's plan (text + PDF, both required) is missing.
-    if (isFriday) {
+    // 3. plan: the weekend is here and next week's plan (text + PDF, both
+    //    required) is missing. See isWeekendPlanningWindow for the timing.
+    if (planningWindow) {
         const nextMonday = monday.add(7, 'day').unix()
         const week = findWeek(nextMonday, notes) || stubWeek(nextMonday)
         if (!week.planText.trim() || (!week.planPdfUrl && !week.planPdfBase64)) {
