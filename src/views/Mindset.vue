@@ -249,9 +249,13 @@ onBeforeMount(async () => {
 </template>
 
 <style scoped>
+/* No page-level cap: 68rem stopped the composer well short of the right edge and
+   left a band of empty screen beside it. WeeklyPlan already fills its column, so
+   this matches the rest of the Journal rather than being the one page that does
+   not. The reading measures that DO need a limit are set on the elements
+   themselves, below. */
 .mindsetPage {
     padding-bottom: 2.5rem;
-    max-width: 68rem;
 }
 
 /* ---- composer ---- */
