@@ -53,6 +53,83 @@ const visible = computed(() =>
 const pinned = computed(() => visible.value.filter((e) => e.pinned))
 const rest = computed(() => visible.value.filter((e) => !e.pinned))
 
+/* A colour per theme, derived from its own name.
+ *
+ * Hashed rather than assigned, so a theme keeps the same colour forever without
+ * anything being stored, and two people typing "risk" get the same one. Chosen
+ * from a fixed set rather than a free hue, because an arbitrary hue lands on
+ * navy or brown often enough to be unreadable on this background -- every entry
+ * here is picked to carry on --black-bg-5.
+ *
+ * Case-folded and trimmed so "Risk", "risk " and "RISK" are one theme, matching
+ * how the filter already compares them.
+ */
+const THEME_COLORS = [
+    '#2f9bff', // blue
+    '#34d399', // green
+    '#f59e0b', // amber
+    '#f472b6', // pink
+    '#a78bfa', // violet
+    '#22d3ee', // cyan
+    '#fb923c', // orange
+    '#a3e635', // lime
+    '#e879f9', // fuchsia
+]
+
+const themeKey = (name) => (name || '').trim().toLowerCase()
+
+function hashTheme(key) {
+    let h = 0
+    for (let i = 0; i < key.length; i++) h = (Math.imul(h, 31) + key.charCodeAt(i)) >>> 0
+    return h
+}
+
+/* theme -> colour, assigned so that no two themes in use share one.
+ *
+ * A plain hash was not enough: eight themes into eight slots collide almost
+ * always (the birthday problem), and in practice "risk" and "process" came out
+ * the same lime, which defeats the point of colouring them at all. So each theme
+ * still starts at its hashed slot -- keeping the colour stable and independent of
+ * insertion order -- and only steps to the next free one if that slot is taken.
+ *
+ * Resolved in sorted order so the outcome depends on the SET of themes, not on
+ * which card happened to render first. Past nine themes the palette is exhausted
+ * and colours legitimately repeat; nine distinct labels is already more than this
+ * page is meant to hold.
+ */
+const themeColorMap = computed(() => {
+    const map = {}
+    const taken = new Set()
+    for (const name of themes.value) {
+        const key = themeKey(name)
+        const start = hashTheme(key) % THEME_COLORS.length
+        let slot = start
+        for (let i = 0; i < THEME_COLORS.length; i++) {
+            const candidate = (start + i) % THEME_COLORS.length
+            if (!taken.has(candidate)) { slot = candidate; break }
+        }
+        taken.add(slot)
+        map[key] = THEME_COLORS[slot]
+    }
+    return map
+})
+
+function themeColor(name) {
+    const key = themeKey(name)
+    if (!key) return null
+    // Falls back to the raw hash for a theme not in the current list -- e.g. one
+    // being typed into the composer before it exists on any card yet.
+    return themeColorMap.value[key] || THEME_COLORS[hashTheme(key) % THEME_COLORS.length]
+}
+
+// Same colour at low alpha for fills, so the chip tints without a second constant.
+function themeTint(name, alpha = 0.14) {
+    const c = themeColor(name)
+    if (!c) return 'transparent'
+    const n = parseInt(c.slice(1), 16)
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`
+}
+
 const dateLabel = (dateUnix) =>
     dayjs.unix(dateUnix).tz(timeZoneTrade.value || 'UTC').format('DD MMM YYYY')
 
@@ -181,6 +258,7 @@ onBeforeMount(async () => {
         <div v-if="themes.length" class="filterRow">
             <button type="button" class="chip" :class="{ on: filter === '' }" v-on:click="filter = ''">All</button>
             <button v-for="t in themes" :key="t" type="button" class="chip" :class="{ on: filter === t }"
+                :style="{ color: themeColor(t), borderColor: themeTint(t, 0.45), background: filter === t ? themeTint(t, 0.22) : 'transparent' }"
                 v-on:click="filter = t">{{ t }}</button>
         </div>
 
@@ -188,9 +266,11 @@ onBeforeMount(async () => {
         <template v-if="pinned.length">
             <div class="sectionLabel"><i class="uil uil-bookmark-full me-1"></i>Holding myself to these</div>
             <div class="grid">
-                <article v-for="e in pinned" :key="e.objectId" class="card pinned">
+                <article v-for="e in pinned" :key="e.objectId" class="card pinned"
+                    :style="e.theme ? { borderLeftColor: themeColor(e.theme) } : null">
                     <div class="cardTop">
-                        <span v-if="e.theme" class="theme">{{ e.theme }}</span>
+                        <span v-if="e.theme" class="theme"
+                            :style="{ color: themeColor(e.theme), background: themeTint(e.theme) }">{{ e.theme }}</span>
                         <span class="date">{{ dateLabel(e.dateUnix) }}</span>
                     </div>
                     <h3 v-if="e.title" class="cardTitle">{{ e.title }}</h3>
@@ -215,9 +295,11 @@ onBeforeMount(async () => {
             <i class="uil uil-notes me-1"></i>{{ pinned.length ? 'Everything else' : 'Written down' }}
         </div>
         <div v-if="rest.length" class="grid">
-            <article v-for="e in rest" :key="e.objectId" class="card">
+            <article v-for="e in rest" :key="e.objectId" class="card"
+                :style="e.theme ? { borderLeftColor: themeColor(e.theme) } : null">
                 <div class="cardTop">
-                    <span v-if="e.theme" class="theme">{{ e.theme }}</span>
+                    <span v-if="e.theme" class="theme"
+                            :style="{ color: themeColor(e.theme), background: themeTint(e.theme) }">{{ e.theme }}</span>
                     <span class="date">{{ dateLabel(e.dateUnix) }}</span>
                 </div>
                 <h3 v-if="e.title" class="cardTitle">{{ e.title }}</h3>
@@ -410,6 +492,10 @@ onBeforeMount(async () => {
     flex-direction: column;
     background: var(--black-bg-5);
     border: 1px solid var(--border-subtle);
+    /* The left edge is what carries the theme colour (set inline per card), so it
+       needs enough weight to read as a colour rather than a hairline. Cards with
+       no theme keep the neutral border and simply look unlabelled. */
+    border-left-width: 3px;
     border-radius: var(--radius);
     padding: 1rem 1.1rem 0.7rem;
     transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease;
@@ -423,10 +509,13 @@ onBeforeMount(async () => {
 
 /* A pinned card is a rule in force, so it reads as one: brighter edge and a
    coloured spine down the side rather than a badge you have to look for. */
+/* Pinned is a STATE, theme is a category, and they sit on the same card -- so the
+   pinned wash is neutral rather than blue. A blue tint under an orange or pink
+   theme edge read as a third colour that meant nothing. */
 .card.pinned {
-    border-color: rgba(47, 155, 255, 0.35);
+    border-color: var(--border-strong);
     background:
-        linear-gradient(90deg, rgba(47, 155, 255, 0.09), transparent 45%),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.055), transparent 45%),
         var(--black-bg-5);
 }
 
@@ -448,6 +537,8 @@ onBeforeMount(async () => {
     margin-bottom: 0.4rem;
 }
 
+/* colour and background come from themeColor()/themeTint() inline; these are the
+   fallback for anything that somehow renders without one. */
 .theme {
     font-size: 0.66rem;
     text-transform: uppercase;
