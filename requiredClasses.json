@@ -908,10 +908,10 @@
       "body": {
         "type": "String"
       },
-      "pinned": {
-        "type": "Boolean"
-      },
       "theme": {
+        "type": "String"
+      },
+      "status": {
         "type": "String"
       }
     }
