@@ -880,6 +880,43 @@
     }
   },
   {
+    "className": "mindsets",
+    "fields": {
+      "objectId": {
+        "type": "String"
+      },
+      "createdAt": {
+        "type": "Date"
+      },
+      "updatedAt": {
+        "type": "Date"
+      },
+      "ACL": {
+        "type": "ACL"
+      },
+      "user": {
+        "type": "Pointer",
+        "targetClass": "_User",
+        "required": false
+      },
+      "dateUnix": {
+        "type": "Number"
+      },
+      "title": {
+        "type": "String"
+      },
+      "body": {
+        "type": "String"
+      },
+      "pinned": {
+        "type": "Boolean"
+      },
+      "theme": {
+        "type": "String"
+      }
+    }
+  },
+  {
     "className": "entryChecklists",
     "fields": {
       "objectId": {
