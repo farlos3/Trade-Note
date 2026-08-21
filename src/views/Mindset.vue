@@ -131,11 +131,15 @@ const select = (n) => { selectedId.value = selectedId.value === n.entry.objectId
 /* The detail card is placed under its node, then pulled back inside the track if
    it would hang off an edge -- a popover that overflows the column is worse than
    one that is slightly off-centre from its node. */
-const CARD_W = 300
+const CARD_MAX_W = 300
+// Fits the track rather than assuming 300px is available. On a 320px phone the
+// track is ~293px, so a fixed card hung 15px past the edge and gave the whole page
+// a horizontal scrollbar -- the one thing a layout must never do on a phone.
+const cardW = computed(() => Math.min(CARD_MAX_W, Math.max(200, trackWidth.value - 16)))
 const cardLeft = computed(() => {
     if (!selected.value) return 0
-    const ideal = selected.value.x - CARD_W / 2
-    return Math.max(8, Math.min(ideal, trackWidth.value - CARD_W - 8))
+    const ideal = selected.value.x - cardW.value / 2
+    return Math.max(8, Math.min(ideal, trackWidth.value - cardW.value - 8))
 })
 
 async function reload() {
@@ -323,7 +327,7 @@ onBeforeMount(async () => {
 
             <!-- DETAIL -->
             <div v-if="selected" class="detail"
-                :style="{ left: cardLeft + 'px', top: (selected.y + 92) + 'px' }">
+                :style="{ left: cardLeft + 'px', width: cardW + 'px', top: (selected.y + 92) + 'px' }">
                 <div class="detailTop">
                     <span class="stageTag">Stage {{ selected.index + 1 }}</span>
                     <span v-if="selected.entry.theme" class="theme">{{ selected.entry.theme }}</span>
@@ -585,6 +589,7 @@ onBeforeMount(async () => {
        label into it, and the full text is one click away anyway. */
     display: -webkit-box;
     -webkit-line-clamp: 2;
+    line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
 }
@@ -616,7 +621,7 @@ onBeforeMount(async () => {
 /* ---- detail popover ---- */
 .detail {
     position: absolute;
-    width: 300px;
+    /* width is set inline from cardW -- it depends on the measured track. */
     z-index: 3;
     background: var(--black-bg-5);
     border: 1px solid var(--border-strong);
@@ -725,6 +730,37 @@ onBeforeMount(async () => {
     color: var(--red-color);
     background: rgba(246, 70, 93, 0.12);
     font-size: 0.72rem;
+}
+
+/* ---- touch ----
+   A pointer that cannot hover is also a fingertip, and 26px-tall controls are a
+   coin toss to hit. Scoped to coarse pointers so the desktop layout, which is
+   driven by a mouse and has hover to help it, is left exactly as it was. */
+@media (pointer: coarse) {
+    .statusBtn {
+        min-height: 42px;
+        font-size: 0.72rem;
+    }
+
+    .iconBtn {
+        min-width: 42px;
+        min-height: 42px;
+        justify-content: center;
+        font-size: 1rem;
+    }
+
+    .primaryBtn { padding: 0.6rem 1.2rem; }
+
+    .linkBtn {
+        min-height: 40px;
+        padding: 0 0.4rem;
+    }
+
+    /* Inputs below 16px make iOS Safari zoom the whole page on focus, which then
+       leaves the layout scrolled sideways with no way back. */
+    .composerInput,
+    .composerBody,
+    .themeInput { font-size: 16px; }
 }
 
 /* ---- empty ---- */
