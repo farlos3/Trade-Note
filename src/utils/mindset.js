@@ -5,16 +5,20 @@
  * Deliberately its own class rather than another sentinel in `notes`. Everything
  * in `notes` is keyed to a date and describes what happened on it -- a day, a
  * week, a trade. A mindset entry is the opposite: it is written once and is meant
- * to still apply months later, which is why it can be pinned. Filing it by date
+ * to still apply months later. Filing it by date
  * alongside day notes would bury the standing ones under whatever was written most
  * recently, which is exactly the thing they exist to survive.
  *
- * `dateUnix` is kept anyway, as when it was written -- useful for reading the
- * order in which convictions arrived, and for the AI analysis to quote them.
+ * `dateUnix` is when it was written, and it is also the order of the path: stage 1
+ * is the first principle you set yourself. `status` tracks where each one stands --
+ * 'todo', 'active' (the one being worked on now) or 'mastered'. It replaced a
+ * boolean `pinned`, which could not express the middle state the whole path is
+ * built around.
  */
 import Parse from 'parse/dist/parse.min.js'
 
 const CLASS = 'mindsets'
+export const MINDSET_STATUSES = ['todo', 'active', 'mastered']
 
 function currentUserOrNull() {
     try {
@@ -29,23 +33,24 @@ const shape = (r) => ({
     dateUnix: r.get('dateUnix') || 0,
     title: r.get('title') || '',
     body: r.get('body') || '',
-    pinned: !!r.get('pinned'),
+    // Anything unrecognised (or missing, on a row written before status existed)
+    // reads as a stage not yet started, which is the safe default -- it never
+    // claims progress that was not made.
+    status: MINDSET_STATUSES.includes(r.get('status')) ? r.get('status') : 'todo',
     theme: r.get('theme') || '',
 })
 
-/** Every entry. Pinned first, then newest -- the order the page renders in. */
+/** Every entry, OLDEST first -- the order of the path, stage 1 at the top. */
 export async function useGetMindsets(limit = 500) {
     const query = new Parse.Query(Parse.Object.extend(CLASS))
     query.equalTo('user', currentUserOrNull())
-    query.descending('dateUnix')
+    query.ascending('dateUnix')
     query.limit(limit)
     const results = await query.find()
-    return results
-        .map(shape)
-        .sort((a, b) => (b.pinned - a.pinned) || (b.dateUnix - a.dateUnix))
+    return results.map(shape)
 }
 
-export async function useSaveMindset({ objectId, title, body, theme, pinned, dateUnix }) {
+export async function useSaveMindset({ objectId, title, body, theme, status, dateUnix }) {
     const parseObject = Parse.Object.extend(CLASS)
     let obj
     if (objectId) {
@@ -56,20 +61,22 @@ export async function useSaveMindset({ objectId, title, body, theme, pinned, dat
         obj.set('user', currentUserOrNull())
         obj.set('dateUnix', Number(dateUnix) || Math.floor(Date.now() / 1000))
         obj.setACL(new Parse.ACL(currentUserOrNull()))
+        obj.set('status', 'todo')
     }
     obj.set('title', (title || '').trim())
     obj.set('body', (body || '').trim())
     obj.set('theme', (theme || '').trim())
-    if (pinned !== undefined) obj.set('pinned', !!pinned)
+    if (status && MINDSET_STATUSES.includes(status)) obj.set('status', status)
     const saved = await obj.save()
     return shape(saved)
 }
 
-/** Pin/unpin on its own, so the list can toggle without a full edit round trip. */
-export async function useSetMindsetPinned(objectId, pinned) {
+/** Move a stage along the path on its own, without a full edit round trip. */
+export async function useSetMindsetStatus(objectId, status) {
+    if (!MINDSET_STATUSES.includes(status)) return
     const query = new Parse.Query(Parse.Object.extend(CLASS))
     const obj = await query.get(objectId)
-    obj.set('pinned', !!pinned)
+    obj.set('status', status)
     await obj.save()
 }
 
