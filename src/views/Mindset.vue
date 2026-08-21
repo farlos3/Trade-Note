@@ -186,7 +186,7 @@ onBeforeMount(async () => {
 
         <!-- PINNED -->
         <template v-if="pinned.length">
-            <div class="sectionLabel"><i class="uil uil-thumbtack me-1"></i>Holding myself to these</div>
+            <div class="sectionLabel"><i class="uil uil-bookmark-full me-1"></i>Holding myself to these</div>
             <div class="grid">
                 <article v-for="e in pinned" :key="e.objectId" class="card pinned">
                     <div class="cardTop">
@@ -197,7 +197,7 @@ onBeforeMount(async () => {
                     <p class="cardBody">{{ e.body }}</p>
                     <div class="cardActions">
                         <button type="button" class="iconBtn on" :disabled="busyId === e.objectId"
-                            title="Unpin" v-on:click="togglePin(e)"><i class="uil uil-thumbtack"></i></button>
+                            title="Unpin" v-on:click="togglePin(e)"><i class="uil uil-bookmark-full"></i></button>
                         <button type="button" class="iconBtn" title="Edit" v-on:click="edit(e)">
                             <i class="uil uil-edit-alt"></i></button>
                         <button type="button" class="iconBtn danger" :class="{ armed: confirmingId === e.objectId }"
@@ -224,7 +224,7 @@ onBeforeMount(async () => {
                 <p class="cardBody">{{ e.body }}</p>
                 <div class="cardActions">
                     <button type="button" class="iconBtn" :disabled="busyId === e.objectId"
-                        title="Pin to the top" v-on:click="togglePin(e)"><i class="uil uil-thumbtack"></i></button>
+                        title="Pin to the top" v-on:click="togglePin(e)"><i class="uil uil-bookmark"></i></button>
                     <button type="button" class="iconBtn" title="Edit" v-on:click="edit(e)">
                         <i class="uil uil-edit-alt"></i></button>
                     <button type="button" class="iconBtn danger" :class="{ armed: confirmingId === e.objectId }"

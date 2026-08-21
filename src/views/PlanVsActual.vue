@@ -799,7 +799,7 @@ watch([equity, chartMode, yScale], async () => {
                 <div v-if="breakeven" class="breakevenBox mb-3">
                     <div class="breakevenHead">
                         <span class="breakevenTitle">
-                            <i class="uil uil-scales me-1"></i>Back to breakeven
+                            <i class="uil uil-balance-scale me-1"></i>Back to breakeven
                         </span>
                         <span v-if="breakeven.gap > 0" class="breakevenGap">
                             need <strong>{{ fmt(breakeven.gap) }}</strong> more
