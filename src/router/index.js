@@ -120,6 +120,16 @@ const routes = [{
             import('../views/Daily.vue')
     },
     {
+        path: '/mindset',
+        name: 'mindset',
+        meta: {
+            title: "Mindset",
+            layout: DashboardLayout
+        },
+        component: () =>
+            import('../views/Mindset.vue')
+    },
+    {
         path: '/weekly-plan',
         name: 'weeklyPlan',
         meta: {

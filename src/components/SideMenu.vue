@@ -57,6 +57,10 @@ const weeklyPlanDue = computed(() => weeklyGate.value === 'review' || weeklyGate
                     <i class="uil uil-calendar-alt me-2"></i>Weekly Plan
                     <span v-if="weeklyPlanDue" class="dueDot" title="Weekly plan needs attention"></span>
                 </a>
+                <a id="step6c" v-bind:class="[pageId === 'mindset' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
+                    href="/mindset">
+                    <i class="uil uil-brain me-2"></i>Mindset
+                </a>
                 <a id="step6" v-bind:class="[pageId === 'diary' ? 'activeNavCss' : '', 'nav-link', 'mb-1']" href="/diary">
                     <i class="uil uil-diary me-2"></i>Diary
                 </a>
