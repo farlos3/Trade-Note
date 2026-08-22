@@ -414,6 +414,7 @@ sync_from_mt5() {
 # lesson applies here too -- a background job with nowhere to write its errors
 # fails invisibly.
 LIVE_LOG="$ROOT_DIR/mt5-sync/live-agent.log"
+LIVE_PID_FILE="$ROOT_DIR/mt5-sync/.live-agent.pid"
 start_live_feed() {
   section "Starting live MT5 feed"
   if [[ -z "$PY" ]]; then
@@ -429,14 +430,39 @@ start_live_feed() {
   # hours after the broker-clock conversion was fixed, because ./start.sh saw a
   # live process and said "already running" every time.
   #
-  # So compare the process's start time against the sources it loaded, and replace
-  # it when they are newer. Restarting is cheap: the feed is stateless, the next
-  # snapshot arrives within a second.
-  live_pid="$(pgrep -f "mt5-sync/mt5_live.py" | head -n1)"
+  # Tracked by PID FILE rather than by pgrep, because pgrep does not exist in Git
+  # Bash on Windows: `pgrep -f mt5_live.py` there returns nothing, every run
+  # concluded no agent was live and started another one, and the check after
+  # launch always failed too -- so Windows both stacked up duplicate agents (each
+  # POSTing to /api/live and each kicking its own journal sync) and reported "did
+  # not stay up" about an agent that was running perfectly well.
+  #
+  # The file's own mtime is the start time, which avoids `ps -o lstart` +
+  # `date -j`/`date -d` parsing that differs between BSD, GNU and MSYS.
+  pid_alive() {
+    local pid="$1"
+    [[ -n "$pid" ]] || return 1
+    kill -0 "$pid" 2>/dev/null && return 0
+    # Windows: a python.exe started from Git Bash is not always visible to kill -0.
+    if command -v tasklist >/dev/null 2>&1; then
+      tasklist /FI "PID eq $pid" /NH 2>/dev/null | grep -q "\b$pid\b" && return 0
+    fi
+    return 1
+  }
+
+  live_pid=""
+  if [[ -f "$LIVE_PID_FILE" ]]; then
+    candidate="$(tr -dc '0-9' < "$LIVE_PID_FILE" 2>/dev/null)"
+    pid_alive "$candidate" && live_pid="$candidate"
+  fi
+  # Fall back to pgrep where it exists, so an agent started before this change
+  # (or by hand) is still found rather than duplicated.
+  if [[ -z "$live_pid" ]] && command -v pgrep >/dev/null 2>&1; then
+    live_pid="$(pgrep -f "mt5-sync/mt5_live.py" 2>/dev/null | head -n1)"
+  fi
+
   if [[ -n "$live_pid" ]]; then
-    started_at="$(ps -p "$live_pid" -o lstart= 2>/dev/null)"
-    started_epoch="$(date -j -f "%a %b %d %T %Y" "$started_at" +%s 2>/dev/null \
-                     || date -d "$started_at" +%s 2>/dev/null || echo 0)"
+    started_epoch="$(stat -f %m "$LIVE_PID_FILE" 2>/dev/null || stat -c %Y "$LIVE_PID_FILE" 2>/dev/null || echo 0)"
     newest_src=0
     for f in "$ROOT_DIR/mt5-sync/mt5_live.py" "$ROOT_DIR/mt5-sync/mt5_sync.py"; do
       m="$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)"
@@ -451,13 +477,17 @@ start_live_feed() {
       return 0
     fi
   fi
+
   nohup "$PY" "$ROOT_DIR/mt5-sync/mt5_live.py" >"$LIVE_LOG" 2>&1 &
+  live_pid=$!
+  printf '%s' "$live_pid" > "$LIVE_PID_FILE"
   disown 2>/dev/null || true
   sleep 2
-  if pgrep -f "mt5_live.py" >/dev/null 2>&1; then
+  if pid_alive "$live_pid"; then
     printf '\033[32mLive feed running -> %s\033[0m\n' "$APP_URL/live"
     printf '\033[90mLog:   %s\033[0m\n' "${LIVE_LOG#$ROOT_DIR/}"
   else
+    rm -f "$LIVE_PID_FILE"
     # Echo the reason rather than only the path: the log is usually one line, and
     # "did not stay up" on its own sends you looking for a crash when the real
     # cause is normally something ordinary like the terminal being closed.
