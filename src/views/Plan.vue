@@ -27,17 +27,36 @@ const deposits = computed(() => activePlan.value.deposits)
 const withdrawals = computed(() => activePlan.value.withdrawals || [])
 
 // Optional stepped daily target (lower the %/day as the account grows).
+/* Which target the plan is set in. 'amount' means a flat sum per trading day,
+   which does not compound and which the tiers cannot step, so the tier block
+   hides itself in that mode rather than sitting there doing nothing. */
+const targetMode = computed({
+    get: () => (activePlan.value.targetMode === 'amount' ? 'amount' : 'pct'),
+    set: (v) => { activePlan.value.targetMode = v === 'amount' ? 'amount' : 'pct' },
+})
+const dailyAmount = computed(() => numOrNull(activePlan.value.dailyAmount))
+const isAmountMode = computed(() => targetMode.value === 'amount')
+// What buildProjection takes: only set when the mode actually calls for it.
+const projectionOptions = computed(() =>
+    isAmountMode.value && dailyAmount.value > 0 ? { dailyAmount: dailyAmount.value } : {})
+
 const tiers = computed(() => activePlan.value.tiers || [])
 const hasTiers = computed(() =>
     tiers.value.some((t) => t && t.pct !== '' && t.pct != null && Number.isFinite(Number(t.pct))),
 )
 
-const projection = computed(() =>
-    start.value > 0 && months.value && (target.value != null || hasTiers.value)
-        ? buildProjection(start.value, target.value == null ? 0 : target.value,
-            months.value, deposits.value, startDate.value, tiers.value, withdrawals.value)
-        : null,
-)
+const projection = computed(() => {
+    if (!(start.value > 0) || !months.value) return null
+    // In amount mode the percentage is irrelevant, so the guard is the amount.
+    if (isAmountMode.value) {
+        if (!(dailyAmount.value > 0)) return null
+    } else if (target.value == null && !hasTiers.value) {
+        return null
+    }
+    return buildProjection(start.value, target.value == null ? 0 : target.value,
+        months.value, deposits.value, startDate.value,
+        isAmountMode.value ? [] : tiers.value, withdrawals.value, projectionOptions.value)
+})
 
 const goalSeek = computed(() => {
     if (!(start.value > 0) || !(goal.value > 0) || !months.value) return null
@@ -261,17 +280,38 @@ watch(projection, async (p) => {
 
         <!-- ---------- Target projection ---------- -->
         <div class="planCard mb-3">
-            <div class="planCardHead">
+            <!-- Title and control sit together on the left. They were pushed to
+                 opposite edges of the card, which on a wide screen left a gap wide
+                 enough that the input read as belonging to something else. -->
+            <div class="planCardHead targetHead">
                 <span class="planCardTitle">Target projection</span>
-                <div class="inlineInput">
+
+                <div class="modeToggle" role="group" aria-label="Target unit">
+                    <button type="button" class="modeBtn" :class="{ on: !isAmountMode }"
+                        v-on:click="targetMode = 'pct'">% / day</button>
+                    <button type="button" class="modeBtn" :class="{ on: isAmountMode }"
+                        v-on:click="targetMode = 'amount'">$ / day</button>
+                </div>
+
+                <div class="inlineInput" v-if="!isAmountMode">
                     <label class="planLabel mb-0">Target % per day</label>
                     <input type="number" step="0.1" placeholder="e.g. 1" class="form-control form-control-sm"
                         v-model="activePlan.dailyPct" />
                 </div>
+                <div class="inlineInput" v-else>
+                    <label class="planLabel mb-0">Target $ per day</label>
+                    <input type="number" min="0" step="1" placeholder="e.g. 20" class="form-control form-control-sm"
+                        v-model="activePlan.dailyAmount" />
+                </div>
             </div>
 
+            <p v-if="isAmountMode" class="txt-small text-muted mb-0 mt-2">
+                A flat sum every trading day. It does not compound, so the curve is a
+                straight line and the balance no longer changes what a day is worth.
+            </p>
+
             <!-- Optional: step the daily % down as the balance grows -->
-            <div class="tierBlock mt-2">
+            <div class="tierBlock mt-2" v-if="!isAmountMode">
                 <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-1">
                     <span class="txt-small text-muted">
                         <i class="uil uil-layer-group me-1"></i>Step the daily % down as the balance grows
@@ -593,6 +633,37 @@ watch(projection, async (p) => {
 
 .planCardTitle {
     font-weight: 700;
+}
+
+/* This card's header groups its controls beside the title instead of throwing
+   them to the far edge. .planCardHead keeps space-between for every other card. */
+.targetHead {
+    justify-content: flex-start;
+    align-items: center;
+    gap: 1rem;
+}
+
+.modeToggle {
+    display: inline-flex;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+
+.modeBtn {
+    background: transparent;
+    border: 0;
+    color: var(--white-60);
+    font-size: 0.78rem;
+    padding: 0.3rem 0.7rem;
+    transition: all 0.15s ease;
+}
+
+.modeBtn:hover { color: var(--white-87); }
+
+.modeBtn.on {
+    background: var(--accent-soft);
+    color: var(--accent);
 }
 
 .inlineInput {

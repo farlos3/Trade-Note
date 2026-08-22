@@ -109,7 +109,19 @@ export function tierRateResolver(pctPerDay, tiers) {
     }
 }
 
-export function buildProjection(start, pctPerDay, months, deposits = [], fromDate, tiers = [], withdrawals = []) {
+export function buildProjection(start, pctPerDay, months, deposits = [], fromDate, tiers = [], withdrawals = [], options = {}) {
+    /* A flat amount per trading day, instead of a percentage.
+     *
+     * A percentage compounds -- the same 1% is a different sum every day -- which
+     * is the right model for growing an account and the wrong one for someone
+     * whose goal is a wage. When dailyAmount is set it wins over pctPerDay (and
+     * over the tiers, which step a RATE and have nothing to step here), and the
+     * curve becomes a straight line rather than a compounding one.
+     *
+     * Passed as an option rather than a positional argument so the existing four
+     * call sites keep working untouched. */
+    const dailyAmount = Number(options.dailyAmount)
+    const useAmount = Number.isFinite(dailyAmount) && dailyAmount > 0
     const rateAt = tierRateResolver(pctPerDay, tiers)
     const startDay = anchorOf(fromDate)
     const end = startDay.add(months, 'month')
@@ -151,8 +163,9 @@ export function buildProjection(start, pctPerDay, months, deposits = [], fromDat
             const dep = byDate.get(key) || 0
             if (dep) deposited += dep
             // Rate can depend on the day's balance (tiered plans step it down as
-            // the account grows); flat plans return the same rate every day.
-            const profit = (opening + dep) * rateAt(opening + dep)
+            // the account grows); flat plans return the same rate every day. A
+            // fixed daily amount ignores the balance entirely.
+            const profit = useAmount ? dailyAmount : (opening + dep) * rateAt(opening + dep)
             const afterProfit = opening + dep + profit
             // Withdrawals come out after the day's profit; never take out more than
             // is there (a plan can't go negative from a scheduled withdrawal).
