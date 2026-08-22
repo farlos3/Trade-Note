@@ -640,6 +640,39 @@ watch(projection, async (p) => {
     min-width: 170px;
 }
 
+/* The unit toggles, sized and coloured like the field they sit beside.
+ *
+ * Bootstrap gave them .25rem/.5rem padding and its own #0d6efd, so they came out
+ * 31px tall next to a 39px input and in a blue this theme does not use anywhere.
+ * The padding and tokens below are copied from .form-control in style-dark.css --
+ * matching how the input derives its height rather than pinning a pixel value, so
+ * the two stay level if that rule ever changes.
+ *
+ * Scoped to .planCardHead so BOTH headers on this page get it (Target projection
+ * and Goal seek). Styling only the one being complained about is how a page ends
+ * up with three different toggle designs. */
+.planCardHead .btn-group .btn {
+    padding: 0.5rem 0.8rem;
+    background-color: var(--black-bg-7);
+    border-color: var(--border-strong);
+    color: var(--white-60);
+    box-shadow: none;
+    transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.planCardHead .btn-group .btn:hover {
+    color: var(--white-87);
+    background-color: var(--surface-hover);
+}
+
+/* The selected unit reads as selected without borrowing a colour from outside the
+   palette -- same accent pair the focused input uses. */
+.planCardHead .btn-group .btn.btn-primary {
+    background-color: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
 .goalLine {
     font-size: 0.92rem;
 }
