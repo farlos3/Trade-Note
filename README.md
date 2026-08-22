@@ -28,8 +28,6 @@ and backups go to your own R2 bucket.
 - **MetaTrader 5 → TradeNote auto-sync** (Windows). Closed deals are pulled from
   the running MT5 terminal and imported automatically, near real-time (every
   minute), with no console window. See [`mt5-sync/`](mt5-sync/).
-- **Single-user auto-login** — skip the login page; the app signs in as the
-  seeded user (`TRADENOTE_AUTO_LOGIN`).
 - **Local MongoDB, no cloud** — the database runs in a Docker `mongo` service on
   a local volume. No Atlas required.
 - **Parquet backups to Cloudflare R2** — every collection (images included) is
@@ -80,8 +78,7 @@ and backups go to your own R2 bucket.
 5. Run the MT5 → TradeNote sync once, layering new trades on top.
 6. **Push the result back to R2** for the next start.
 
-Then open **http://localhost:8080**. With `TRADENOTE_AUTO_LOGIN=true` you land
-straight on the dashboard.
+Then open **http://localhost:8080** and log in.
 
 ### Keeping R2 current
 
@@ -158,13 +155,9 @@ Requires `pip install pymongo pyarrow boto3` and `R2_ACCOUNT_ID` + `R2_BUCKET`
 | `TRADENOTE_DATABASE` | Database name (e.g. `tradenote`). |
 | `APP_ID`, `MASTER_KEY` | Parse app id / master key (random strings). |
 | `TRADENOTE_PORT` | Web port (default `8080`). |
-| `TRADENOTE_USER`, `TRADENOTE_PASSWORD` | Seeded single-user login. |
-| `TRADENOTE_AUTO_LOGIN` | `true` to skip the login page. |
+| `TRADENOTE_USER`, `TRADENOTE_PASSWORD` | The login seeded on first boot, and the account the MCP server reads as. |
 | `MT5_TERMINAL_PATH` | Optional path to `terminal64.exe` for the start script. |
 | `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | R2 for images **and** Parquet backups. |
-
-> **Security:** with auto-login on, anyone who can reach the app is logged in.
-> Keep it on a private/local address only.
 
 ## macOS
 

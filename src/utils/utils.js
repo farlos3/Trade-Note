@@ -847,8 +847,7 @@ export async function useInitPostHog() {
  *    that case -- this function only handles rejections that do arrive.
  *
  * Always resolves the spinner (call from a `finally`), and for a dead
- * session, bounces home so login runs again -- silently, if
- * TRADENOTE_AUTO_LOGIN is on.
+ * session, bounces home so the login form runs again.
  *
  * Also clears the locally cached Parse user before navigating. Parse.User.current()
  * reads from localStorage without ever asking the server if that session is

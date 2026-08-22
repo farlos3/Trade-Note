@@ -52,7 +52,6 @@ services:
       TRADENOTE_PORT: ${TRADENOTE_PORT}
       TRADENOTE_USER: ${TRADENOTE_USER:-}
       TRADENOTE_PASSWORD: ${TRADENOTE_PASSWORD:-}
-      TRADENOTE_AUTO_LOGIN: ${TRADENOTE_AUTO_LOGIN:-}
       # Optional — enables the LLM analysis on the AI Analysis page (billed per
       # token, separate from a Claude subscription). Leave unset to keep it off.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

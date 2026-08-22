@@ -300,26 +300,6 @@ const setupApiRoutes = (app) => {
             })
     });
 
-    /**********************************************
-     * AUTO-LOGIN
-     * Single-user convenience. Logs in server-side with the seeded credentials
-     * and hands the browser only a session token — the password never leaves
-     * the server. Disabled unless TRADENOTE_AUTO_LOGIN is true.
-     **********************************************/
-    app.get('/api/autoLogin', async (req, res) => {
-        const enabled = String(process.env.TRADENOTE_AUTO_LOGIN || '').toLowerCase() === 'true'
-        const username = (process.env.TRADENOTE_USER || '').trim()
-        const password = process.env.TRADENOTE_PASSWORD || ''
-        if (!enabled || !username || !password) return res.status(200).json({ enabled: false })
-
-        try {
-            const user = await ParseNode.User.logIn(username, password)
-            res.status(200).json({ enabled: true, sessionToken: user.getSessionToken() })
-        } catch (error) {
-            console.log(' -> Auto-login failed: ' + error.message)
-            res.status(200).json({ enabled: false, error: error.message })
-        }
-    });
 
     /**********************************************
      * TRADING-BEHAVIOR ANALYSIS (deterministic; reuses mcp-server/analysis.mjs)

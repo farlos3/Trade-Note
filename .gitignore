@@ -46,3 +46,6 @@ mt5-sync/live-agent.log.err
 
 # Runtime state of the live MT5 feed agent (see start.sh)
 mt5-sync/.live-agent.pid
+
+# Local .env backups (contain secrets; .env.example is deliberately tracked)
+.env.bak*
