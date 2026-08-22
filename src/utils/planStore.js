@@ -33,7 +33,15 @@ function blankPlan(id) {
         // Recurring cost of running the operation itself -- hosting, the VPS the
         // terminal sits on, data. Money that leaves every month whether or not a
         // trade is taken, and which never appears in the account's own cash flows
-        // because it is paid from somewhere else. Blank = not tracked.
+        // because it is paid from somewhere else.
+        //
+        // A LIST, not one number: the bill is several things (a web deploy, the box
+        // MT5 runs on, a data feed) and one figure cannot say which of them is
+        // worth cutting when the total turns out to exceed what the account makes.
+        // Each entry is { id, label, amount } and the monthly cost is their sum.
+        fixedCosts: [],
+        // Superseded by fixedCosts; kept so an older plan's single figure can be
+        // migrated on load rather than silently dropped (see load()).
         fixedCostMonthly: '',
         // Translates the $/day target into pips/day, using the same pip-size /
         // contract-size conventions as manual order entry (see addOrder.js).
@@ -75,7 +83,16 @@ function load() {
  * so older persisted plans don't silently miss new features. */
 function normalize(raw) {
     const template = blankPlan(0)
-    raw.plans = raw.plans.map((p) => ({ ...template, ...p, id: p.id }))
+    raw.plans = raw.plans.map((p) => {
+        const plan = { ...template, ...p, id: p.id }
+        // A plan written before fixedCosts existed carries a single
+        // fixedCostMonthly. Promote it to one row so the number the trader typed
+        // survives the change instead of quietly reading as zero.
+        if (!plan.fixedCosts.length && String(plan.fixedCostMonthly || '').trim()) {
+            plan.fixedCosts = [{ id: Date.now() + Math.random(), label: 'Running cost', amount: plan.fixedCostMonthly }]
+        }
+        return plan
+    })
     return raw
 }
 
@@ -121,6 +138,16 @@ export function addDeposit(plan) {
 export function removeDeposit(plan, depositId) {
     const idx = plan.deposits.findIndex((d) => d.id === depositId)
     if (idx !== -1) plan.deposits.splice(idx, 1)
+}
+
+export function addFixedCost(plan) {
+    if (!Array.isArray(plan.fixedCosts)) plan.fixedCosts = []
+    plan.fixedCosts.push({ id: Date.now() + Math.random(), label: '', amount: '' })
+}
+
+export function removeFixedCost(plan, costId) {
+    const idx = plan.fixedCosts.findIndex((c) => c.id === costId)
+    if (idx !== -1) plan.fixedCosts.splice(idx, 1)
 }
 
 export function addWithdrawal(plan) {
