@@ -19,6 +19,11 @@ function blankPlan(id) {
         startBalance: '',
         horizonMonths: '',
         dailyPct: '',
+        // 'pct' compounds a percentage of the balance; 'amount' targets a flat sum
+        // every trading day. Two different goals -- growing an account versus
+        // earning a wage from it -- and a percentage cannot express the second.
+        targetMode: 'pct',
+        dailyAmount: '',
         goalBalance: '',
         // Optional stepped daily target: { id, from, pct }. Once the balance
         // reaches `from`, switch to `pct` %/day (highest reached level wins).

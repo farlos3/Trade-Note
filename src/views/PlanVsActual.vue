@@ -24,6 +24,15 @@ const months = computed(() => {
     return n != null && n >= 1 && n <= 120 ? Math.floor(n) : null
 })
 const target = computed(() => numOrNull(activePlan.value.dailyPct))
+/* The plan can be set in % per day or a flat $ per day (see Plan.vue). Both pages
+   read the same plan, so this page has to honour the mode too -- otherwise the
+   same plan draws one line here and a different one there. */
+const isAmountMode = computed(() => activePlan.value.targetMode === 'amount')
+const dailyAmount = computed(() => numOrNull(activePlan.value.dailyAmount))
+const projectionOptions = computed(() =>
+    isAmountMode.value && dailyAmount.value > 0 ? { dailyAmount: dailyAmount.value } : {})
+// "Is a target set at all", whichever unit it is in.
+const hasTarget = computed(() => isAmountMode.value ? dailyAmount.value > 0 : target.value != null)
 const startDate = computed(() => activePlan.value.startDate)
 const deposits = computed(() => activePlan.value.deposits)
 const withdrawals = computed(() => activePlan.value.withdrawals || [])
@@ -203,9 +212,10 @@ const equity = computed(() => {
     // the projection window, so the line started late, ended early and broke on
     // weekends.
     let planFirst = null, planLast = null, planSlope = 0
-    if (t != null && startDate.value && allDates.length) {
+    if (hasTarget.value && startDate.value && allDates.length) {
         const monthsToToday = Math.max(1, dayjs().diff(dayjs(startDate.value), 'month') + 2)
-        const proj = buildProjection(s, t, monthsToToday, [], startDate.value, tiers.value, [])
+        const proj = buildProjection(s, t, monthsToToday, [], startDate.value,
+            isAmountMode.value ? [] : tiers.value, [], projectionOptions.value)
         const days = proj.days || []
         // Plan value on a date, extended past both ends of the projection: before
         // the plan starts nothing has compounded yet (= start balance); after the
@@ -311,7 +321,7 @@ const netCashFlow = computed(() =>
    grid takes its column count from this instead of a hard-coded 6 -- otherwise a
    plan with no daily target (5 tiles) would leave one empty column track. */
 const statTileCount = computed(() =>
-    4 + (target.value != null ? 1 : 0) + (hasCashFlow.value ? 1 : 0) + (cost.value ? 1 : 0))
+    4 + (hasTarget.value ? 1 : 0) + (hasCashFlow.value ? 1 : 0) + (cost.value ? 1 : 0))
 
 /* Breakeven: how far the account still is from the money actually put into it,
    and how long earning that back takes at the pace being traded now.
@@ -354,9 +364,10 @@ const actualProjection = computed(() =>
 
 /** The plan's own projection, for a side-by-side comparison. */
 const targetProjection = computed(() =>
-    start.value > 0 && months.value && (target.value != null || hasTiers.value)
+    start.value > 0 && months.value && (hasTarget.value || (!isAmountMode.value && hasTiers.value))
         ? buildProjection(start.value, target.value == null ? 0 : target.value,
-            months.value, deposits.value, startDate.value, tiers.value, withdrawals.value)
+            months.value, deposits.value, startDate.value,
+            isAmountMode.value ? [] : tiers.value, withdrawals.value, projectionOptions.value)
         : null,
 )
 
@@ -759,12 +770,21 @@ watch([equity, chartMode, yScale], async () => {
                         <div class="statValue" v-bind:class="pnlClass(actual.pctPerDay)">{{ fmt(actual.pctPerDay, 3) }}%</div>
                         <div class="statSub">of {{ fmt(start, 0) }}</div>
                     </div>
-                    <div class="statTile" v-if="target != null">
+                    <!-- Compared in the unit the plan is actually set in. Showing a
+                         percentage gap against a dollar target would be arithmetic
+                         between two different things. -->
+                    <div class="statTile" v-if="hasTarget">
                         <div class="statLabel">Gap vs target</div>
-                        <div class="statValue" v-bind:class="pnlClass(actual.pctPerDay - target)">
+                        <div v-if="isAmountMode" class="statValue"
+                            v-bind:class="pnlClass(actual.avgDailyNet - dailyAmount)">
+                            {{ fmt(actual.avgDailyNet - dailyAmount) }}
+                        </div>
+                        <div v-else class="statValue" v-bind:class="pnlClass(actual.pctPerDay - target)">
                             {{ fmt(actual.pctPerDay - target, 3) }}%
                         </div>
-                        <div class="statSub">target {{ fmt(target, 2) }}% / day</div>
+                        <div class="statSub">
+                            target {{ isAmountMode ? fmt(dailyAmount) + ' / day' : fmt(target, 2) + '% / day' }}
+                        </div>
                     </div>
                     <!-- What is left once the operation pays for itself. Separate
                          from "earned" because the cost is not a trading result --
@@ -790,7 +810,9 @@ watch([equity, chartMode, yScale], async () => {
                     Running cost is {{ fmt(monthlyCost, 2) }} a month, so a traded day has to clear
                     <strong>{{ fmt(cost.breakEvenPerTradedDay) }}</strong><span v-if="cost.breakEvenPctPerDay != null">
                     ({{ fmt(cost.breakEvenPctPerDay, 3) }}% of {{ fmt(start, 0) }})</span> before the operation is even.<span
-                        v-if="target != null && cost.breakEvenPctPerDay != null">
+                        v-if="isAmountMode && dailyAmount > 0">
+                    Your {{ fmt(dailyAmount) }}/day target {{ dailyAmount > cost.breakEvenPerTradedDay ? 'covers' : 'does not cover' }} it.</span><span
+                        v-else-if="!isAmountMode && target != null && cost.breakEvenPctPerDay != null">
                     Your {{ fmt(target, 2) }}%/day target {{ target > cost.breakEvenPctPerDay ? 'covers' : 'does not cover' }} it.</span>
                 </p>
 
