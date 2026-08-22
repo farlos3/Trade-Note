@@ -175,6 +175,9 @@ closed terminal is never pushed as a zero-balance account.
 | `scripts/r2-backup.sh` | Wrapper invoked by scheduled task / `stop.sh`. |
 | `scripts/seed-mock-data.mjs`, `clear-mock-data.mjs`, `check-data.mjs` | Dev data seed / wipe / inspect. |
 | `scripts/migrate-screenshots-to-r2.mjs` | One-off: move legacy screenshots into R2. |
+| `scripts/run-backup.sh`, `mt5-sync/run-sync.sh` | Wrappers the schedulers call: resolve PATH + a Python that has the deps, cap the log, skip quietly when Docker/MT5 is down. |
+| `scripts/install-backup-agent.sh`, `mt5-sync/install-sync-agent.sh` | **macOS** schedulers (launchd LaunchAgents). |
+| `scripts/install-agents.ps1` | **Windows** scheduler (Task Scheduler) for both jobs — runs the same two wrappers through Git Bash. `-Status` / `-Logs` / `-Uninstall`. |
 | `scripts/install-mcp.sh` | Install/register the MCP server. |
 | `scripts/update-atlas-ip.{sh,ps1}` | Whitelist current IP in MongoDB Atlas. |
 

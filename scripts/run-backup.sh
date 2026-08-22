@@ -36,7 +36,10 @@ cd "$ROOT_DIR" || exit 1
 # run, the script logged "Docker not running", and no backup was ever taken. The
 # log looked like a healthy job politely skipping while Docker Desktop started;
 # it had simply never been able to see it.
-export PATH="/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin:$PATH"
+# macOS puts Docker Desktop's CLI in /usr/local/bin; Git Bash on Windows sees it
+# under /c/Program Files/Docker. Both are listed so one scheduled job works on
+# either machine, and a path that does not exist simply never matches.
+export PATH="/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin:/c/Program Files/Docker/Docker/resources/bin:$PATH"
 
 # Docker Desktop may not be up yet after a login; that is a normal skip, not an
 # error worth a stack of noise in the log. Say WHICH of the two it is, so a
