@@ -9,7 +9,7 @@
  * PINNED rather than with what is newest -- otherwise the rules you most need in
  * front of you get pushed down by whatever you happened to write last night.
  */
-import { ref, computed, onBeforeMount, nextTick } from 'vue'
+import { ref, computed, onBeforeMount, onMounted, onUnmounted, nextTick } from 'vue'
 import dayjs from 'dayjs'
 import utc from 'dayjs/plugin/utc.js'
 import timezone from 'dayjs/plugin/timezone.js'
@@ -170,6 +170,7 @@ async function submit() {
 }
 
 async function edit(entry) {
+    closeEntry()
     editingId.value = entry.objectId
     title.value = entry.title
     body.value = entry.body
@@ -193,6 +194,35 @@ async function togglePin(entry) {
     }
 }
 
+/* Reading view.
+ *
+ * A card shows a clamped preview so the grid stays even -- one long principle
+ * used to stretch its whole row -- and opening it is how you read the rest. It
+ * also gives the row actions somewhere to live that a finger can reach: they used
+ * to appear on hover only, which on a touch screen meant edit and delete were
+ * simply unreachable.
+ *
+ * Kept in sync with the list rather than copied: `opened` is looked up by id on
+ * every render, so pinning from inside the panel updates what the panel shows.
+ */
+const openId = ref(null)
+const opened = computed(() => entries.value.find((e) => e.objectId === openId.value) || null)
+
+function openEntry(entry) { openId.value = entry.objectId }
+function closeEntry() {
+    openId.value = null
+    confirmingId.value = null   // never leave a delete half-armed behind a closed panel
+}
+
+function onKeydown(e) {
+    if (e.key === 'Escape' && openId.value) closeEntry()
+}
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onUnmounted(() => {
+    window.removeEventListener('keydown', onKeydown)
+    clearTimeout(confirmTimer)
+})
+
 /* Two-step delete rather than a confirm dialog: the second click is the
    confirmation, and it cannot be dismissed by reflex the way a modal can be. */
 const confirmingId = ref(null)
@@ -209,6 +239,7 @@ async function remove(entry) {
     try {
         await useDeleteMindset(entry.objectId)
         if (editingId.value === entry.objectId) resetForm()
+        if (openId.value === entry.objectId) closeEntry()
         await reload()
     } catch (e) {
         console.error('could not delete the mindset entry', e)
@@ -267,7 +298,9 @@ onBeforeMount(async () => {
             <div class="sectionLabel"><i class="uil uil-bookmark-full me-1"></i>Holding myself to these</div>
             <div class="grid">
                 <article v-for="e in pinned" :key="e.objectId" class="card pinned"
-                    :style="e.theme ? { borderLeftColor: themeColor(e.theme) } : null">
+                    :style="e.theme ? { borderLeftColor: themeColor(e.theme) } : null"
+                    role="button" tabindex="0" v-on:click="openEntry(e)"
+                    v-on:keydown.enter.prevent="openEntry(e)" v-on:keydown.space.prevent="openEntry(e)">
                     <div class="cardTop">
                         <span v-if="e.theme" class="theme"
                             :style="{ color: themeColor(e.theme), background: themeTint(e.theme) }">{{ e.theme }}</span>
@@ -275,17 +308,6 @@ onBeforeMount(async () => {
                     </div>
                     <h3 v-if="e.title" class="cardTitle">{{ e.title }}</h3>
                     <p class="cardBody">{{ e.body }}</p>
-                    <div class="cardActions">
-                        <button type="button" class="iconBtn on" :disabled="busyId === e.objectId"
-                            title="Unpin" v-on:click="togglePin(e)"><i class="uil uil-bookmark-full"></i></button>
-                        <button type="button" class="iconBtn" title="Edit" v-on:click="edit(e)">
-                            <i class="uil uil-edit-alt"></i></button>
-                        <button type="button" class="iconBtn danger" :class="{ armed: confirmingId === e.objectId }"
-                            :disabled="busyId === e.objectId" v-on:click="askDelete(e)">
-                            <i class="uil uil-trash-alt"></i>
-                            <span v-if="confirmingId === e.objectId" class="ms-1">Sure?</span>
-                        </button>
-                    </div>
                 </article>
             </div>
         </template>
@@ -296,7 +318,9 @@ onBeforeMount(async () => {
         </div>
         <div v-if="rest.length" class="grid">
             <article v-for="e in rest" :key="e.objectId" class="card"
-                :style="e.theme ? { borderLeftColor: themeColor(e.theme) } : null">
+                :style="e.theme ? { borderLeftColor: themeColor(e.theme) } : null"
+                role="button" tabindex="0" v-on:click="openEntry(e)"
+                v-on:keydown.enter.prevent="openEntry(e)" v-on:keydown.space.prevent="openEntry(e)">
                 <div class="cardTop">
                     <span v-if="e.theme" class="theme"
                             :style="{ color: themeColor(e.theme), background: themeTint(e.theme) }">{{ e.theme }}</span>
@@ -304,18 +328,43 @@ onBeforeMount(async () => {
                 </div>
                 <h3 v-if="e.title" class="cardTitle">{{ e.title }}</h3>
                 <p class="cardBody">{{ e.body }}</p>
-                <div class="cardActions">
-                    <button type="button" class="iconBtn" :disabled="busyId === e.objectId"
-                        title="Pin to the top" v-on:click="togglePin(e)"><i class="uil uil-bookmark"></i></button>
-                    <button type="button" class="iconBtn" title="Edit" v-on:click="edit(e)">
-                        <i class="uil uil-edit-alt"></i></button>
-                    <button type="button" class="iconBtn danger" :class="{ armed: confirmingId === e.objectId }"
-                        :disabled="busyId === e.objectId" v-on:click="askDelete(e)">
-                        <i class="uil uil-trash-alt"></i>
-                        <span v-if="confirmingId === e.objectId" class="ms-1">Sure?</span>
+            </article>
+        </div>
+
+        <!-- READING VIEW -->
+        <div v-if="opened" class="overlay" v-on:click.self="closeEntry">
+            <div class="panel" role="dialog" aria-modal="true"
+                :style="opened.theme ? { borderTopColor: themeColor(opened.theme) } : null">
+                <div class="panelTop">
+                    <span v-if="opened.theme" class="theme"
+                        :style="{ color: themeColor(opened.theme), background: themeTint(opened.theme) }">{{ opened.theme }}</span>
+                    <span v-if="opened.pinned" class="pinnedTag">
+                        <i class="uil uil-bookmark-full me-1"></i>Holding myself to this
+                    </span>
+                    <span class="date">{{ dateLabel(opened.dateUnix) }}</span>
+                    <button type="button" class="iconBtn ms-2" title="Close" v-on:click="closeEntry">
+                        <i class="uil uil-times"></i></button>
+                </div>
+
+                <h2 v-if="opened.title" class="panelTitle">{{ opened.title }}</h2>
+                <p class="panelBody">{{ opened.body }}</p>
+
+                <div class="panelActions">
+                    <button type="button" class="panelBtn" :disabled="busyId === opened.objectId"
+                        v-on:click="togglePin(opened)">
+                        <i class="uil me-1" :class="opened.pinned ? 'uil-bookmark-full' : 'uil-bookmark'"></i>
+                        {{ opened.pinned ? 'Unpin' : 'Pin to the top' }}
+                    </button>
+                    <button type="button" class="panelBtn" v-on:click="edit(opened)">
+                        <i class="uil uil-edit-alt me-1"></i>Edit
+                    </button>
+                    <button type="button" class="panelBtn danger" :class="{ armed: confirmingId === opened.objectId }"
+                        :disabled="busyId === opened.objectId" v-on:click="askDelete(opened)">
+                        <i class="uil uil-trash-alt me-1"></i>
+                        {{ confirmingId === opened.objectId ? 'Tap again to delete' : 'Delete' }}
                     </button>
                 </div>
-            </article>
+            </div>
         </div>
 
         <!-- EMPTY -->
@@ -501,10 +550,22 @@ onBeforeMount(async () => {
     transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease;
 }
 
+.card {
+    cursor: pointer;
+    text-align: left;
+}
+
 .card:hover {
     transform: translateY(-2px);
     border-color: var(--border-strong);
     background: var(--black-bg-7);
+}
+
+/* Keyboard users get the same affordance as the pointer, since the card is a
+   button now rather than a passive tile. */
+.card:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 
 /* A pinned card is a rule in force, so it reads as one: brighter edge and a
@@ -571,6 +632,13 @@ onBeforeMount(async () => {
     white-space: pre-wrap;
     margin: 0;
     flex: 1;
+    /* A preview, not the whole thing. One long principle used to stretch its
+       entire row and leave the others short; the full text is one tap away. */
+    display: -webkit-box;
+    -webkit-line-clamp: 5;
+    line-clamp: 5;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
 }
 
 /* Actions stay out of the way until the card is hovered -- they are maintenance,
@@ -608,6 +676,103 @@ onBeforeMount(async () => {
     color: var(--red-color);
     background: rgba(246, 70, 93, 0.12);
     font-size: 0.75rem;
+}
+
+/* ---- reading view ---- */
+.overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1060;   /* above Bootstrap's own modals, which sit at 1055 */
+    background: rgba(6, 8, 12, 0.72);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem 1rem;
+    overflow-y: auto;
+}
+
+.panel {
+    width: min(38rem, 100%);
+    max-height: calc(100vh - 3rem);
+    overflow-y: auto;
+    background: var(--black-bg-5);
+    border: 1px solid var(--border-strong);
+    /* The theme colour moves to the top edge here: a left spine reads as a list
+       marker, and this is no longer in a list. */
+    border-top: 3px solid var(--accent);
+    border-radius: var(--radius);
+    padding: 1.2rem 1.4rem 1rem;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+}
+
+.panelTop {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.6rem;
+}
+
+.pinnedTag {
+    font-size: 0.68rem;
+    color: var(--white-60);
+}
+
+.panelTop .date { margin-left: auto; }
+
+.panelTitle {
+    font-size: 1.15rem;
+    font-weight: 650;
+    line-height: 1.35;
+    color: var(--white-87);
+    margin: 0 0 0.6rem;
+}
+
+.panelBody {
+    font-size: 0.95rem;
+    line-height: 1.75;
+    color: var(--white-87);
+    white-space: pre-wrap;
+    margin: 0;
+}
+
+.panelActions {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    margin-top: 1.2rem;
+    padding-top: 0.8rem;
+    border-top: 1px solid var(--border-subtle);
+}
+
+.panelBtn {
+    display: inline-flex;
+    align-items: center;
+    background: transparent;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--white-60);
+    font-size: 0.8rem;
+    padding: 0.4rem 0.8rem;
+    transition: all 0.15s ease;
+}
+
+.panelBtn:hover:not(:disabled) { border-color: var(--border-strong); color: var(--white-87); }
+.panelBtn:disabled { opacity: 0.5; }
+.panelBtn.danger:hover:not(:disabled) { color: var(--red-color); border-color: rgba(246, 70, 93, 0.5); }
+
+.panelBtn.danger.armed {
+    color: var(--red-color);
+    border-color: rgba(246, 70, 93, 0.6);
+    background: rgba(246, 70, 93, 0.12);
+}
+
+/* Full-width targets on a finger, and the panel meets the bottom of the screen
+   rather than floating with a strip of backdrop under it. */
+@media (pointer: coarse) {
+    .panelBtn { flex: 1 1 auto; justify-content: center; min-height: 44px; }
+    .overlay { align-items: flex-end; padding: 0; }
+    .panel { max-height: 88vh; border-radius: var(--radius) var(--radius) 0 0; }
 }
 
 /* ---- empty ---- */
