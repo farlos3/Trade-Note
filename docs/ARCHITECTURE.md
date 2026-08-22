@@ -76,7 +76,7 @@ changes.
 | `src/views/Dashboard.vue` | Home dashboard: stat tiles (2-tier: Total Trades / Profit / Win Rate hero), Equity chart (withdrawal-aware), Cumulated P&L, per-side stats. |
 | `src/views/Daily.vue` | **History** page. Per-day cards; Daily/Weekly/Monthly filter with group subtotals. |
 | `src/views/Calendar.vue` | Monthly P&L calendar grid. |
-| `src/views/PlanVsActual.vue` | Plan target vs actual equity + daily P&L. Equity is withdrawal-aware (merged timeline); **plan line does NOT subtract withdrawals**. Optional fixed monthly running cost (hosting/VPS) is charged over calendar time and shown as an after-cost result + break-even per traded day. |
+| `src/views/PlanVsActual.vue` | Plan target vs actual equity + daily P&L. Equity is withdrawal-aware (merged timeline); **plan line does NOT subtract withdrawals**. Optional running costs (hosting/VPS/data) as a named list, summed to a monthly figure, charged over calendar time and shown as an after-cost result + break-even per traded day. |
 | `src/views/Plan.vue` | Create/edit growth plans (start balance, % per day, deposits, withdrawals). |
 | `src/views/Analysis.vue` | AI Analysis. Server feeds the model trade stats, behaviour flags, notes, weekly reviews, diary entries and entry reviews. Rule-based behavior summary (English) + fingerprint cache; "Analyze behavior" button calls LLM; export prompt+data JSON for Claude. |
 | `src/views/AddTrades.vue` / `Imports.vue` | Import trades (broker CSV / manual). |

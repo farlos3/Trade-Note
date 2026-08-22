@@ -8,6 +8,7 @@ import timezone from 'dayjs/plugin/timezone.js'; dayjs.extend(timezone)
 import { timeZoneTrade, currentUser } from '../stores/globals'
 import PlanSelector from '../components/PlanSelector.vue'
 import PlanDepositsEditor from '../components/PlanDepositsEditor.vue'
+import PlanCostsEditor from '../components/PlanCostsEditor.vue'
 import FpDate from '../components/FpDate.vue'
 import { activePlan } from '../utils/planStore'
 import { numOrNull, buildProjection, fmt, pnlClass } from '../utils/planMath'
@@ -113,8 +114,12 @@ const actual = computed(() => {
 const DAYS_PER_MONTH = 30.4375   // 365.25 / 12, so a year of months sums to a year
 
 const monthlyCost = computed(() => {
-    const n = numOrNull(activePlan.value.fixedCostMonthly)
-    return n != null && n > 0 ? n : null
+    const rows = Array.isArray(activePlan.value.fixedCosts) ? activePlan.value.fixedCosts : []
+    const total = rows.reduce((sum, c) => {
+        const n = numOrNull(c.amount)
+        return sum + (n != null && n > 0 ? n : 0)
+    }, 0)
+    return total > 0 ? total : null
 })
 
 const costSpanDays = computed(() => {
@@ -692,15 +697,14 @@ watch([equity, chartMode, yScale], async () => {
                 <input type="number" step="0.1" placeholder="e.g. 1" class="form-control form-control-sm"
                     v-model="activePlan.dailyPct" />
             </div>
-            <div>
-                <label class="planLabel">Fixed cost / month</label>
-                <input type="number" min="0" step="1" placeholder="e.g. 25" class="form-control form-control-sm"
-                    v-model="activePlan.fixedCostMonthly" />
-            </div>
         </div>
 
         <div class="planCard mb-3">
             <PlanDepositsEditor :plan="activePlan" />
+        </div>
+
+        <div class="planCard mb-3">
+            <PlanCostsEditor :plan="activePlan" />
         </div>
 
         <div class="planCard">
