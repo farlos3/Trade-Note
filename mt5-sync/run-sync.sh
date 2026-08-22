@@ -31,10 +31,13 @@ fi
 # on disk. A Mac commonly has several python3s and the dependencies are installed
 # into only one of them (here: /usr/bin/python3, via pip --user). Choosing by path
 # order picks a Homebrew python without `requests` and the job dies every minute.
+# `python` is listed as well as `python3`: on Windows the launcher is `python.exe`
+# and `python3` frequently does not resolve at all, so a Mac-shaped list finds
+# nothing there and the job exits every run.
 PY=""
 for cand in /usr/bin/python3 /opt/homebrew/bin/python3 /usr/local/bin/python3 \
-            "$(command -v python3 2>/dev/null)"; do
-  [[ -n "$cand" && -x "$cand" ]] || continue
+            "$(command -v python3 2>/dev/null)" "$(command -v python 2>/dev/null)"; do
+  [[ -n "$cand" ]] || continue
   if "$cand" -c "import requests, openpyxl" >/dev/null 2>&1; then PY="$cand"; break; fi
 done
 if [[ -z "$PY" ]]; then
