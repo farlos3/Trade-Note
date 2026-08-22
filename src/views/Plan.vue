@@ -280,28 +280,28 @@ watch(projection, async (p) => {
 
         <!-- ---------- Target projection ---------- -->
         <div class="planCard mb-3">
-            <!-- Title and control sit together on the left. They were pushed to
-                 opposite edges of the card, which on a wide screen left a gap wide
-                 enough that the input read as belonging to something else. -->
-            <div class="planCardHead targetHead">
+            <!-- Same arrangement as the Goal seek card below: title on the left, a
+                 btn-group toggle and its field grouped on the right. Aligning to the
+                 pattern this page already uses beats inventing a third one. -->
+            <div class="planCardHead">
                 <span class="planCardTitle">Target projection</span>
-
-                <div class="modeToggle" role="group" aria-label="Target unit">
-                    <button type="button" class="modeBtn" :class="{ on: !isAmountMode }"
-                        v-on:click="targetMode = 'pct'">% / day</button>
-                    <button type="button" class="modeBtn" :class="{ on: isAmountMode }"
-                        v-on:click="targetMode = 'amount'">$ / day</button>
-                </div>
-
-                <div class="inlineInput" v-if="!isAmountMode">
-                    <label class="planLabel mb-0">Target % per day</label>
-                    <input type="number" step="0.1" placeholder="e.g. 1" class="form-control form-control-sm"
-                        v-model="activePlan.dailyPct" />
-                </div>
-                <div class="inlineInput" v-else>
-                    <label class="planLabel mb-0">Target $ per day</label>
-                    <input type="number" min="0" step="1" placeholder="e.g. 20" class="form-control form-control-sm"
-                        v-model="activePlan.dailyAmount" />
+                <div class="d-flex align-items-end gap-2">
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Target unit">
+                        <button type="button" v-on:click="targetMode = 'pct'"
+                            v-bind:class="['btn', 'btn-sm', !isAmountMode ? 'btn-primary' : 'btn-outline-secondary']">% / day</button>
+                        <button type="button" v-on:click="targetMode = 'amount'"
+                            v-bind:class="['btn', 'btn-sm', isAmountMode ? 'btn-primary' : 'btn-outline-secondary']">$ / day</button>
+                    </div>
+                    <div class="inlineInput" v-if="!isAmountMode">
+                        <label class="planLabel mb-0">Target % per day</label>
+                        <input type="number" step="0.1" placeholder="e.g. 1" class="form-control form-control-sm"
+                            v-model="activePlan.dailyPct" />
+                    </div>
+                    <div class="inlineInput" v-else>
+                        <label class="planLabel mb-0">Target $ per day</label>
+                        <input type="number" min="0" step="1" placeholder="e.g. 20" class="form-control form-control-sm"
+                            v-model="activePlan.dailyAmount" />
+                    </div>
                 </div>
             </div>
 
@@ -635,36 +635,6 @@ watch(projection, async (p) => {
     font-weight: 700;
 }
 
-/* This card's header groups its controls beside the title instead of throwing
-   them to the far edge. .planCardHead keeps space-between for every other card. */
-.targetHead {
-    justify-content: flex-start;
-    align-items: center;
-    gap: 1rem;
-}
-
-.modeToggle {
-    display: inline-flex;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-sm);
-    overflow: hidden;
-}
-
-.modeBtn {
-    background: transparent;
-    border: 0;
-    color: var(--white-60);
-    font-size: 0.78rem;
-    padding: 0.3rem 0.7rem;
-    transition: all 0.15s ease;
-}
-
-.modeBtn:hover { color: var(--white-87); }
-
-.modeBtn.on {
-    background: var(--accent-soft);
-    color: var(--accent);
-}
 
 .inlineInput {
     min-width: 170px;
