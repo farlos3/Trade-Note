@@ -27,7 +27,7 @@ dayjs.extend(timezone)
 
 import NoData from '../components/NoData.vue'
 import { timeZoneTrade } from '../stores/globals'
-import { saveWeeklyPlan, markPlanReviewed, evaluateWeeklyGates, loadWeekNotes, planAttachmentIsImage, isWeekendPlanningWindow } from '../utils/weeklyGates'
+import { saveWeeklyPlan, markPlanReviewed, evaluateWeeklyGates, loadWeekNotes, planAttachmentIsImage, isWeekendPlanningWindow, isMondayReviewWindow } from '../utils/weeklyGates'
 
 const loaded = ref(false)
 const weekNotes = ref([])
@@ -35,7 +35,6 @@ const weekNotes = ref([])
 const tz = () => timeZoneTrade.value || 'UTC'
 const thisMonday = computed(() => dayjs().tz(tz()).startOf('isoWeek'))
 const nextMonday = computed(() => thisMonday.value.add(7, 'day'))
-const weekday = computed(() => now.value.isoWeekday())   // 1 = Monday ... 7 = Sunday
 
 /* Ticked, not read once at setup.
  *
@@ -49,6 +48,7 @@ onMounted(() => { clockTimer = setInterval(() => { now.value = dayjs().tz(tz()) 
 onUnmounted(() => { if (clockTimer) clearInterval(clockTimer) })
 
 const inPlanningWindow = computed(() => isWeekendPlanningWindow(now.value))
+const inReviewWindow = computed(() => isMondayReviewWindow(now.value))
 
 /* A week the user has not touched yet has no row in the database, but it still has
    to be editable -- the weekend plan is written into a week that does not exist yet
@@ -110,7 +110,9 @@ const isImageAttachment = (w) => {
    what is actually enforced. Keeping them separate means a change to the rules
    cannot leave this banner quietly contradicting the popup. */
 const reminder = computed(() => {
-    if (weekday.value === 1 && !currentWeek.value.planReviewed) {
+    // Same window the gate enforces (Monday from 06:00), so the two can never
+    // describe different times.
+    if (inReviewWindow.value && !currentWeek.value.planReviewed) {
         return {
             tone: 'due',
             icon: 'uil-bell',

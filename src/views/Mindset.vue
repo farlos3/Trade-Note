@@ -298,7 +298,7 @@ onBeforeMount(async () => {
             <div class="sectionLabel"><i class="uil uil-bookmark-full me-1"></i>Holding myself to these</div>
             <div class="grid">
                 <article v-for="e in pinned" :key="e.objectId" class="card pinned"
-                    :style="e.theme ? { borderLeftColor: themeColor(e.theme) } : null"
+                    :style="e.theme ? { borderLeftColor: themeColor(e.theme), '--spine': themeColor(e.theme) } : null"
                     role="button" tabindex="0" v-on:click="openEntry(e)"
                     v-on:keydown.enter.prevent="openEntry(e)" v-on:keydown.space.prevent="openEntry(e)">
                     <div class="cardTop">
@@ -511,10 +511,13 @@ onBeforeMount(async () => {
 }
 
 .chip:hover { border-color: var(--border-strong); color: var(--white-87); }
+/* Every theme chip carries its own colour inline; only "All" falls back to this
+   rule, and painting that one blue made a colour appear in the row that matched
+   no theme. Neutral instead -- selection reads from the fill, not a hue. */
 .chip.on {
-    background: var(--accent-soft);
-    border-color: rgba(47, 155, 255, 0.45);
-    color: var(--accent);
+    background: rgba(255, 255, 255, 0.1);
+    border-color: var(--border-strong);
+    color: var(--white-87);
 }
 
 /* ---- cards ---- */
@@ -580,6 +583,10 @@ onBeforeMount(async () => {
         var(--black-bg-5);
 }
 
+/* The spine follows the card's own theme, not the app accent. --accent is blue,
+   so pinning any card painted a blue stripe next to (or over) an amber or pink
+   theme edge -- a colour that belonged to neither the theme nor the state.
+   Falls back to a neutral edge for an entry with no theme at all. */
 .card.pinned::before {
     content: '';
     position: absolute;
@@ -588,7 +595,7 @@ onBeforeMount(async () => {
     bottom: 0.9rem;
     width: 2px;
     border-radius: 2px;
-    background: var(--accent);
+    background: var(--spine, var(--white-38));
 }
 
 .cardTop {
@@ -667,7 +674,10 @@ onBeforeMount(async () => {
 }
 
 .iconBtn:hover { color: var(--white-87); background: var(--surface-hover); }
-.iconBtn.on { color: var(--accent); }
+/* Bright, not blue: the filled bookmark glyph already says "pinned", so the
+   colour only has to read as active. --accent would drag the app blue into a
+   card whose own colour is its theme. */
+.iconBtn.on { color: var(--white-87); }
 .iconBtn.danger:hover { color: var(--red-color); }
 
 /* Armed = one more click deletes. Stays visible even without hover, so the state
@@ -699,7 +709,7 @@ onBeforeMount(async () => {
     border: 1px solid var(--border-strong);
     /* The theme colour moves to the top edge here: a left spine reads as a list
        marker, and this is no longer in a list. */
-    border-top: 3px solid var(--accent);
+    border-top: 3px solid var(--border-strong);
     border-radius: var(--radius);
     padding: 1.2rem 1.4rem 1rem;
     box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);

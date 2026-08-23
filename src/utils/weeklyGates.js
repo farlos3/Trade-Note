@@ -109,6 +109,27 @@ export function isWeekendPlanningWindow(now) {
     return day === 5 && (t.hour() * 60 + t.minute()) >= FRIDAY_OPENS_AT_MINUTE
 }
 
+/**
+ * Monday re-read window: from 06:00 on Monday, in the trade timezone.
+ *
+ * Not from midnight. Monday 00:00 is still Sunday night in every practical sense
+ * -- the weekend planning window has only just closed, the trader is asleep, and
+ * a gate that fires then is answered half-awake or dismissed by reflex, which is
+ * the opposite of re-reading anything. 06:00 puts it in the morning, before the
+ * session, which is when the plan actually has to be back in mind.
+ *
+ * Exported for the same reason as the planning window: the Weekly Plan page
+ * describes this to the trader, and a banner that disagrees with the popup is
+ * worse than either alone.
+ */
+const MONDAY_REVIEW_OPENS_AT_MINUTE = 6 * 60   // 06:00 in the trade timezone
+
+export function isMondayReviewWindow(now) {
+    const t = now || dayjs().tz(tz())
+    if (t.isoWeekday() !== 1) return false
+    return (t.hour() * 60 + t.minute()) >= MONDAY_REVIEW_OPENS_AT_MINUTE
+}
+
 function findWeek(dateUnix, notes) {
     return notes.find((n) => Number(n.dateUnix) === Number(dateUnix)) || null
 }
@@ -121,7 +142,7 @@ export async function evaluateWeeklyGates() {
     const notes = await loadWeekNotes()
     const monday = thisMonday()
     const today = dayjs().tz(tz())
-    const isMonday = today.isoWeekday() === 1
+    const reviewWindow = isMondayReviewWindow(today)
     const planningWindow = isWeekendPlanningWindow(today)
 
     // 1. reflection: last week had a summary written but no reflection on it.
@@ -132,8 +153,8 @@ export async function evaluateWeeklyGates() {
         return
     }
 
-    // 2. review: Monday, this week's plan not yet re-read/acknowledged.
-    if (isMonday) {
+    // 2. review: Monday from 06:00, this week's plan not yet re-read/acknowledged.
+    if (reviewWindow) {
         const week = findWeek(monday.unix(), notes) || stubWeek(monday.unix())
         if (!week.planReviewed) {
             activeGate.value = 'review'
