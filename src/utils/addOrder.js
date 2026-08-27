@@ -31,23 +31,67 @@ dayjs.extend(timezone)
 import customParseFormat from 'dayjs/plugin/customParseFormat.js'
 dayjs.extend(customParseFormat)
 
+/**
+ * Per-asset-class contract and pip sizes.
+ *
+ * Both numbers used to be guessed per call site from a couple of `includes`
+ * checks that only knew forex, gold and silver. Anything else -- an index, oil,
+ * crypto -- fell through to the standard forex lot (100000 units, 0.0001 pip),
+ * which is not merely imprecise: a 0.01-lot Nasdaq position priced at 29607.6
+ * came out roughly seven orders of magnitude wrong in both the P&L preview and
+ * the risk calculator, and its "move" read in hundreds of thousands of pips.
+ *
+ * The values below are read off the broker's own symbol specs
+ * (MetaTrader5 `symbol_info`: trade_contract_size / trade_tick_size /
+ * trade_tick_value), not assumed:
+ *
+ *   USA100/USA30/USA500/GER40/UK100/JP225   contract 1      tick 0.01
+ *   XAUUSD                                  contract 100    tick 0.01
+ *   XAGUSD                                  contract 1000   tick 0.001
+ *   USOIL/UKOIL                             contract 100    tick 0.01
+ *   BTCUSD/ETHUSD                           contract 1      tick 0.001
+ *
+ * `pip` is the unit the trader actually speaks in for that class -- index points
+ * for an index, whole dollars for crypto, the fourth decimal for forex -- and is
+ * chosen so `contractSize * pipSize` lands on the broker's own per-lot value of
+ * one pip ($1 for every class here). That product is what the risk calculator in
+ * Nav.vue divides by, so the two have to stay in step.
+ *
+ * ORDER MATTERS. The patterns are substrings, and several symbols satisfy more
+ * than one: `#BTCXAUr` is crypto, not gold; `USOIL` contains "US" but is not an
+ * index; `#BTCJPYr` is crypto, not a yen pair. Most specific class first.
+ */
+const ASSET_CLASSES = [
+    { pipSize: 1, contractSize: 1, match: ['BTC', 'ETH', 'LTC', 'XRP', 'SOL', 'DOGE', 'ADA', 'BNB'] },
+    {
+        pipSize: 1, contractSize: 1,
+        match: ['USA100', 'US100', 'NAS', 'NDX', 'USTEC', 'USA30', 'US30', 'DJ30', 'USA500', 'US500',
+            'SPX', 'GER40', 'DE40', 'DAX', 'UK100', 'FTSE', 'JP225', 'NIKKEI', 'NETH25', 'EU50',
+            'STOXX', 'HK50', 'AUS200', 'FRA40', 'ESP35'],
+    },
+    { pipSize: 0.01, contractSize: 100, match: ['OIL', 'WTI', 'BRENT'] },
+    { pipSize: 0.01, contractSize: 100, match: ['XAU'] },
+    { pipSize: 0.001, contractSize: 1000, match: ['XAG'] },
+    { pipSize: 0.01, contractSize: 100000, match: ['JPY'] },
+]
+
+// Standard forex lot: the fallback, and still correct for the majority of pairs.
+const FOREX = { pipSize: 0.0001, contractSize: 100000 }
+
+function assetClass(symbol) {
+    if (!symbol) return FOREX
+    const s = String(symbol).toUpperCase()
+    return ASSET_CLASSES.find((c) => c.match.some((m) => s.includes(m))) || FOREX
+}
+
 /* Pip size used only for the informational "pips" display */
 export function usePipSize(symbol) {
-    if (!symbol) return 0.0001
-    const s = symbol.toUpperCase()
-    if (s.includes('JPY')) return 0.01
-    if (s.includes('XAU')) return 0.01
-    if (s.includes('XAG')) return 0.001
-    return 0.0001
+    return assetClass(symbol).pipSize
 }
 
 /* Units per 1.00 lot. Drives the P&L calculation, editable in the form. */
 export function useDefaultContractSize(symbol) {
-    if (!symbol) return 100000
-    const s = symbol.toUpperCase()
-    if (s.includes('XAU')) return 100
-    if (s.includes('XAG')) return 5000
-    return 100000 // standard forex lot
+    return assetClass(symbol).contractSize
 }
 
 /**
