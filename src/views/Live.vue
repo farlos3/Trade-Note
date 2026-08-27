@@ -70,9 +70,10 @@ function pnlClass(v) {
    risen. Shown in pips rather than raw price because that is the unit stops and
    targets are actually thought in: on gold a 2.90 price move is 290 pips, and
    "290" is the number you compare against your SL distance.
-   usePipSize is the app's own table (gold 0.01, JPY pairs 0.01, the rest 0.0001),
-   reused here so this agrees with the P&L maths elsewhere instead of hardcoding
-   a divisor that would be wrong on any other symbol. */
+   usePipSize is the app's per-asset-class table (see ASSET_CLASSES in
+   utils/addOrder.js -- index points for an index, 0.01 on gold, 0.0001 on most
+   forex), reused here so this agrees with the P&L maths elsewhere instead of
+   hardcoding a divisor that would be wrong on any other symbol. */
 function movePips(p) {
     const d = (Number(p.priceCurrent) || 0) - (Number(p.priceOpen) || 0)
     const directional = p.side === 'sell' ? -d : d
