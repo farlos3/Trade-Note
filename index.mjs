@@ -1206,6 +1206,13 @@ const setupApiRoutes = (app) => {
             // this field, which reads the same as "none pending" -- the shape the
             // page renders either way.
             pending: Array.isArray(b.pending) ? b.pending : [],
+            // {ticket: {sl, tp}} for today's trades, closed ones included -- the
+            // entry checklist reads these when it asks about a trade it only
+            // learned about from history. Merged across frames rather than
+            // replaced: a position that closes drops out of the agent's next
+            // snapshot, and forgetting its stops the moment it closes would
+            // defeat the point of collecting them.
+            stops: { ...(liveSnapshot?.stops || {}), ...(b.stops && typeof b.stops === 'object' ? b.stops : {}) },
             ticks: b.ticks && typeof b.ticks === 'object' ? b.ticks : {},
             agentTime: Number(b.t) || null,
             receivedAt: Date.now(),

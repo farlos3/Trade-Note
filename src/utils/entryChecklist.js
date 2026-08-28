@@ -20,6 +20,7 @@ dayjs.extend(utc)
 dayjs.extend(timezone)
 import { timeZoneTrade } from '../stores/globals.js'
 import { useAuthHeaders } from './apiAuth'
+import { useLiveSnapshots } from './journalStream.js'
 
 /**
  * Only today's trades are ever offered for review.
@@ -140,6 +141,7 @@ export const entryChecklistQueueLength = computed(() => pending.length)
  */
 const OPEN_POSITION_POLL_MS = 20000
 let watchTimer = null
+let stopLiveFrames = null
 
 /**
  * Open positions from the live feed, or null when the feed is not usable.
@@ -155,11 +157,20 @@ async function liveOpenPositions() {
     if (!res.ok) return null
     const body = await res.json()
     if (!body || body.stale || !body.snapshot) return null
-    // Same day bound as the history side. A position opened days ago and still
-    // running is not something to be asked about now -- the entry it is asking to
-    // review happened in a session that is already over.
+    return openPositionsFrom(body.snapshot)
+}
+
+/**
+ * Reviewable positions out of one snapshot, whether it arrived by fetch or down
+ * the stream.
+ *
+ * Same day bound as the history side: a position opened days ago and still
+ * running is not something to be asked about now -- the entry it would review
+ * happened in a session that is already over.
+ */
+function openPositionsFrom(snapshot) {
     const cutoff = checklistCutoffUnix()
-    return (body.snapshot.positions || [])
+    return (snapshot.positions || [])
         .filter((p) => !p.openTime || p.openTime >= cutoff)
         .map(useLivePositionAsEntry)
 }
@@ -192,6 +203,26 @@ export function useLivePositionAsEntry(p) {
 }
 
 /**
+ * Stops the agent has seen today, {tradeId: {sl, tp}}.
+ *
+ * Read even when the feed is stale: these are a record of what the stops WERE,
+ * not a live reading, so an old snapshot is still the right answer for a trade
+ * that has since closed. Empty when the agent has never run, which is the one
+ * case nothing can recover -- MT5 keeps post-entry stops only while the position
+ * is open.
+ */
+async function recentStops() {
+    try {
+        const res = await fetch('/api/live', { headers: useAuthHeaders() })
+        if (!res.ok) return {}
+        const body = await res.json()
+        return (body && body.snapshot && body.snapshot.stops) || {}
+    } catch {
+        return {}
+    }
+}
+
+/**
  * Today's trades that were never reviewed.
  *
  * The fallback for a dead live feed. A trade seen only after it closed cannot be
@@ -202,6 +233,11 @@ export function useLivePositionAsEntry(p) {
  */
 async function unreviewedRecentTrades() {
     const cutoff = checklistCutoffUnix()
+    // Stops the agent recorded for today's trades, closed ones included. The
+    // journal itself has never carried SL/TP -- the broker export has no such
+    // column -- so without this a trade reviewed after it closed showed both
+    // stops blank, as if none had been set.
+    const stops = await recentStops()
     const query = new Parse.Query(Parse.Object.extend('trades'))
     query.equalTo('user', currentUserOrNull())
     // The day doc IS keyed to this cutoff (trade-tz midnight), so an exact match
@@ -214,15 +250,18 @@ async function unreviewedRecentTrades() {
     for (const day of days) {
         for (const t of (day.get('trades') || [])) {
             if (!t.positionId || !t.entryTime || t.entryTime < cutoff) continue
+            const id = String(t.positionId)
+            const stop = stops[id] || {}
             out.push({
-                tradeId: String(t.positionId),
+                tradeId: id,
                 dateUnix: t.entryTime,
                 symbol: t.symbol,
                 side: t.strategy,            // 'long' | 'short'
                 entryPrice: t.entryPrice,
-                // A closed trade carries no broker TP/SL to prefill.
-                tp: null,
-                sl: null,
+                // 0 is MT5's "no stop"; null keeps that reading as unset rather
+                // than as a price of zero.
+                tp: stop.tp || null,
+                sl: stop.sl || null,
                 lot: Math.max(t.buyQuantity || 0, t.sellQuantity || 0),
             })
         }
@@ -241,6 +280,25 @@ function currentUserOrNull() {
 
 export function startEntryChecklistWatch() {
     if (watchTimer) return
+
+    /* The stream is what makes this prompt at the ENTRY rather than after it.
+     *
+     * The 20s poll below still runs, but as the floor: on its own it meant a fill
+     * could sit unasked for most of a minute, and with the agent down it never
+     * fired at all -- the watcher fell through to history, which only learns of a
+     * trade once the sync writes it, i.e. after the position has already closed.
+     * That is the wrong end of the trade to be asking about. Frames arrive about
+     * once a second, so a new position is offered essentially as it opens.
+     *
+     * The ids have to be loaded before anything is offered, or every position in
+     * the very first frame looks unanswered. */
+    let idsReady = false
+    useLoadChecklistedIds().then(() => { idsReady = true })
+    stopLiveFrames = useLiveSnapshots((snap) => {
+        if (!idsReady || !currentUserOrNull()) return
+        openPositionsFrom(snap).forEach(offerEntryChecklist)
+    })
+
     const tick = async () => {
         if (!currentUserOrNull()) return
         try {
@@ -274,6 +332,7 @@ export function startEntryChecklistWatch() {
 export function stopEntryChecklistWatch() {
     clearInterval(watchTimer)
     watchTimer = null
+    if (stopLiveFrames) { stopLiveFrames(); stopLiveFrames = null }
 }
 
 export async function saveEntryChecklist(trade, answers) {

@@ -207,6 +207,20 @@ class NativeBackend:
         # invisible until they trigger. Ticks are collected for their symbols too,
         # or a pending order on a symbol with no open position would have no price
         # to measure its distance against.
+        # Stops for every position touched today, open or already closed, keyed by
+        # ticket. The entry checklist needs an order's SL/TP even when it asks
+        # about it after the position is gone, and by then there is nowhere else
+        # to read them from: MT5's history keeps only the stops that were attached
+        # to the ORDER, so anything set on the position after entry (the usual
+        # case) is lost the moment it closes. Carrying them on the live snapshot
+        # is what makes the closed case answerable at all.
+        stops = {}
+        for p in positions:
+            if p["sl"] or p["tp"]:
+                stops[str(p["ticket"])] = {"sl": p["sl"], "tp": p["tp"]}
+        for ticket, sl_tp in self.closed_stops_today(offset).items():
+            stops.setdefault(ticket, sl_tp)
+
         pending = []
         for o in (mt5.orders_get() or []):
             kind = PENDING_ORDER_TYPES.get(o.type)
@@ -247,9 +261,38 @@ class NativeBackend:
             "marginFree": ai.margin_free,
             "positions": positions,
             "pending": pending,
+            "stops": stops,
             "ticks": ticks,
             "t": int(time.time()),
         }
+
+    def closed_stops_today(self, offset):
+        """{ticket: {sl, tp}} for positions closed today that carried stops.
+
+        Only orders keep SL/TP in MT5's history, and only the values they were
+        placed with -- so this recovers a pending order's stops but not one added
+        to a running position. Whatever it cannot recover was already captured
+        live while the position was open (see the caller).
+
+        Re-read on a timer rather than every snapshot: this loop runs once a
+        second and the answer changes at most when a position closes.
+        """
+        now = time.time()
+        if getattr(self, "_stops_at", 0) + 30 > now:
+            return self._stops_cache
+        self._stops_at = now
+        self._stops_cache = {}
+        try:
+            # Broker-clock bounds, since that is the clock history is filed under.
+            day_start = dt.datetime.fromtimestamp(now + offset).replace(
+                hour=0, minute=0, second=0, microsecond=0)
+            for o in (mt5.history_orders_get(
+                    day_start, dt.datetime.fromtimestamp(now + offset) + dt.timedelta(minutes=1)) or []):
+                if o.position_id and (o.sl or o.tp):
+                    self._stops_cache[str(o.position_id)] = {"sl": o.sl, "tp": o.tp}
+        except Exception:  # noqa: BLE001 -- history is a nicety, never fatal
+            pass
+        return self._stops_cache
 
     def balance_deals(self):
         """Every deposit/withdrawal the account has ever had. The native package
@@ -480,6 +523,10 @@ class BridgeBackend:
             "marginFree": float(a.get("margin_free", 0) or 0),
             "positions": positions,
             "pending": pending,
+            # Open positions only: the EA exports no order history to recover
+            # stops from once a position has closed.
+            "stops": {str(p["ticket"]): {"sl": p["sl"], "tp": p["tp"]}
+                      for p in positions if p["sl"] or p["tp"]},
             "ticks": ticks,
             # The EA's own write time, not now(): this snapshot describes the
             # terminal as of then, and the UI should not age it from the read.
