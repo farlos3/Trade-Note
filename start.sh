@@ -439,15 +439,29 @@ start_live_feed() {
   #
   # The file's own mtime is the start time, which avoids `ps -o lstart` +
   # `date -j`/`date -d` parsing that differs between BSD, GNU and MSYS.
+  # "Is OUR agent alive", not "does something hold this pid".
+  #
+  # `kill -0` alone answered the second question and got it wrong in the way that
+  # matters: Git Bash hands out MSYS pids that are recycled quickly, so a pid file
+  # left behind by a dead agent went on reporting ALIVE once an unrelated process
+  # inherited the number. start_live_feed then took the "already running" branch
+  # and launched nothing, which is why Live could be dead after every single
+  # ./start.sh. The command line is what distinguishes the two, so it is checked.
   pid_alive() {
     local pid="$1"
     [[ -n "$pid" ]] || return 1
-    kill -0 "$pid" 2>/dev/null && return 0
-    # Windows: a python.exe started from Git Bash is not always visible to kill -0.
-    if command -v tasklist >/dev/null 2>&1; then
-      tasklist /FI "PID eq $pid" /NH 2>/dev/null | grep -q "\b$pid\b" && return 0
+    if command -v powershell >/dev/null 2>&1; then
+      # Windows PIDs, since that is what the launcher below records.
+      powershell -NoProfile -Command \
+        "\$p = Get-CimInstance Win32_Process -Filter \"ProcessId=$pid\" -ErrorAction SilentlyContinue; \
+         if (\$p -and \$p.CommandLine -like '*mt5_live.py*') { exit 0 } else { exit 1 }" \
+        >/dev/null 2>&1 && return 0
+      return 1
     fi
-    return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    # POSIX: same command-line confirmation, so a recycled pid cannot pass here
+    # either.
+    ps -p "$pid" -o command= 2>/dev/null | grep -q "mt5_live.py"
   }
 
   live_pid=""
@@ -478,10 +492,36 @@ start_live_feed() {
     fi
   fi
 
-  nohup "$PY" "$ROOT_DIR/mt5-sync/mt5_live.py" >"$LIVE_LOG" 2>&1 &
-  live_pid=$!
-  printf '%s' "$live_pid" > "$LIVE_PID_FILE"
-  disown 2>/dev/null || true
+  # Launched so it OUTLIVES this shell.
+  #
+  # nohup + disown is enough on a Unix terminal but not on Windows: the agent
+  # stays attached to the console that Git Bash is running in, and closing that
+  # window tears down every process in it regardless of SIGHUP handling. The agent
+  # is meant to run for days, so it kept dying minutes after ./start.sh returned.
+  # Start-Process gives it its own hidden process, detached from this console --
+  # and returns the WINDOWS pid, which is the one pid_alive above can verify.
+  if command -v powershell >/dev/null 2>&1; then
+    win_root="$(cygpath -w "$ROOT_DIR" 2>/dev/null || printf '%s' "$ROOT_DIR")"
+    # PowerShell writes the pid to the file itself, and its own output goes
+    # nowhere. Capturing the pid through $(...) instead would hand the agent this
+    # shell's stdout pipe: the command substitution then blocks until that pipe
+    # closes, which for an agent designed to run for days is never -- ./start.sh
+    # would appear to hang, and killing it would take the agent down with it.
+    powershell -NoProfile -Command \
+      "(Start-Process -FilePath '$PY' \
+         -ArgumentList '$win_root\\mt5-sync\\mt5_live.py' \
+         -WorkingDirectory '$win_root' \
+         -RedirectStandardOutput '$win_root\\mt5-sync\\live-agent.log' \
+         -RedirectStandardError  '$win_root\\mt5-sync\\live-agent.log.err' \
+         -WindowStyle Hidden -PassThru).Id | Set-Content -NoNewline '$win_root\\mt5-sync\\.live-agent.pid'" \
+      >/dev/null 2>&1
+    live_pid="$(tr -dc '0-9' < "$LIVE_PID_FILE" 2>/dev/null)"
+  else
+    nohup "$PY" "$ROOT_DIR/mt5-sync/mt5_live.py" >"$LIVE_LOG" 2>&1 &
+    live_pid=$!
+    disown 2>/dev/null || true
+    printf '%s' "$live_pid" > "$LIVE_PID_FILE"
+  fi
   sleep 2
   if pid_alive "$live_pid"; then
     printf '\033[32mLive feed running -> %s\033[0m\n' "$APP_URL/live"
