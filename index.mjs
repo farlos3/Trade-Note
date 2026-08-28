@@ -1202,6 +1202,10 @@ const setupApiRoutes = (app) => {
             margin: Number(b.margin) || 0,
             marginFree: Number(b.marginFree) || 0,
             positions: Array.isArray(b.positions) ? b.positions : [],
+            // Orders placed but not yet filled. Absent from an agent older than
+            // this field, which reads the same as "none pending" -- the shape the
+            // page renders either way.
+            pending: Array.isArray(b.pending) ? b.pending : [],
             ticks: b.ticks && typeof b.ticks === 'object' ? b.ticks : {},
             agentTime: Number(b.t) || null,
             receivedAt: Date.now(),

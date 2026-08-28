@@ -159,7 +159,36 @@ async function liveOpenPositions() {
     // running is not something to be asked about now -- the entry it is asking to
     // review happened in a session that is already over.
     const cutoff = checklistCutoffUnix()
-    return (body.snapshot.positions || []).filter((p) => !p.openTime || p.openTime >= cutoff)
+    return (body.snapshot.positions || [])
+        .filter((p) => !p.openTime || p.openTime >= cutoff)
+        .map(useLivePositionAsEntry)
+}
+
+/**
+ * One MT5 open position, in the shape the queue and the modal read.
+ *
+ * The feed and the checklist name the same things differently -- `ticket` vs
+ * `tradeId`, `priceOpen` vs `entryPrice`, `volume` vs `lot` -- so a raw position
+ * handed to offerEntryChecklist is dropped on its first line for having no
+ * `tradeId`, silently. That is exactly what the page-wide watcher was doing, so
+ * outside Live.vue (which happened to map the fields inline) nothing was ever
+ * queued at all.
+ *
+ * `tp`/`sl` are carried through so the modal can prefill the stops the order
+ * already has: MT5 reports "no stop" as the price 0.0, which is falsy, so an
+ * unset stop stays unticked without a special case here.
+ */
+export function useLivePositionAsEntry(p) {
+    return {
+        tradeId: String(p.ticket),
+        dateUnix: p.openTime,
+        symbol: p.symbol,
+        side: p.side,
+        entryPrice: p.priceOpen,
+        tp: p.tp,
+        sl: p.sl,
+        lot: p.volume,
+    }
 }
 
 /**

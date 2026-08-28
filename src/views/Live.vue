@@ -14,7 +14,7 @@ import dayjs from 'dayjs'
 import { useTwoDecCurrencyFormat } from '../utils/utils'
 import { usePipSize } from '../utils/addOrder'
 import { useAuthHeaders, useAuthedUrl } from '../utils/apiAuth'
-import { offerEntryChecklist, useLoadChecklistedIds, checklistCutoffUnix } from '../utils/entryChecklist'
+import { offerEntryChecklist, useLoadChecklistedIds, checklistCutoffUnix, useLivePositionAsEntry } from '../utils/entryChecklist'
 
 const snapshot = ref(null)
 const connected = ref(false)
@@ -38,6 +38,28 @@ const floating = computed(() => (snapshot.value ? snapshot.value.profit : 0))
    scanning down from the top should hit it before anything else. */
 const sortedPositions = computed(() =>
     [...positions.value].sort((a, b) => a.profit - b.profit))
+
+/* Orders placed but not filled. Same reasoning as worst-first above, applied to
+   what is about to happen instead: the one closest to triggering is the one worth
+   seeing, so distance-to-trigger sorts ascending. An order whose symbol has no
+   current price sorts last rather than first, since "unknown" is not "imminent". */
+const pending = computed(() => (snapshot.value && snapshot.value.pending) || [])
+const sortedPending = computed(() =>
+    [...pending.value].sort((a, b) => {
+        const da = awayPips(a), db = awayPips(b)
+        if (da === null) return 1
+        if (db === null) return -1
+        return da - db
+    }))
+
+/* How far the market still has to move to trigger the order, in the symbol's own
+   pips. Unsigned -- a resting order has no winning direction yet. */
+function awayPips(o) {
+    const now = Number(o.priceCurrent) || 0
+    const at = Number(o.priceOpen) || 0
+    if (!now || !at) return null
+    return Math.abs(at - now) / usePipSize(o.symbol)
+}
 
 const totalVolume = computed(() =>
     positions.value.reduce((s, p) => s + (Number(p.volume) || 0), 0))
@@ -96,16 +118,9 @@ function offerPositionsForChecklist(list) {
     const cutoff = checklistCutoffUnix()
     for (const p of list) {
         if (p.openTime && p.openTime < cutoff) continue
-        offerEntryChecklist({
-            tradeId: String(p.ticket),
-            dateUnix: p.openTime,
-            symbol: p.symbol,
-            side: p.side,
-            entryPrice: p.priceOpen,
-            tp: p.tp,
-            sl: p.sl,
-            lot: p.volume,
-        })
+        // Shared with the page-wide watcher, so both feeds hand the modal the
+        // same fields -- including the order's own TP/SL to prefill.
+        offerEntryChecklist(useLivePositionAsEntry(p))
     }
 }
 
@@ -269,6 +284,47 @@ onUnmounted(() => {
                         </span>
                     </div>
                 </div>
+
+                <!-- Resting orders. Separate card, not more rows in the table
+                     above: nothing here has a P&L or a move yet, and mixing the
+                     two would put empty cells in every money column. -->
+                <div v-if="pending.length" class="dailyCard mt-3">
+                    <h6 class="mb-3">Pending orders <span class="muted pendingCount">{{ pending.length }}</span></h6>
+                    <div class="tableWrap">
+                        <table class="table liveTable mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Symbol</th>
+                                    <th>Type</th>
+                                    <th class="num">Vol</th>
+                                    <th class="num">Price</th>
+                                    <th class="num">Now</th>
+                                    <th class="num">Away</th>
+                                    <th class="num">SL</th>
+                                    <th class="num">TP</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="o in sortedPending" :key="o.ticket">
+                                    <td>{{ o.symbol }}</td>
+                                    <td><span class="sideTag" v-bind:class="o.side">{{ o.kind }}</span></td>
+                                    <td class="num">{{ o.volume }}</td>
+                                    <td class="num strong">{{ o.priceOpen }}</td>
+                                    <td class="num muted">{{ o.priceCurrent || '—' }}</td>
+                                    <!-- Unsigned: how far the market still has to
+                                         travel to trigger, which has no good or bad
+                                         direction the way an open position does. -->
+                                    <td class="num">
+                                        {{ awayPips(o) === null ? '—' : fmtPips(awayPips(o)) }}
+                                        <span v-if="awayPips(o) !== null" class="unit">pips</span>
+                                    </td>
+                                    <td class="num muted">{{ o.sl ? o.sl : '—' }}</td>
+                                    <td class="num muted">{{ o.tp ? o.tp : '—' }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
 
             <div v-else class="dailyCard">
@@ -409,4 +465,9 @@ onUnmounted(() => {
 }
 
 .tickItem { margin-right: 1.25rem; }
+
+.pendingCount {
+    font-size: 0.78rem;
+    font-weight: 400;
+}
 </style>

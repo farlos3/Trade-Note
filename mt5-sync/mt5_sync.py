@@ -53,6 +53,19 @@ DEAL_TYPE_BALANCE = 2
 DEAL_ENTRY_IN = 0
 DEAL_ENTRY_OUT = 1
 
+# ENUM_ORDER_TYPE, for orders that are RESTING rather than filled. 0/1 are the
+# market buy/sell an order briefly holds while executing and never appear in
+# orders_get(), so only the pending kinds are named here. The label is what the
+# terminal itself calls each one, so the UI needs no second mapping.
+PENDING_ORDER_TYPES = {
+    2: ("buy", "Buy limit"),
+    3: ("sell", "Sell limit"),
+    4: ("buy", "Buy stop"),
+    5: ("sell", "Sell stop"),
+    6: ("buy", "Buy stop limit"),
+    7: ("sell", "Sell stop limit"),
+}
+
 
 def log(msg):
     print(f"[{dt.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
@@ -188,6 +201,34 @@ class NativeBackend:
                 "openTime": broker_time_to_utc(p.time, offset),
             })
 
+        # Orders placed but not filled. They carry the same decisions a position
+        # does -- entry, size, stop, target -- and are the part of the plan that is
+        # still ahead, so they belong in the same snapshot rather than being
+        # invisible until they trigger. Ticks are collected for their symbols too,
+        # or a pending order on a symbol with no open position would have no price
+        # to measure its distance against.
+        pending = []
+        for o in (mt5.orders_get() or []):
+            kind = PENDING_ORDER_TYPES.get(o.type)
+            if not kind:
+                continue          # a market order mid-execution, not a resting one
+            side, label = kind
+            symbols.add(o.symbol)
+            pending.append({
+                "ticket": o.ticket,
+                "symbol": o.symbol,
+                "side": side,
+                "kind": label,
+                # volume_current, not volume_initial: a partially filled order has
+                # only this much left waiting.
+                "volume": o.volume_current,
+                "priceOpen": o.price_open,
+                "priceCurrent": o.price_current,
+                "sl": o.sl,
+                "tp": o.tp,
+                "setupTime": broker_time_to_utc(o.time_setup, offset),
+            })
+
         ticks = {}
         for sym in symbols:
             t = mt5.symbol_info_tick(sym)
@@ -205,6 +246,7 @@ class NativeBackend:
             "margin": ai.margin,
             "marginFree": ai.margin_free,
             "positions": positions,
+            "pending": pending,
             "ticks": ticks,
             "t": int(time.time()),
         }
@@ -405,6 +447,29 @@ class BridgeBackend:
             if sym and "bid" in p and "ask" in p:
                 ticks[sym] = {"bid": float(p["bid"]), "ask": float(p["ask"])}
 
+        # Pending orders are exported only by an EA new enough to write them.
+        # Absent key means "this EA does not report them", which is not the same
+        # as "there are none" -- but an empty list is the honest render either
+        # way, and it keeps the snapshot one shape across both backends.
+        pending = []
+        for o in (data.get("orders") or []):
+            kind = PENDING_ORDER_TYPES.get(int(o.get("type", -1)))
+            if not kind:
+                continue
+            side, label = kind
+            pending.append({
+                "ticket": o.get("ticket", 0),
+                "symbol": o.get("symbol", ""),
+                "side": side,
+                "kind": label,
+                "volume": float(o.get("volume_current", o.get("volume", 0)) or 0),
+                "priceOpen": float(o.get("price_open", 0) or 0),
+                "priceCurrent": float(o.get("price_current", 0) or 0),
+                "sl": float(o.get("sl", 0) or 0),
+                "tp": float(o.get("tp", 0) or 0),
+                "setupTime": int(broker_time_to_utc(o.get("time_setup", 0) or 0, offset)),
+            })
+
         return {
             "login": a.get("login", 0),
             "currency": a.get("currency", "USD"),
@@ -414,6 +479,7 @@ class BridgeBackend:
             "margin": float(a.get("margin", 0) or 0),
             "marginFree": float(a.get("margin_free", 0) or 0),
             "positions": positions,
+            "pending": pending,
             "ticks": ticks,
             # The EA's own write time, not now(): this snapshot describes the
             # terminal as of then, and the UI should not age it from the read.
