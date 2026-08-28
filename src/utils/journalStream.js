@@ -22,6 +22,11 @@ let source = null
 let pollTimer = null
 let lastVersion = null
 const subscribers = new Set()
+/* Live MT5 frames travel down the SAME stream as the journal events, as the
+   default (unnamed) message. Handing them out from here rather than opening a
+   second EventSource keeps the one-connection rule above -- and callers that need
+   to react the instant a position appears no longer have to poll for it. */
+const liveSubscribers = new Set()
 
 function notify(version) {
     // The first version we ever see is a baseline, not a change -- firing on it
@@ -64,6 +69,14 @@ function connect() {
         return
     }
     source = new EventSource(useAuthedUrl('/api/live/stream'))
+    source.onmessage = (e) => {
+        if (!liveSubscribers.size) return
+        let snap
+        try { snap = JSON.parse(e.data) } catch { return }   // partial frame
+        for (const fn of liveSubscribers) {
+            try { fn(snap) } catch (err) { console.error('live subscriber failed', err) }
+        }
+    }
     source.addEventListener('journal', (e) => {
         stopPolling()   // the stream is alive; no need to also poll
         try {
@@ -92,6 +105,22 @@ export function useJournalUpdates(fn) {
     connect()
     return () => {
         subscribers.delete(fn)
-        if (subscribers.size === 0) teardown()
+        if (subscribers.size === 0 && liveSubscribers.size === 0) teardown()
+    }
+}
+
+/**
+ * Run `fn` with every live MT5 snapshot the agent posts (about once a second).
+ * Same shared connection and same unsubscribe contract as useJournalUpdates.
+ *
+ * Nothing arrives while the agent is down -- silence means "no feed", not "no
+ * positions", so a caller that must act on absence needs its own fallback.
+ */
+export function useLiveSnapshots(fn) {
+    liveSubscribers.add(fn)
+    connect()
+    return () => {
+        liveSubscribers.delete(fn)
+        if (subscribers.size === 0 && liveSubscribers.size === 0) teardown()
     }
 }
