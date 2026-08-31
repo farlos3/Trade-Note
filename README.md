@@ -64,11 +64,11 @@ and backups go to your own R2 bucket.
 ```
 ```bash
 # macOS / Linux
-./start.sh                  # same thing, MT5 sync included
-./start.sh --hot            # Vite dev server instead of the bundled build
+./tradenote.sh start                  # same thing, MT5 sync included
+./tradenote.sh start --hot            # Vite dev server instead of the bundled build
 ```
 
-`start.ps1` / `start.sh` will:
+`start.ps1` / `tradenote.sh start` will:
 1. Start the app **and local MongoDB** in Docker.
 2. Wait until the web app answers.
 3. **Restore the latest R2 backup** into MongoDB (so a start always begins from
@@ -82,7 +82,7 @@ Then open **http://localhost:8080** and log in.
 
 ### Keeping R2 current
 
-`start.sh` restores from R2 before anything else, and that **drops the local
+`tradenote.sh start` restores from R2 before anything else, and that **drops the local
 collections** — so anything journalled since the last backup (notes, tags,
 screenshots) is gone at that point. Two things keep R2 ahead of that:
 
@@ -98,16 +98,16 @@ match — an idle machine produces no R2 traffic, which is what makes a two-minu
 cadence reasonable. A change reaches R2 within about two minutes of happening.
 
 ```bash
-./stop.sh                   # back up to R2, then stop the containers — optional
+./tradenote.sh stop                   # back up to R2, then stop the containers — optional
 ```
 
-With the agent installed `stop.sh` is optional: closing the lid costs you at most
+With the agent installed `tradenote.sh stop` is optional: closing the lid costs you at most
 the last couple of minutes. Use it when you want that window closed to zero
 before switching machines. Either way the backup refuses to run on an empty or
 unreadable database, so a broken run can never wipe the snapshot.
 
 This is what makes the Windows → Mac hand-off safe: work on one machine, let the
-agent (or `./stop.sh`) push to R2, then `./start.sh` on the other and the day's
+agent (or `./tradenote.sh stop`) push to R2, then `./tradenote.sh start` on the other and the day's
 work is there.
 
 ## MetaTrader 5 auto-sync
@@ -176,7 +176,7 @@ One-time setup:
 Then in MT5: **F4** → open `Experts/TradeNoteExport.mq5` → **F7** to compile →
 right-click Navigator → Refresh → drag **TradeNoteExport** onto any chart and
 tick **Allow Algo Trading**. A 🙂 in the chart corner means it's running. After
-that `./start.sh` works exactly as it does on Windows.
+that `./tradenote.sh start` works exactly as it does on Windows.
 
 Full details, including how the sync detects a closed terminal, are in
 [`mt5-sync/README.md`](mt5-sync/README.md).

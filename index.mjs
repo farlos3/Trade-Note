@@ -331,7 +331,7 @@ const setupApiRoutes = (app) => {
      * Gemini goes over plain REST rather than @google/genai on purpose: axios is
      * already a dependency, and adding one means rebuilding the image AND
      * recreating the container's anonymous node_modules volume, which is a known
-     * footgun in this project (see start.sh's ERR_MODULE_NOT_FOUND recovery).
+     * footgun in this project (see tradenote.sh's ERR_MODULE_NOT_FOUND recovery).
      */
     const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic() : null
     const geminiKey = process.env.GEMINI_API_KEY || null

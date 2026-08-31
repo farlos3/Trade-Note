@@ -120,7 +120,7 @@ ERROR: Atlas rejected the API key itself from this IP ($IP).
 
   Don't want to maintain this at all? Set the DATABASE Network Access to
   0.0.0.0/0 (allowed there, and what Render deployments need anyway), then run
-  start.sh --skip-ip. The database stays protected by its user/password + TLS.
+  tradenote.sh start --skip-ip. The database stays protected by its user/password + TLS.
 EOF
     exit 3
   fi

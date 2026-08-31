@@ -1,5 +1,38 @@
 #!/usr/bin/env bash
 #
+# TradeNote — one command for the whole project.
+#
+#   ./tradenote.sh                    same as `start`
+#   ./tradenote.sh start [flags]      restore from R2, bring the stack up, sync MT5,
+#                                     start the live feed  (--hot, --skip-sync, ...)
+#   ./tradenote.sh stop  [flags]      back up to R2, then stop the containers
+#   ./tradenote.sh save               one guarded R2 backup right now
+#   ./tradenote.sh status             containers, live feed, autosave, last backup
+#   ./tradenote.sh autosave install [minutes]
+#   ./tradenote.sh autosave status|logs|uninstall
+#
+# `autosave` is what makes `stop` optional. start RESTORES from R2 before anything
+# else, and restore_from_r2.py DROPs each collection -- so work journalled since the
+# last backup is destroyed, not merely stale. Depending on a human remembering a
+# shutdown command to avoid that is the actual bug; the scheduled job removes the
+# dependency, and the most an interruption can then cost is one interval.
+#
+# Run `./tradenote.sh start --help` / `stop --help` for each command's own flags.
+set -o pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+section() { printf '\n\033[36m=== %s ===\033[0m\n' "$1"; }
+warn()    { printf '\033[33mWARNING: %s\033[0m\n' "$1" >&2; }
+usage()   { sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# Windows schedules through PowerShell, macOS through launchd. Same two jobs and
+# the same underlying scripts -- only the scheduler differs.
+is_windows() { command -v powershell >/dev/null 2>&1; }
+
+# ---------------------------------------------------------------- start
+#
 # Start the whole TradeNote project.
 #   1. Start the TradeNote app in Docker (dev / local / prod compose file).
 #   2. Wait until the web app answers on its port.
@@ -28,22 +61,21 @@
 # different axis from --mode, which picks the compose file / image.
 #
 # Usage:
-#   ./start.sh                # full run, bundled app (fast)
-#   ./start.sh --hot          # Vite dev server + hot-reload, for development
-#   ./start.sh --mode prod    # published image
-#   ./start.sh --ip-only      # just refresh the Atlas IP whitelist
-#   ./start.sh --skip-sync    # don't read MetaTrader 5
-#   ./start.sh --skip-restore # keep the local DB; don't pull the R2 backup
-#   ./start.sh --skip-backup  # don't push the result back to R2
-set -o pipefail
-
+#   ./tradenote.sh start                # full run, bundled app (fast)
+#   ./tradenote.sh start --hot          # Vite dev server + hot-reload, for development
+#   ./tradenote.sh start --mode prod    # published image
+#   ./tradenote.sh start --ip-only      # just refresh the Atlas IP whitelist
+#   ./tradenote.sh start --skip-sync    # don't read MetaTrader 5
+#   ./tradenote.sh start --skip-restore # keep the local DB; don't pull the R2 backup
+#   ./tradenote.sh start --skip-backup  # don't push the result back to R2
+cmd_start() {
 # WHICH STACK to run. This is NOT the bundled-vs-hot switch -- see APP_ENV below.
 #   dev   this fork, built from source (docker-compose-dev.yml) + a local mongo
 #   local this fork, built from source, against the .env MONGO_URI
 #   prod  the PUBLISHED UPSTREAM image eleventrading/tradenote
 # "prod" is almost never what you want here: the upstream image is plain TradeNote,
 # so none of this fork's code is in it -- no /api/trades, no /api/account, no mongo
-# service -- and pointing start.sh at it makes the sync 404 and the restore/backup
+# service -- and pointing tradenote.sh start at it makes the sync 404 and the restore/backup
 # skip. Leave this on dev; use --hot if what you wanted was the Vite dev server.
 MODE="dev"
 # NODE_ENV handed to the container: "prod" serves the bundled build, "dev" runs the
@@ -52,9 +84,9 @@ MODE="dev"
 APP_ENV="prod"
 UPDATE_IP=0; SKIP_DOCKER=0; SKIP_SYNC=0; IP_ONLY=0; SKIP_RESTORE=0; SKIP_BACKUP=0
 
-usage() {
+start_usage() {
   cat <<'EOF'
-Usage: ./start.sh [options]
+Usage: ./tradenote.sh start [options]
   --mode dev|local|prod   compose file to use (default: dev)
   --hot                   run the Vite dev server (hot-reload) instead of the
                           bundled build. Slower to navigate — use while editing
@@ -85,8 +117,8 @@ while [[ $# -gt 0 ]]; do
     --skip-sync)   SKIP_SYNC=1; shift;;
     --skip-restore) SKIP_RESTORE=1; shift;;
     --skip-backup) SKIP_BACKUP=1; shift;;
-    -h|--help)     usage; exit 0;;
-    *) echo "Unknown arg: $1" >&2; usage; exit 64;;
+    -h|--help)     start_usage; exit 0;;
+    *) echo "Unknown arg: $1" >&2; start_usage; exit 64;;
   esac
 done
 
@@ -341,7 +373,7 @@ restore_from_r2() {
 
 # Push the current database back up to R2. The guards (refuse on an empty or
 # unreadable database, so a bad run can't overwrite the snapshot) live in the
-# shared script, which stop.sh calls too -- one place, no drift.
+# shared script, which tradenote.sh stop calls too -- one place, no drift.
 backup_to_r2() {
   section "Backing up to R2"
   bash "$ROOT_DIR/scripts/r2-backup.sh" --compose-file "$COMPOSE_FILE" || true
@@ -427,7 +459,7 @@ start_live_feed() {
   # Python reads a module once, at import: an agent started before an edit keeps
   # executing the old version for as long as it lives, and this agent is meant to
   # live for days. That is not theoretical -- it shipped wrong timestamps for
-  # hours after the broker-clock conversion was fixed, because ./start.sh saw a
+  # hours after the broker-clock conversion was fixed, because ./tradenote.sh start saw a
   # live process and said "already running" every time.
   #
   # Tracked by PID FILE rather than by pgrep, because pgrep does not exist in Git
@@ -446,7 +478,21 @@ start_live_feed() {
   # left behind by a dead agent went on reporting ALIVE once an unrelated process
   # inherited the number. start_live_feed then took the "already running" branch
   # and launched nothing, which is why Live could be dead after every single
-  # ./start.sh. The command line is what distinguishes the two, so it is checked.
+  # ./tradenote.sh start. The command line is what distinguishes the two, so it is checked.
+  # Bash's `kill` takes MSYS pids; the launcher below records WINDOWS ones, so on
+  # Windows it silently killed nothing. The old agent then stayed alive holding
+  # live-agent.log open, the replacement could not write to it, and every later
+  # ./tradenote.sh start saw that same live pid and started nothing -- the feed was dead for
+  # days while the script reported it healthy.
+  stop_live_pid() {
+    local pid="$1"
+    [[ -n "$pid" ]] || return 0
+    if command -v taskkill >/dev/null 2>&1; then
+      taskkill //PID "$pid" //F >/dev/null 2>&1 && return 0
+    fi
+    kill "$pid" 2>/dev/null || true
+  }
+
   pid_alive() {
     local pid="$1"
     [[ -n "$pid" ]] || return 1
@@ -484,7 +530,7 @@ start_live_feed() {
     done
     if [[ "$started_epoch" -gt 0 && "$newest_src" -gt "$started_epoch" ]]; then
       printf '\033[33mLive feed is older than mt5-sync/ — restarting it to pick up the changes.\033[0m\n'
-      kill "$live_pid" 2>/dev/null || true
+      stop_live_pid "$live_pid"
       sleep 1
     else
       printf '\033[32mLive feed already running.\033[0m\n'
@@ -497,7 +543,7 @@ start_live_feed() {
   # nohup + disown is enough on a Unix terminal but not on Windows: the agent
   # stays attached to the console that Git Bash is running in, and closing that
   # window tears down every process in it regardless of SIGHUP handling. The agent
-  # is meant to run for days, so it kept dying minutes after ./start.sh returned.
+  # is meant to run for days, so it kept dying minutes after ./tradenote.sh start returned.
   # Start-Process gives it its own hidden process, detached from this console --
   # and returns the WINDOWS pid, which is the one pid_alive above can verify.
   if command -v powershell >/dev/null 2>&1; then
@@ -505,7 +551,7 @@ start_live_feed() {
     # PowerShell writes the pid to the file itself, and its own output goes
     # nowhere. Capturing the pid through $(...) instead would hand the agent this
     # shell's stdout pipe: the command substitution then blocks until that pipe
-    # closes, which for an agent designed to run for days is never -- ./start.sh
+    # closes, which for an agent designed to run for days is never -- ./tradenote.sh start
     # would appear to hang, and killing it would take the agent down with it.
     powershell -NoProfile -Command \
       "(Start-Process -FilePath '$PY' \
@@ -560,9 +606,167 @@ fi
 section "Done"
 echo "App:   $APP_URL"
 if [[ "$APP_ENV" == "prod" ]]; then
-  printf '\033[90mMode:  bundled (fast). Frontend edits need a rebuild: npm run rebuild  |  hot-reload instead: ./start.sh --hot\033[0m\n'
+  printf '\033[90mMode:  bundled (fast). Frontend edits need a rebuild: npm run rebuild  |  hot-reload instead: ./tradenote.sh start --hot\033[0m\n'
 elif [[ "$APP_ENV" == "dev" ]]; then
   printf '\033[90mMode:  Vite dev server (hot-reload). Navigation is slower; drop --hot for the bundled build.\033[0m\n'
 fi
 printf '\033[90mLogs:  docker compose -f %s logs -f tradenote\033[0m\n' "$COMPOSE_FILE"
-printf '\033[90mIP:    only needed if Atlas Network Access is not 0.0.0.0/0  ->  ./start.sh --update-ip\033[0m\n'
+printf '\033[90mIP:    only needed if Atlas Network Access is not 0.0.0.0/0  ->  ./tradenote.sh start --update-ip\033[0m\n'
+}
+
+# ----------------------------------------------------------------- stop
+#
+# Stop the TradeNote project, pushing the session's work to R2 first.
+#
+# This is the other half of tradenote.sh start. tradenote.sh start RESTORES from R2 before anything
+# else, which DROPs the local collections -- so whatever was journalled during a
+# session (notes, tags, screenshots, day files) has to reach R2 before the next
+# start, or it is destroyed by that restore. Backing up at shutdown is what makes
+# the Windows -> Mac hand-off safe: sync MT5 on Windows, ./tradenote.sh stop, then
+# ./tradenote.sh start on the Mac and the day's work is there.
+#
+# The backup refuses to run on an empty or unreadable database (see
+# scripts/r2-backup.sh), so a broken session can never wipe the R2 snapshot.
+#
+# Usage:
+#   ./tradenote.sh stop                 # back up, then stop the containers
+#   ./tradenote.sh stop --skip-backup   # just stop (the session's work stays local only)
+#   ./tradenote.sh stop --keep-running  # back up but leave the app running
+#   ./tradenote.sh stop --mode prod     # compose file to use (default: dev)
+cmd_stop() {
+MODE="dev"; SKIP_BACKUP=0; KEEP_RUNNING=0
+
+stop_usage() {
+  cat <<'EOF'
+Usage: ./tradenote.sh stop [options]
+  --mode dev|local|prod   compose file to use (default: dev)
+  --skip-backup           don't push to R2 before stopping. The session's work
+                          then exists only in the local database, and the next
+                          ./tradenote.sh start will drop it when it restores from R2.
+  --keep-running          back up but leave the containers up
+  -h, --help              show this help
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --mode)         MODE="${2:-}"; shift 2;;
+    --skip-backup)  SKIP_BACKUP=1; shift;;
+    --keep-running) KEEP_RUNNING=1; shift;;
+    -h|--help)      stop_usage; exit 0;;
+    *) echo "Unknown arg: $1" >&2; stop_usage; exit 64;;
+  esac
+done
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+section() { printf '\n\033[36m=== %s ===\033[0m\n' "$1"; }
+warn()    { printf '\033[33mWARNING: %s\033[0m\n' "$1" >&2; }
+
+case "$MODE" in
+  dev)   COMPOSE_FILE="docker-compose-dev.yml";;
+  local) COMPOSE_FILE="docker-compose-local.yml";;
+  prod)  COMPOSE_FILE="docker-compose.yml";;
+  *) echo "Invalid --mode: $MODE (use dev|local|prod)" >&2; exit 64;;
+esac
+
+if ! docker info >/dev/null 2>&1; then
+  warn "Docker is not running — nothing to stop, and the backup needs the mongo container."
+  exit 0
+fi
+
+# 1. --- Back up while MongoDB is still up -------------------------------------
+if [[ "$SKIP_BACKUP" -eq 0 ]]; then
+  section "Backing up to R2 before shutdown"
+  rc=0
+  bash "$ROOT_DIR/scripts/r2-backup.sh" --compose-file "$COMPOSE_FILE" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    # Stopping now would leave the session's work only in the local Docker
+    # volume, and the next start would drop it. Keep everything up instead.
+    warn "Backup failed (exit $rc) — leaving the app RUNNING so nothing is lost. Fix the error above and re-run ./tradenote.sh stop, or use --skip-backup to stop anyway."
+    exit "$rc"
+  fi
+fi
+
+# 2. --- Stop the containers ---------------------------------------------------
+if [[ "$KEEP_RUNNING" -eq 1 ]]; then
+  printf '\n\033[32mBackup done; app left running.\033[0m\n'
+  exit 0
+fi
+
+section "Stopping TradeNote"
+if docker compose -f "$COMPOSE_FILE" down; then
+  printf '\n\033[32mStopped. Data is in R2 — run ./tradenote.sh start on the other machine.\033[0m\n'
+else
+  warn "docker compose down failed — see the message above."
+  exit 1
+fi
+}
+
+cmd_save() {
+  bash "$ROOT_DIR/scripts/r2-backup.sh" "$@"
+}
+
+autosave() {
+  local action="${1:-install}" minutes="${2:-2}"
+  if is_windows; then
+    case "$action" in
+      install)   powershell -NoProfile -ExecutionPolicy Bypass -File "$ROOT_DIR/scripts/install-agents.ps1" -BackupMinutes "$minutes";;
+      status)    powershell -NoProfile -ExecutionPolicy Bypass -File "$ROOT_DIR/scripts/install-agents.ps1" -Status;;
+      logs)      powershell -NoProfile -ExecutionPolicy Bypass -File "$ROOT_DIR/scripts/install-agents.ps1" -Logs;;
+      uninstall) powershell -NoProfile -ExecutionPolicy Bypass -File "$ROOT_DIR/scripts/install-agents.ps1" -Uninstall;;
+      *) echo "Unknown autosave action: $action (install|status|logs|uninstall)" >&2; return 64;;
+    esac
+    return $?
+  fi
+  local installer="$ROOT_DIR/scripts/install-backup-agent.sh"
+  case "$action" in
+    install)   bash "$installer" --interval $((minutes * 60));;
+    status)    bash "$installer" --status;;
+    logs)      bash "$installer" --logs;;
+    uninstall) bash "$installer" --uninstall;;
+    *) echo "Unknown autosave action: $action (install|status|logs|uninstall)" >&2; return 64;;
+  esac
+}
+
+cmd_status() {
+  section "Containers"
+  docker compose -f docker-compose-dev.yml ps --format '  {{.Name}}  {{.Status}}' 2>/dev/null \
+    || warn "Docker is not running."
+
+  section "Live MT5 feed"
+  local pid=""
+  [[ -f "$ROOT_DIR/mt5-sync/.live-agent.pid" ]] && pid="$(tr -dc '0-9' < "$ROOT_DIR/mt5-sync/.live-agent.pid")"
+  if [[ -n "$pid" ]] && { tasklist //FI "PID eq $pid" //NH 2>/dev/null | grep -q "$pid" || kill -0 "$pid" 2>/dev/null; }; then
+    printf '  running (pid %s)\n' "$pid"
+  else
+    printf '  not running — ./tradenote.sh start\n'
+  fi
+  [[ -f "$ROOT_DIR/mt5-sync/live-agent.log" ]] && tail -n 1 "$ROOT_DIR/mt5-sync/live-agent.log" | sed 's/^/  /'
+
+  section "Autosave to R2"
+  autosave status
+  # The fingerprint file is written only after a SUCCESSFUL upload, so its mtime is
+  # the honest answer to "when did work last reach R2" -- unlike the log, which also
+  # records attempts.
+  local fp="$ROOT_DIR/backup/logs/.last-backup-fingerprint"
+  if [[ -f "$fp" ]]; then
+    printf '  last successful backup: %s\n' "$(date -r "$fp" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || stat -c %y "$fp" 2>/dev/null)"
+  else
+    printf '  no backup has completed yet on this machine\n'
+  fi
+}
+
+cmd="${1:-start}"
+[[ $# -gt 0 ]] && shift
+
+case "$cmd" in
+  start)    cmd_start "$@";;
+  stop)     cmd_stop "$@";;
+  save)     cmd_save "$@";;
+  status)   cmd_status;;
+  autosave) autosave "$@";;
+  -h|--help|help) usage;;
+  *) echo "Unknown command: $cmd" >&2; usage; exit 64;;
+esac

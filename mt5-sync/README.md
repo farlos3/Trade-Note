@@ -48,7 +48,7 @@ does not work under the Wine build MT5 for Mac ships:
 4. Drag **TradeNoteExport** onto any chart, tick **Allow Algo Trading**, OK
 
 A 🙂 in the chart corner means it is running, and the chart shows the time of the
-last export. `./start.sh` then picks the data up with no further setup.
+last export. `./tradenote.sh start` then picks the data up with no further setup.
 
 The EA writes `tradenote_deals.json` into `<data folder>/MQL5/Files` every
 `ExportIntervalSeconds` (5 by default), and immediately whenever a deal opens or

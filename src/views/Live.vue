@@ -177,7 +177,7 @@ onUnmounted(() => {
                     Stale — no update for {{ secondsSinceFrame }}s. Is the live agent running?
                 </span>
                 <span v-else class="liveLabelStale">
-                    Waiting for the live agent (mt5-sync/mt5_live.py) — start it, or run ./start.sh
+                    Waiting for the live agent (mt5-sync/mt5_live.py) — start it, or run ./tradenote.sh start
                 </span>
                 <span v-if="snapshot" class="liveMeta ms-auto">
                     MT5 #{{ snapshot.login }} · {{ snapshot.currency }}

@@ -28,9 +28,16 @@ changes.
   to `index.mjs` need `docker compose -f docker-compose-dev.yml restart tradenote`**,
   frontend hot-reloads.
 - `docker-compose.yml` / `docker-compose-local.yml` — prod / local-image variants.
-- `start.sh` — restore DB from R2 (+ safety mongodump) then bring stack up.
-- `stop.sh` — backup DB to R2 then bring stack down. Used for cross-machine moves
-  (backup on machine A, restore on machine B).
+- `tradenote.sh` — **the only entry script** (replaced `start.sh` + `stop.sh`):
+  - `start` — restore DB from R2 (+ safety mongodump), bring the stack up, sync MT5,
+    start the live feed. Flags: `--hot`, `--mode`, `--skip-{docker,sync,restore,backup}`.
+  - `stop` — back up to R2, then stop the containers. Cross-machine moves (back up on
+    machine A, restore on machine B). Optional once `autosave` is installed.
+  - `save` — one guarded R2 backup now (`scripts/r2-backup.sh`).
+  - `status` — containers, live feed pid, scheduler state, last successful backup.
+  - `autosave install [minutes] | status | logs | uninstall` — registers the periodic
+    backup + MT5 sync jobs (Windows: `scripts/install-agents.ps1`; macOS:
+    `scripts/install-backup-agent.sh`), so no shutdown command is needed to save.
 
 ## Timezone gotcha (important)
 
@@ -172,7 +179,7 @@ closed terminal is never pushed as a zero-balance account.
 |------|---------|
 | `backup/backup_to_r2.py` | Dump Mongo → parquet → R2 (connects `localhost:27017`). |
 | `backup/restore_from_r2.py` | Pull latest parquet from R2 → restore into Mongo. |
-| `scripts/r2-backup.sh` | Wrapper invoked by scheduled task / `stop.sh`. |
+| `scripts/r2-backup.sh` | Wrapper invoked by scheduled task / `tradenote.sh stop`. |
 | `scripts/seed-mock-data.mjs`, `clear-mock-data.mjs`, `check-data.mjs` | Dev data seed / wipe / inspect. |
 | `scripts/migrate-screenshots-to-r2.mjs` | One-off: move legacy screenshots into R2. |
 | `scripts/run-backup.sh`, `mt5-sync/run-sync.sh` | Wrappers the schedulers call: resolve PATH + a Python that has the deps, cap the log, skip quietly when Docker/MT5 is down. |

@@ -7,7 +7,7 @@
 # database that is empty -- or whose state could not be read at all -- would
 # destroy the only remaining copy of the history. Both cases refuse to upload.
 #
-# Shared by start.sh (after the MT5 sync) and stop.sh (before shutting down), so
+# Shared by tradenote.sh start (after the MT5 sync) and tradenote.sh stop (before shutting down), so
 # the guard lives in exactly one place.
 #
 # Usage: scripts/r2-backup.sh [--compose-file <file>]

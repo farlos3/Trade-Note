@@ -79,5 +79,5 @@ Next, inside MetaTrader 5 (these steps are GUI-only -- MetaEditor's headless
   3. In the terminal, right-click Navigator -> Refresh
   4. Drag TradeNoteExport onto any chart, tick "Allow Algo Trading", OK
 A smiley in the chart corner means it is running; the chart shows the time of
-the last export. Then ./start.sh picks the data up automatically.
+the last export. Then ./tradenote.sh start picks the data up automatically.
 EOF

@@ -6,10 +6,10 @@
   The Windows half of scripts/install-backup-agent.sh and
   mt5-sync/install-sync-agent.sh, which are macOS LaunchAgents and do nothing
   here. Without this, a Windows machine only ever backs up at the end of
-  ./start.sh and during ./stop.sh -- so a day left running and then interrupted
+  ./tradenote.sh start and during ./tradenote.sh stop -- so a day left running and then interrupted
   has no snapshot for any of it.
 
-  That gap has teeth, because ./start.sh RESTORES from R2 before anything else
+  That gap has teeth, because ./tradenote.sh start RESTORES from R2 before anything else
   and restore_from_r2.py DROPs each collection before writing it. Anything
   journalled since the last backup is gone at that point, not merely stale.
 
