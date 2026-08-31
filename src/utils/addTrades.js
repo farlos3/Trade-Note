@@ -2141,8 +2141,11 @@ export async function useUploadTrades(param99, param0) {
             object.set("dateUnix", Number(param1))
             object.set("openPositions", param3)
             if (param2 == "trades") {
-                object.set("executions", executions[param1])
-                object.set("trades", trades[param1])
+                // Same missing-day case as in uploadFunction: write an empty array
+                // rather than leaving the field unset, so every day document has the
+                // shape the readers expect.
+                object.set("executions", executions[param1] || [])
+                object.set("trades", trades[param1] || [])
                 object.set("blotter", blotter[param1])
                 object.set("pAndL", pAndL[param1])
             }
@@ -2201,10 +2204,13 @@ export async function useUploadTrades(param99, param0) {
             for (const key of keys) {
                 //console.log(" key "+key)
                 //console.log(" trades "+JSON.stringify(trades[key]))
-                let checkIfOpenPositions = trades[key].findIndex(x => x.openPosition == true)
-                //console.log(" checkIfOpenPositions "+checkIfOpenPositions)
-
-                checkIfOpenPositions != -1 ? checkIfOpenPositions = true : checkIfOpenPositions = false
+                // A date can reach here with executions but no assembled trades -- a day
+                // whose executions all still belong to open positions is the ordinary
+                // case. Reading .findIndex off that missing entry threw an UNCAUGHT
+                // exception inside the /api/trades request, which killed the whole
+                // server mid-sync and restart-looped it, so the app served nothing at
+                // all (no history, dropped connections) until the next start.
+                const checkIfOpenPositions = (trades[key] || []).some(x => x.openPosition == true)
                 const promise = await uploadToParse(key, param, checkIfOpenPositions)
                 //console.log("promise " + JSON.stringify(promise))
                 if (promise == "resolve") resolve()
