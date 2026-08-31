@@ -144,8 +144,15 @@ function Install-Job($name, $script, $minutes) {
     # -lc so the login profile sets PATH the way an interactive Git Bash would;
     # the scripts also add Docker's own directory themselves, since a task's
     # environment is thinner than a terminal's.
+    #
+    # Launched through run-hidden.vbs rather than directly: bash.exe is a console
+    # program, so running it as the action flashed a window on the desktop every
+    # single fire -- once a minute, all day. The -Hidden setting below does not
+    # cover that; it only hides the task's row in the Task Scheduler UI.
     $cmd = "cd '$repoBash' && ./$script"
-    $action = New-ScheduledTaskAction -Execute $bash -Argument "-lc `"$cmd`"" -WorkingDirectory $RepoRoot
+    $vbs = Join-Path $RepoRoot 'scripts\run-hidden.vbs'
+    $action = New-ScheduledTaskAction -Execute 'wscript.exe' `
+        -Argument "`"$vbs`" `"$bash`" `"-lc`" `"$cmd`"" -WorkingDirectory $RepoRoot
 
     # Repeat from now. -AtStartup would fire before Docker Desktop exists, and both
     # scripts already skip quietly when the database is unreachable.
