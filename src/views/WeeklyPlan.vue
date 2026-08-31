@@ -29,6 +29,16 @@ import NoData from '../components/NoData.vue'
 import { timeZoneTrade } from '../stores/globals'
 import { saveWeeklyPlan, markPlanReviewed, evaluateWeeklyGates, loadWeekNotes, planAttachmentIsImage, isWeekendPlanningWindow, isMondayReviewWindow } from '../utils/weeklyGates'
 
+// Grows the textarea to fit content as the user types, but never shrinks
+// below its rows-defined default -- that min height is captured once, from
+// the browser's own layout, before the first override.
+function resizePlanInput(el) {
+    if (!el.dataset.minH) el.dataset.minH = el.offsetHeight
+    el.style.height = 'auto'
+    el.style.height = Math.max(el.scrollHeight, Number(el.dataset.minH)) + 'px'
+}
+const vAutoGrow = { mounted: resizePlanInput, updated: resizePlanInput }
+
 const loaded = ref(false)
 const weekNotes = ref([])
 
@@ -96,9 +106,12 @@ onUnmounted(() => {
     Object.values(pickedUrls).forEach((p) => URL.revokeObjectURL(p.url))
 })
 
-const hasPdf = (w) => !!(files[w.dateUnix] || w.planPdfUrl || w.planPdfBase64)
+const hasPdf = (w) => !!(files[w.dateUnix] || (!removals[w.dateUnix] && (w.planPdfUrl || w.planPdfBase64)))
 const pdfHref = (w) => pickedUrlFor(w.dateUnix) || w.planPdfUrl || w.planPdfBase64 || ''
 const pdfName = (w) => (files[w.dateUnix] && files[w.dateUnix].name) || w.planPdfName || 'plan.pdf'
+/* Only an image is worth a column of its own. A PDF cannot be shown in place, and
+   a card standing in for one told the trader nothing a link does not. */
+const hasImageChart = (w) => hasPdf(w) && isImageAttachment(w)
 const isImageAttachment = (w) => {
     const file = files[w.dateUnix]
     return file ? file.type.startsWith('image/') : planAttachmentIsImage(w)
@@ -174,10 +187,24 @@ const reviewing = ref(null)
  * actual keystroke, and until then this reflects the database. */
 const draftFor = (w) => (drafts[w.dateUnix] !== undefined ? drafts[w.dateUnix] : (w.planText || ''))
 const setDraft = (dateUnix, v) => { drafts[dateUnix] = v }
-const isDirty = (w) => draftFor(w) !== (w.planText || '') || !!files[w.dateUnix]
+const isDirty = (w) => draftFor(w) !== (w.planText || '') || !!files[w.dateUnix] || !!removals[w.dateUnix]
 
 function onFileChange(dateUnix, event) {
     files[dateUnix] = (event.target.files && event.target.files[0]) || null
+    if (files[dateUnix]) removals[dateUnix] = false
+}
+
+/* Taking a chart off is a pending edit like any other: it shows immediately, but
+   nothing leaves the database until Save. A picked-but-unsaved file needs no
+   record change, so clearing it is enough -- the file input is keyed by this
+   counter so a fresh, empty one replaces the element that still names the file.
+   Without this a wrong chart could only be replaced, never removed. */
+const removals = reactive({})
+const pickerNonce = reactive({})
+function clearFile(w) {
+    if (files[w.dateUnix]) files[w.dateUnix] = null
+    else removals[w.dateUnix] = true
+    pickerNonce[w.dateUnix] = (pickerNonce[w.dateUnix] || 0) + 1
 }
 
 async function save(w) {
@@ -187,7 +214,7 @@ async function save(w) {
     const file = files[w.dateUnix] || null
     saving.value = w.dateUnix
     try {
-        await saveWeeklyPlan(w.dateUnix, { text, file })
+        await saveWeeklyPlan(w.dateUnix, { text, file, removeFile: !!removals[w.dateUnix] })
         // Re-read rather than patch the local copy. Only saveWeeklyPlan knows where
         // the PDF actually landed (an R2 URL, or inline base64 when R2 is off), so
         // guessing here is how the viewer ends up claiming "no PDF attached" on a
@@ -195,6 +222,7 @@ async function save(w) {
         // so replacing weekNotes does not disturb anything half-typed.
         weekNotes.value = await loadWeekNotes()
         files[w.dateUnix] = null
+        removals[w.dateUnix] = false
         savedAt.value = w.dateUnix
         setTimeout(() => { if (savedAt.value === w.dateUnix) savedAt.value = null }, 2000)
     } catch (e) {
@@ -271,63 +299,82 @@ onBeforeMount(async () => {
                 </span>
             </div>
 
-            <div class="planBody">
-                <label class="planLabel">
-                    <i class="uil uil-clipboard-notes me-1"></i>Plan
-                    <span v-if="savedAt === w.dateUnix" class="savedTag">saved</span>
-                    <span v-else-if="isDirty(w)" class="unsavedTag">unsaved</span>
-                </label>
-                <textarea class="form-control planInput" rows="5"
-                    placeholder="Bias, levels, the setups you will take — and what would make you stand aside."
-                    :value="draftFor(w)" v-on:input="setDraft(w.dateUnix, $event.target.value)"></textarea>
-
-                <div class="planFileRow">
-                    <a v-if="hasPdf(w)" :href="pdfHref(w)" target="_blank" rel="noopener" class="planFileLink">
-                        <i class="uil me-1" :class="isImageAttachment(w) ? 'uil-image-v' : 'uil-file-alt'"></i>{{ pdfName(w) }}
-                        <i class="uil uil-external-link-alt ms-1"></i>
+            <!-- Chart on the left, the writing on the right: the chart is the thing
+                 the plan is about, so it is read beside the words rather than found
+                 below them, and the two columns fill a width one column left empty. -->
+            <div class="planBody" :class="{ split: hasImageChart(w) }">
+                <div class="planChartCol">
+                    <!-- An image chart is shown in place. A chart you can see without
+                         opening anything is the difference between re-reading the plan
+                         and clicking past it. A PDF stays a link -- browsers cannot be
+                         relied on to render one inline. -->
+                    <a v-if="hasPdf(w) && isImageAttachment(w)" :href="pdfHref(w)" target="_blank"
+                        rel="noopener" class="planChartLink">
+                        <img :src="pdfHref(w)" :alt="pdfName(w)" class="planChart" loading="lazy">
+                        <span class="planChartCaption">
+                            <i class="uil uil-image-v me-1"></i>{{ pdfName(w) }}
+                            <i class="uil uil-external-link-alt ms-1"></i>
+                        </span>
                     </a>
-                    <span v-else class="planFileNone">No chart attached</span>
-                    <input type="file" accept="application/pdf,.pdf,image/*"
-                        class="form-control form-control-sm planFileInput"
-                        v-on:change="onFileChange(w.dateUnix, $event)">
+                    <a v-else :href="pdfHref(w)" target="_blank" rel="noopener" class="planChartFile">
+                        <i class="uil uil-file-alt"></i>{{ pdfName(w) }}
+                        <i class="uil uil-external-link-alt"></i>
+                    </a>
+                    <button type="button" class="planChartRemove" v-on:click="clearFile(w)">
+                        <i class="uil uil-times me-1"></i>Remove chart
+                    </button>
                 </div>
-                <!-- An image chart is shown in place. A chart you can see without
-                     opening anything is the difference between re-reading the plan
-                     and clicking past it. A PDF stays a link -- browsers cannot be
-                     relied on to render one inline. -->
-                <a v-if="hasPdf(w) && isImageAttachment(w)" :href="pdfHref(w)" target="_blank"
-                    rel="noopener" class="planChartLink">
-                    <img :src="pdfHref(w)" :alt="pdfName(w)" class="planChart" loading="lazy">
-                </a>
 
-                <!-- Written re-check: required before this week can be marked
-                     reviewed, exactly as the Monday popup requires it. -->
-                <div v-if="!w.planReviewed" class="reviewNoteBlock">
+                <div class="planFormCol">
                     <label class="planLabel">
-                        <i class="uil uil-repeat me-1"></i>Re-check — what are you trading this week?
+                        <i class="uil uil-clipboard-notes me-1"></i>Plan
+                        <span v-if="savedAt === w.dateUnix" class="savedTag">saved</span>
+                        <span v-else-if="isDirty(w)" class="unsavedTag">unsaved</span>
                     </label>
-                    <textarea class="form-control planInput" rows="2"
-                        placeholder="In your own words: the levels that matter and what would make you stand aside."
-                        :value="reviewNoteFor(w)"
-                        v-on:input="setReviewNote(w.dateUnix, $event.target.value)"></textarea>
-                    <div class="reviewHint" :class="{ ok: reviewNoteLeft(w) === 0 }">
-                        {{ reviewNoteLeft(w) > 0 ? reviewNoteLeft(w) + ' more characters' : 'Re-check written' }}
-                    </div>
-                </div>
-                <div v-else-if="w.planReviewNote" class="reviewNoteDone">
-                    <label class="planLabel"><i class="uil uil-repeat me-1"></i>Re-check</label>
-                    <div class="reviewNoteText">{{ w.planReviewNote }}</div>
-                </div>
+                    <textarea class="form-control planInput" rows="2" v-auto-grow
+                        placeholder="Bias, levels, the setups you will take — and what would make you stand aside."
+                        :value="draftFor(w)" v-on:input="setDraft(w.dateUnix, $event.target.value)"></textarea>
 
-                <div class="planActions">
-                    <button v-if="!w.planReviewed" class="btn btn-outline-secondary btn-sm me-2"
-                        :disabled="!canReview(w) || reviewing === w.dateUnix" v-on:click="markReviewed(w)">
-                        {{ reviewing === w.dateUnix ? 'Saving…' : 'Mark reviewed' }}
-                    </button>
-                    <button class="btn btn-outline-success btn-sm" :disabled="!isDirty(w) || saving === w.dateUnix"
-                        v-on:click="save(w)">
-                        {{ saving === w.dateUnix ? 'Saving…' : 'Save plan' }}
-                    </button>
+                    <div class="planFileRow">
+                        <input type="file" accept="application/pdf,.pdf,image/*"
+                            :key="'picker-' + w.dateUnix + '-' + (pickerNonce[w.dateUnix] || 0)"
+                            class="form-control form-control-sm planFileInput"
+                            v-on:change="onFileChange(w.dateUnix, $event)">
+                        <button v-if="hasPdf(w)" type="button" class="planChartRemove"
+                            v-on:click="clearFile(w)">
+                            <i class="uil uil-times me-1"></i>Remove
+                        </button>
+                    </div>
+
+                    <!-- Written re-check: required before this week can be marked
+                         reviewed, exactly as the Monday popup requires it. -->
+                    <div v-if="!w.planReviewed" class="reviewNoteBlock">
+                        <label class="planLabel">
+                            <i class="uil uil-repeat me-1"></i>Re-check — what are you trading this week?
+                        </label>
+                        <textarea class="form-control planInput" rows="2" v-auto-grow
+                            placeholder="In your own words: the levels that matter and what would make you stand aside."
+                            :value="reviewNoteFor(w)"
+                            v-on:input="setReviewNote(w.dateUnix, $event.target.value)"></textarea>
+                        <div class="reviewHint" :class="{ ok: reviewNoteLeft(w) === 0 }">
+                            {{ reviewNoteLeft(w) > 0 ? reviewNoteLeft(w) + ' more characters' : 'Re-check written' }}
+                        </div>
+                    </div>
+                    <div v-else-if="w.planReviewNote" class="reviewNoteDone">
+                        <label class="planLabel"><i class="uil uil-repeat me-1"></i>Re-check</label>
+                        <div class="reviewNoteText">{{ w.planReviewNote }}</div>
+                    </div>
+
+                    <div class="planActions">
+                        <button v-if="!w.planReviewed" class="btn btn-outline-secondary btn-sm me-2"
+                            :disabled="!canReview(w) || reviewing === w.dateUnix" v-on:click="markReviewed(w)">
+                            {{ reviewing === w.dateUnix ? 'Saving…' : 'Mark reviewed' }}
+                        </button>
+                        <button class="btn btn-outline-success btn-sm" :disabled="!isDirty(w) || saving === w.dateUnix"
+                            v-on:click="save(w)">
+                            {{ saving === w.dateUnix ? 'Saving…' : 'Save plan' }}
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -345,38 +392,42 @@ onBeforeMount(async () => {
                     {{ w.planReviewed ? 'Reviewed' : 'Not reviewed' }}
                 </span>
             </div>
-            <div class="planBody">
-                <label class="planLabel">
-                    <i class="uil uil-clipboard-notes me-1"></i>Plan
-                    <span v-if="savedAt === w.dateUnix" class="savedTag">saved</span>
-                    <span v-else-if="isDirty(w)" class="unsavedTag">unsaved</span>
-                </label>
-                <textarea class="form-control planInput" rows="3"
-                    placeholder="No plan was written for this week."
-                    :value="draftFor(w)" v-on:input="setDraft(w.dateUnix, $event.target.value)"></textarea>
-                <div class="planFileRow">
-                    <a v-if="hasPdf(w)" :href="pdfHref(w)" target="_blank" rel="noopener" class="planFileLink">
-                        <i class="uil me-1" :class="isImageAttachment(w) ? 'uil-image-v' : 'uil-file-alt'"></i>{{ pdfName(w) }}
-                        <i class="uil uil-external-link-alt ms-1"></i>
+            <div class="planBody" :class="{ split: hasImageChart(w) }">
+                <div v-if="hasImageChart(w)" class="planChartCol">
+                    <a :href="pdfHref(w)" target="_blank" rel="noopener" class="planChartLink">
+                        <img :src="pdfHref(w)" :alt="pdfName(w)" class="planChart" loading="lazy">
+                        <span class="planChartCaption">
+                            <i class="uil uil-image-v me-1"></i>{{ pdfName(w) }}
+                            <i class="uil uil-external-link-alt ms-1"></i>
+                        </span>
                     </a>
-                    <span v-else class="planFileNone">No chart attached</span>
-                    <input type="file" accept="application/pdf,.pdf,image/*"
-                        class="form-control form-control-sm planFileInput"
-                        v-on:change="onFileChange(w.dateUnix, $event)">
                 </div>
-                <!-- An image chart is shown in place. A chart you can see without
-                     opening anything is the difference between re-reading the plan
-                     and clicking past it. A PDF stays a link -- browsers cannot be
-                     relied on to render one inline. -->
-                <a v-if="hasPdf(w) && isImageAttachment(w)" :href="pdfHref(w)" target="_blank"
-                    rel="noopener" class="planChartLink">
-                    <img :src="pdfHref(w)" :alt="pdfName(w)" class="planChart" loading="lazy">
-                </a>
-                <div class="planActions">
-                    <button class="btn btn-outline-success btn-sm" :disabled="!isDirty(w) || saving === w.dateUnix"
-                        v-on:click="save(w)">
-                        {{ saving === w.dateUnix ? 'Saving…' : 'Save plan' }}
-                    </button>
+
+                <div class="planFormCol">
+                    <label class="planLabel">
+                        <i class="uil uil-clipboard-notes me-1"></i>Plan
+                        <span v-if="savedAt === w.dateUnix" class="savedTag">saved</span>
+                        <span v-else-if="isDirty(w)" class="unsavedTag">unsaved</span>
+                    </label>
+                    <textarea class="form-control planInput" rows="2" v-auto-grow
+                        placeholder="No plan was written for this week."
+                        :value="draftFor(w)" v-on:input="setDraft(w.dateUnix, $event.target.value)"></textarea>
+                    <div class="planFileRow">
+                        <input type="file" accept="application/pdf,.pdf,image/*"
+                            :key="'picker-' + w.dateUnix + '-' + (pickerNonce[w.dateUnix] || 0)"
+                            class="form-control form-control-sm planFileInput"
+                            v-on:change="onFileChange(w.dateUnix, $event)">
+                        <button v-if="hasPdf(w)" type="button" class="planChartRemove"
+                            v-on:click="clearFile(w)">
+                            <i class="uil uil-times me-1"></i>Remove
+                        </button>
+                    </div>
+                    <div class="planActions">
+                        <button class="btn btn-outline-success btn-sm" :disabled="!isDirty(w) || saving === w.dateUnix"
+                            v-on:click="save(w)">
+                            {{ saving === w.dateUnix ? 'Saving…' : 'Save plan' }}
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -498,10 +549,29 @@ onBeforeMount(async () => {
     background: rgba(0, 202, 115, 0.1);
 }
 
+/* One column until there is a chart to put beside the writing: an empty left
+   half is worse balance than none, and the file picker already says a chart
+   can be added. Below the split the chart would be a thumbnail and the plan a
+   slot, so the narrow layout stacks chart-then-plan. */
 .planBody {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.25rem;
+    align-items: start;
     margin-top: 0.9rem;
     padding-top: 0.7rem;
     border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+@media (min-width: 992px) {
+    .planBody.split {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+}
+
+.planChartCol,
+.planFormCol {
+    min-width: 0;
 }
 
 .planLabel {
@@ -521,7 +591,8 @@ onBeforeMount(async () => {
 .planInput {
     font-size: 0.9rem;
     line-height: 1.55;
-    resize: vertical;
+    resize: none;
+    overflow-y: hidden;
 }
 
 .planFileRow {
@@ -532,22 +603,10 @@ onBeforeMount(async () => {
     margin-top: 0.6rem;
 }
 
-.planFileLink {
-    font-size: 0.85rem;
-    color: #2f9bff;
-}
-
-.planFileLink:hover {
-    text-decoration: underline;
-}
-
-.planFileNone {
-    font-size: 0.85rem;
-    color: var(--white-60);
-}
-
+/* Full width like the textareas above and below it -- a 16rem picker in a
+   column this wide just left a hole on its right. */
 .planFileInput {
-    max-width: 16rem;
+    flex: 1 1 auto;
 }
 
 .reviewNoteBlock,
@@ -575,15 +634,39 @@ onBeforeMount(async () => {
 
 .planChartLink {
     display: block;
-    margin-top: 0.6rem;
 }
 
 .planChart {
     display: block;
-    max-width: 100%;
-    max-height: 22rem;
+    width: 100%;
+    max-height: 24rem;
+    object-fit: contain;
     border-radius: var(--radius-sm);
     border: 1px solid var(--border-subtle);
+}
+
+.planChartCaption {
+    display: block;
+    margin-top: 0.4rem;
+    font-size: 0.8rem;
+    color: #2f9bff;
+}
+
+.planChartLink:hover .planChartCaption {
+    text-decoration: underline;
+}
+
+.planChartRemove {
+    flex: 0 0 auto;
+    padding: 0;
+    font-size: 0.78rem;
+    color: var(--white-60);
+    background: none;
+    border: none;
+}
+
+.planChartRemove:hover {
+    color: #ef4444;
 }
 
 .planActions {
