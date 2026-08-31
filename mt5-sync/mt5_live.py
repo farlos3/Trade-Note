@@ -66,7 +66,17 @@ def read_live(backend):
         return None
     if not backend.refresh():
         return None
-    return backend.live_snapshot()
+    snap = backend.live_snapshot()
+    if snap is None:
+        # The terminal is open but this process is not attached to it: either it
+        # started while MT5 was closed (main() skips initialize() then) or MT5 was
+        # restarted under a long-lived agent. Without re-attaching here the agent
+        # sits silent for days -- alive, so ./tradenote.sh start calls it healthy and starts
+        # no replacement, while every read returns nothing. Only reached with a
+        # terminal already running, so this cannot LAUNCH one.
+        if backend.initialize():
+            snap = backend.live_snapshot()
+    return snap
 
 
 def trigger_journal_sync():
