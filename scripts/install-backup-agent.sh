@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
 # Back up the database to R2 on a schedule (macOS LaunchAgent), so the day's work
-# reaches R2 without having to remember ./stop.sh.
+# reaches R2 without having to remember ./tradenote.sh stop.
 #
-# Why this matters: ./start.sh RESTORES from R2 before anything else, and that
+# Why this matters: ./tradenote.sh start RESTORES from R2 before anything else, and that
 # DROPS the local collections. Anything journalled since the last backup -- notes,
-# tags, screenshots -- is gone at that point. stop.sh backs up on the way out, but
+# tags, screenshots -- is gone at that point. tradenote.sh stop backs up on the way out, but
 # only if you remember to use it; this closes the gap.
 #
 # Safe to run often, in two senses. run-backup.sh compares a fingerprint of the
@@ -68,7 +68,7 @@ case "$ACTION" in
   uninstall)
     launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null && echo "Unloaded $LABEL."
     [[ -f "$PLIST" ]] && { rm -f "$PLIST"; echo "Removed $PLIST"; }
-    echo "Done. Backups now only happen via ./stop.sh or ./start.sh."
+    echo "Done. Backups now only happen via ./tradenote.sh stop or ./tradenote.sh start."
     exit 0;;
 esac
 
@@ -113,7 +113,7 @@ cat <<EOF
   logs:    ./scripts/install-backup-agent.sh --logs
   remove:  ./scripts/install-backup-agent.sh --uninstall
 
-At this cadence ./stop.sh is optional: the most you can lose by closing the lid
+At this cadence ./tradenote.sh stop is optional: the most you can lose by closing the lid
 is whatever happened in the last couple of minutes. Keep using it when you want
 that window closed to zero before switching machines.
 EOF

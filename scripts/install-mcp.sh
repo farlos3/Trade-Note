@@ -128,6 +128,6 @@ Next:
   3. Ask e.g. "Analyse my trading behaviour this month" or
      "Am I revenge trading? Use find_behavior_patterns."
 
-The database must be running (./start.sh) for the tools to return anything.
+The database must be running (./tradenote.sh start) for the tools to return anything.
 EOF
 fi

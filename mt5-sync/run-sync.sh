@@ -6,7 +6,7 @@
 # this resolves both itself. It also caps the log: at one run a minute the sync
 # prints a few lines every time, which would otherwise grow without limit.
 #
-# Run by hand any time — it is the same single run ./start.sh performs.
+# Run by hand any time — it is the same single run ./tradenote.sh start performs.
 set -o pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

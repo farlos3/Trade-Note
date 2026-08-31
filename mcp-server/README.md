@@ -28,7 +28,7 @@ All tools are **read-only** — the server never writes to the database.
 ## Prerequisites
 
 - **Node.js 18+**
-- The project running (`./start.sh`), so MongoDB is up — the tools read from it
+- The project running (`./tradenote.sh start`), so MongoDB is up — the tools read from it
   live. Stop the project and the tools return nothing.
 
 ## Install (macOS and Windows)

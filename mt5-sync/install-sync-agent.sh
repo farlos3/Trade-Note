@@ -63,7 +63,7 @@ case "$ACTION" in
   uninstall)
     launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null && echo "Unloaded $LABEL."
     if [[ -f "$PLIST" ]]; then rm -f "$PLIST"; echo "Removed $PLIST"; fi
-    echo "Done. The sync now only runs when you call ./start.sh."
+    echo "Done. The sync now only runs when you call ./tradenote.sh start."
     exit 0;;
 esac
 

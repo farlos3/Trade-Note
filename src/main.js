@@ -19,7 +19,7 @@ app.use(router)
  * Vue's mount() APPENDS into the container, it does not replace what is already
  * there. So if this module ever executes twice against the same document, the
  * page renders the whole app twice, stacked -- header, sidebar and content
- * duplicated top and bottom. That happens under Vite HMR (./start.sh --hot),
+ * duplicated top and bottom. That happens under Vite HMR (./tradenote.sh start --hot),
  * which re-runs the entry on an update.
  *
  * Unmounting the previous app and clearing the container makes a re-run
