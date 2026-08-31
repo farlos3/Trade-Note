@@ -23,7 +23,7 @@ dayjs.extend(isoWeek)
 dayjs.extend(utc)
 dayjs.extend(timezone)
 import { timeZoneTrade } from '../stores/globals.js'
-import { useUploadImageToR2 } from './r2.js'
+import { useUploadImageToR2, useDeleteImageFromR2 } from './r2.js'
 
 const activeGate = ref(null)     // 'reflection' | 'review' | 'plan' | null
 const targetWeek = ref(null)     // the week note (real or stub) the gate concerns
@@ -217,20 +217,33 @@ async function findOrCreateWeekNote(dateUnix) {
     return obj
 }
 
-/** Friday gate + Monday review both write through here -- same fields, same upsert. */
-export async function saveWeeklyPlan(dateUnix, { text, file }) {
+/**
+ * Friday gate + Monday review both write through here -- same fields, same upsert.
+ *
+ * `removeFile` detaches the chart. Without it a wrong chart could only be replaced,
+ * never taken off. A new file wins over it: that is a replacement, not a removal.
+ *
+ * The R2 object of whatever was there before is deleted AFTER the save, and only
+ * once the record no longer points at it -- deleting first would leave the week
+ * showing a dead link if the save then failed.
+ */
+export async function saveWeeklyPlan(dateUnix, { text, file, removeFile }) {
     const obj = await findOrCreateWeekNote(dateUnix)
     obj.set('planText', text || '')
+    const previousKey = (file || removeFile) ? obj.get('planPdfKey') : null
     if (file) {
         const base64 = await fileToBase64(file)
         const dateStr = dayjs.unix(dateUnix).tz(tz()).format('YYYY-MM-DD')
         const safe = (file.name || 'weekplan').replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40)
         const up = await useUploadImageToR2(base64, 'weekplan_' + dateStr + '_' + safe)
         if (up) { obj.set('planPdfUrl', up.url); obj.set('planPdfKey', up.key); obj.unset('planPdfBase64') }
-        else { obj.set('planPdfBase64', base64); obj.unset('planPdfUrl') } // R2 off -> keep in DB
+        else { obj.set('planPdfBase64', base64); obj.unset('planPdfUrl'); obj.unset('planPdfKey') } // R2 off -> keep in DB
         obj.set('planPdfName', file.name || 'plan.pdf')
+    } else if (removeFile) {
+        obj.unset('planPdfUrl'); obj.unset('planPdfKey'); obj.unset('planPdfBase64'); obj.unset('planPdfName')
     }
     await obj.save()
+    if (previousKey && previousKey !== obj.get('planPdfKey')) await useDeleteImageFromR2(previousKey)
     await evaluateWeeklyGates()
 }
 
