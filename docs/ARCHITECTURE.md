@@ -159,7 +159,8 @@ changes.
 |------|---------|
 | `mt5-sync/mt5_sync.py` | Reads MT5 deals, maps to trades, buckets by trade tz, computes account financials (deposits/withdrawals as dated `cashFlows`), pushes to `POST /api/account` + trade import. Email notify is commented out. Two interchangeable backends (`pick_backend`), see below. |
 | `mt5-sync/mql5/TradeNoteExport.mq5` | Read-only Expert Advisor. Runs inside the terminal and writes deals + account + open positions + balance ops to `<data folder>/MQL5/Files/tradenote_deals.json` every 15s and on each `OnTrade`. Temp-file-then-rename, so a reader never sees a partial write. |
-| `mt5-sync/install-ea.sh` | Copies the EA into every MT5 `MQL5/Experts` folder found — normal, portable, and macOS Wine-bottle layouts. Compiling (F7) stays manual: MetaEditor's headless `/compile` does not work under MT5-for-Mac's Wine build. |
+| `mt5-sync/mql5/TradeNoteBreakEven.mq5` | Read-only **indicator**. Draws the price at which every open position on the chart's symbol nets to 0.00 — swap and entry commission included, longs closed at bid and shorts at ask. Closed form (the basket's P&L is linear in price), so no iteration; a perfectly hedged basket has no such price and says so. Nothing to do with the sync — it never writes a file. |
+| `mt5-sync/install-ea.sh` | Copies the EA into `MQL5/Experts` and the indicator into `MQL5/Indicators`, in every MT5 data folder found — normal, portable, and macOS Wine-bottle layouts. Compiling (F7) stays manual: MetaEditor's headless `/compile` does not work under MT5-for-Mac's Wine build. |
 | `mt5-sync/config.example.ini` | Template (backend, login, server, TradeNote URL). Real `config.ini` + `state.json` gitignored. |
 | `mt5-sync/templates/` | Chart templates (`.tpl`) exported from MT5, so the same chart setup restores on any machine. |
 
