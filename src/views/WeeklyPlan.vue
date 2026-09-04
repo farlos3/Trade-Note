@@ -26,6 +26,7 @@ dayjs.extend(utc)
 dayjs.extend(timezone)
 
 import NoData from '../components/NoData.vue'
+import PlanChart from '../components/PlanChart.vue'
 import { timeZoneTrade } from '../stores/globals'
 import { saveWeeklyPlan, markPlanReviewed, evaluateWeeklyGates, loadWeekNotes, planAttachmentIsImage, isWeekendPlanningWindow, isMondayReviewWindow } from '../utils/weeklyGates'
 
@@ -88,14 +89,17 @@ const weekLabel = (dateUnix) => {
 
 /* A picked-but-unsaved file wins over what is stored, for all three of these.
  *
- * They have to agree: showing the new file's NAME next to the OLD file's image is
+ * They have to agree: showing the new file's NAME next to the OLD file's preview is
  * worse than showing neither, because it reads as confirmation that the right
- * chart is attached. Object URLs are cached per week and revoked when replaced or
- * when the page goes away, so picking repeatedly does not leak them. */
+ * chart is attached. That is exactly what happened while this returned a URL for
+ * images only -- picking a PDF left the previous PDF on screen under the new
+ * file's name. A blob: URL previews either kind, so both now come from here.
+ * Cached per week and revoked when replaced or when the page goes away, so picking
+ * repeatedly does not leak them. */
 const pickedUrls = reactive({})
 function pickedUrlFor(dateUnix) {
     const file = files[dateUnix]
-    if (!file || !file.type.startsWith('image/')) return ''
+    if (!file) return ''
     if (!pickedUrls[dateUnix] || pickedUrls[dateUnix].file !== file) {
         if (pickedUrls[dateUnix]) URL.revokeObjectURL(pickedUrls[dateUnix].url)
         pickedUrls[dateUnix] = { file, url: URL.createObjectURL(file) }
@@ -109,9 +113,6 @@ onUnmounted(() => {
 const hasPdf = (w) => !!(files[w.dateUnix] || (!removals[w.dateUnix] && (w.planPdfUrl || w.planPdfBase64)))
 const pdfHref = (w) => pickedUrlFor(w.dateUnix) || w.planPdfUrl || w.planPdfBase64 || ''
 const pdfName = (w) => (files[w.dateUnix] && files[w.dateUnix].name) || w.planPdfName || 'plan.pdf'
-/* Only an image is worth a column of its own. A PDF cannot be shown in place, and
-   a card standing in for one told the trader nothing a link does not. */
-const hasImageChart = (w) => hasPdf(w) && isImageAttachment(w)
 const isImageAttachment = (w) => {
     const file = files[w.dateUnix]
     return file ? file.type.startsWith('image/') : planAttachmentIsImage(w)
@@ -302,28 +303,9 @@ onBeforeMount(async () => {
             <!-- Chart on the left, the writing on the right: the chart is the thing
                  the plan is about, so it is read beside the words rather than found
                  below them, and the two columns fill a width one column left empty. -->
-            <div class="planBody" :class="{ split: hasImageChart(w) }">
-                <div class="planChartCol">
-                    <!-- An image chart is shown in place. A chart you can see without
-                         opening anything is the difference between re-reading the plan
-                         and clicking past it. A PDF stays a link -- browsers cannot be
-                         relied on to render one inline. -->
-                    <a v-if="hasPdf(w) && isImageAttachment(w)" :href="pdfHref(w)" target="_blank"
-                        rel="noopener" class="planChartLink">
-                        <img :src="pdfHref(w)" :alt="pdfName(w)" class="planChart" loading="lazy">
-                        <span class="planChartCaption">
-                            <i class="uil uil-image-v me-1"></i>{{ pdfName(w) }}
-                            <i class="uil uil-external-link-alt ms-1"></i>
-                        </span>
-                    </a>
-                    <a v-else :href="pdfHref(w)" target="_blank" rel="noopener" class="planChartFile">
-                        <i class="uil uil-file-alt"></i>{{ pdfName(w) }}
-                        <i class="uil uil-external-link-alt"></i>
-                    </a>
-                    <button type="button" class="planChartRemove" v-on:click="clearFile(w)">
-                        <i class="uil uil-times me-1"></i>Remove chart
-                    </button>
-                </div>
+            <div class="planBody" :class="{ split: hasPdf(w) }">
+                <PlanChart v-if="hasPdf(w)" :href="pdfHref(w)" :name="pdfName(w)"
+                    :is-image="isImageAttachment(w)" />
 
                 <div class="planFormCol">
                     <label class="planLabel">
@@ -392,16 +374,9 @@ onBeforeMount(async () => {
                     {{ w.planReviewed ? 'Reviewed' : 'Not reviewed' }}
                 </span>
             </div>
-            <div class="planBody" :class="{ split: hasImageChart(w) }">
-                <div v-if="hasImageChart(w)" class="planChartCol">
-                    <a :href="pdfHref(w)" target="_blank" rel="noopener" class="planChartLink">
-                        <img :src="pdfHref(w)" :alt="pdfName(w)" class="planChart" loading="lazy">
-                        <span class="planChartCaption">
-                            <i class="uil uil-image-v me-1"></i>{{ pdfName(w) }}
-                            <i class="uil uil-external-link-alt ms-1"></i>
-                        </span>
-                    </a>
-                </div>
+            <div class="planBody" :class="{ split: hasPdf(w) }">
+                <PlanChart v-if="hasPdf(w)" :href="pdfHref(w)" :name="pdfName(w)"
+                    :is-image="isImageAttachment(w)" />
 
                 <div class="planFormCol">
                     <label class="planLabel">
@@ -632,29 +607,8 @@ onBeforeMount(async () => {
     white-space: pre-wrap;
 }
 
-.planChartLink {
-    display: block;
-}
-
-.planChart {
-    display: block;
-    width: 100%;
-    max-height: 24rem;
-    object-fit: contain;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border-subtle);
-}
-
-.planChartCaption {
-    display: block;
-    margin-top: 0.4rem;
-    font-size: 0.8rem;
-    color: #2f9bff;
-}
-
-.planChartLink:hover .planChartCaption {
-    text-decoration: underline;
-}
+/* The chart itself is styled by PlanChart.vue, which owns that markup. Only the
+   column it sits in belongs here, because the split layout is this page's. */
 
 .planChartRemove {
     flex: 0 0 auto;
