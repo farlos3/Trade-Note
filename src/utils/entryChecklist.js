@@ -1,9 +1,14 @@
 /**
- * Post-entry review: the moment a new order is seen -- an open position on Live
- * that has no checklist yet, or a trade that just synced into History -- it goes
- * into a shared queue and the modal (mounted once in DashboardLayout) pops up for
- * it. One queue serves both pages because the same trade can be seen first by
- * either one, depending on whether Live happened to be open when it filled.
+ * Post-entry review: the moment a new order is seen -- an open position on the live
+ * feed that has no checklist yet, or a trade that just synced into the journal -- it
+ * goes into a shared queue and the modal (mounted once in DashboardLayout) pops up
+ * for it.
+ *
+ * Both sources are read by ONE watcher here (startEntryChecklistWatch), not by the
+ * pages that display them: the trader is rarely on Live or History when a fill
+ * lands, and a page-owned feeder also has to re-derive the cutoff, the field
+ * mapping and the stops -- which is how the two copies this replaced ended up
+ * disagreeing about whether a closed trade's stops could be prefilled.
  *
  * Answers are saved to their own class (`entryChecklists`), keyed by `tradeId` --
  * the MT5 position id, which is the one identifier that is the same value whether
@@ -34,7 +39,7 @@ import { useLiveSnapshots } from './journalStream.js'
  * cannot be honestly recalled, and a queue of stale trades only teaches you to
  * click through the popup, which defeats the whole thing.
  */
-export function checklistCutoffUnix() {
+function checklistCutoffUnix() {
     return dayjs().tz(timeZoneTrade.value || 'UTC').startOf('day').unix()
 }
 
@@ -44,10 +49,10 @@ const queuedIds = new Set()    // tradeIds currently sitting in `pending`
 let checklistedIds = null      // Set of tradeIds already answered, loaded once per session
 let loadingChecklistedIds = null
 
-/** Trade ids that already have a saved checklist. Cached for the session; every
- *  page that offers trades awaits this first so a trip back to an already-checked
- *  trade never re-queues it. */
-export async function useLoadChecklistedIds() {
+/** Trade ids that already have a saved checklist. Cached for the session; the
+ *  watcher awaits this before offering anything, so a trip back to an
+ *  already-checked trade never re-queues it. */
+async function useLoadChecklistedIds() {
     if (checklistedIds) return checklistedIds
     if (loadingChecklistedIds) return loadingChecklistedIds
     loadingChecklistedIds = (async () => {
@@ -133,31 +138,45 @@ export const entryChecklistQueueLength = computed(() => pending.length)
  * all. The modal has always been mounted in DashboardLayout, i.e. on every page;
  * only the trigger was missing. This supplies it.
  *
- * Polls rather than holding an EventSource: every nav in this app is a full page
- * reload, so a stream would be torn down and re-established constantly, and
- * /api/live only serves an in-memory snapshot. Live.vue keeps its own SSE feed for
- * the per-second numbers -- offerEntryChecklist dedups by tradeId, so the two
- * sources cannot double-queue the same position.
+ * Live frames come from the app's one shared EventSource (journalStream.js), the
+ * same connection Live.vue reads its per-second numbers from -- a second one here
+ * would spend a browser connection slot on a stream already open. The poll below
+ * is the floor under it: /api/live serves the last snapshot even when the stream
+ * is not flowing, and it is also what carries the history side.
  */
 const OPEN_POSITION_POLL_MS = 20000
 let watchTimer = null
 let stopLiveFrames = null
 
 /**
- * Open positions from the live feed, or null when the feed is not usable.
+ * One read of /api/live, serving both things a tick needs out of it.
  *
  * GET /api/live answers `{ stale, snapshot }` -- an envelope, not the snapshot
  * itself, and the server has already decided whether the feed counts as live (see
  * liveIsStale in index.mjs). Reading `stale` rather than re-deriving it from a
  * timestamp here keeps one definition of "the feed is down" instead of two that
  * can drift apart.
+ *
+ * `positions` is null when the feed is not usable, because "no feed" and "feed up,
+ * nothing open" are different answers. `stops` is returned even from a stale
+ * snapshot: those are a record of what the stops WERE, not a live reading, so an
+ * old snapshot is still the right answer for a trade that has since closed. Empty
+ * when the agent has never run, which is the one case nothing can recover -- MT5
+ * keeps post-entry stops only while the position is open.
  */
-async function liveOpenPositions() {
-    const res = await fetch('/api/live', { headers: useAuthHeaders() })
-    if (!res.ok) return null
-    const body = await res.json()
-    if (!body || body.stale || !body.snapshot) return null
-    return openPositionsFrom(body.snapshot)
+async function liveFeed() {
+    try {
+        const res = await fetch('/api/live', { headers: useAuthHeaders() })
+        if (!res.ok) return { positions: null, stops: {} }
+        const body = await res.json()
+        const snapshot = (body && body.snapshot) || null
+        return {
+            positions: (!snapshot || body.stale) ? null : openPositionsFrom(snapshot),
+            stops: (snapshot && snapshot.stops) || {},
+        }
+    } catch {
+        return { positions: null, stops: {} }
+    }
 }
 
 /**
@@ -181,15 +200,14 @@ function openPositionsFrom(snapshot) {
  * The feed and the checklist name the same things differently -- `ticket` vs
  * `tradeId`, `priceOpen` vs `entryPrice`, `volume` vs `lot` -- so a raw position
  * handed to offerEntryChecklist is dropped on its first line for having no
- * `tradeId`, silently. That is exactly what the page-wide watcher was doing, so
- * outside Live.vue (which happened to map the fields inline) nothing was ever
- * queued at all.
+ * `tradeId`, silently -- which is why the mapping lives here, as the one place
+ * that knows both vocabularies, rather than being repeated by each caller.
  *
  * `tp`/`sl` are carried through so the modal can prefill the stops the order
  * already has: MT5 reports "no stop" as the price 0.0, which is falsy, so an
  * unset stop stays unticked without a special case here.
  */
-export function useLivePositionAsEntry(p) {
+function useLivePositionAsEntry(p) {
     return {
         tradeId: String(p.ticket),
         dateUnix: p.openTime,
@@ -203,41 +221,21 @@ export function useLivePositionAsEntry(p) {
 }
 
 /**
- * Stops the agent has seen today, {tradeId: {sl, tp}}.
- *
- * Read even when the feed is stale: these are a record of what the stops WERE,
- * not a live reading, so an old snapshot is still the right answer for a trade
- * that has since closed. Empty when the agent has never run, which is the one
- * case nothing can recover -- MT5 keeps post-entry stops only while the position
- * is open.
- */
-async function recentStops() {
-    try {
-        const res = await fetch('/api/live', { headers: useAuthHeaders() })
-        if (!res.ok) return {}
-        const body = await res.json()
-        return (body && body.snapshot && body.snapshot.stops) || {}
-    } catch {
-        return {}
-    }
-}
-
-/**
  * Today's trades that were never reviewed.
  *
- * The fallback for a dead live feed. A trade seen only after it closed cannot be
- * reviewed while it is running, but the questions that matter afterwards -- why
- * you entered, how you felt, whether the size was right -- are the same ones, and
- * an unanswered entry is worth catching late in the same day rather than not at
- * all. See checklistCutoffUnix for why it stops at the day boundary.
+ * The late catch. A trade seen only after it closed cannot be reviewed while it is
+ * running, but the questions that matter afterwards -- why you entered, how you
+ * felt, whether the size was right -- are the same ones, and an unanswered entry is
+ * worth catching late in the same day rather than not at all. See
+ * checklistCutoffUnix for why it stops at the day boundary.
+ *
+ * `stops` is what the agent recorded for today's positions, closed ones included
+ * (see liveFeed). The journal itself has never carried SL/TP -- the broker export
+ * has no such column -- so without it a trade reviewed after it closed shows both
+ * stops blank, as if none had been set.
  */
-async function unreviewedRecentTrades() {
+async function unreviewedRecentTrades(stops) {
     const cutoff = checklistCutoffUnix()
-    // Stops the agent recorded for today's trades, closed ones included. The
-    // journal itself has never carried SL/TP -- the broker export has no such
-    // column -- so without this a trade reviewed after it closed showed both
-    // stops blank, as if none had been set.
-    const stops = await recentStops()
     const query = new Parse.Query(Parse.Object.extend('trades'))
     query.equalTo('user', currentUserOrNull())
     // The day doc IS keyed to this cutoff (trade-tz midnight), so an exact match
@@ -283,12 +281,12 @@ export function startEntryChecklistWatch() {
 
     /* The stream is what makes this prompt at the ENTRY rather than after it.
      *
-     * The 20s poll below still runs, but as the floor: on its own it meant a fill
-     * could sit unasked for most of a minute, and with the agent down it never
-     * fired at all -- the watcher fell through to history, which only learns of a
-     * trade once the sync writes it, i.e. after the position has already closed.
-     * That is the wrong end of the trade to be asking about. Frames arrive about
-     * once a second, so a new position is offered essentially as it opens.
+     * Frames arrive about once a second, so a new position is offered essentially
+     * as it opens. The 20s poll below is the floor under that, and the only thing
+     * that reads history: on the poll alone a fill could sit unasked for most of a
+     * minute, and with the agent down nothing live arrives at all, leaving only
+     * trades the sync has already written -- i.e. positions that have closed, which
+     * is the wrong end of the trade to be asking about.
      *
      * The ids have to be loaded before anything is offered, or every position in
      * the very first frame looks unanswered. */
@@ -306,22 +304,17 @@ export function startEntryChecklistWatch() {
             // would be re-queued on every page load.
             await useLoadChecklistedIds()
 
-            // Live is preferred -- reviewing an entry while it is still open is the
-            // whole point of doing this at entry rather than afterwards.
-            const live = await liveOpenPositions()
-            if (live && live.length) {
-                live.forEach(offerEntryChecklist)
-                return
-            }
+            const feed = await liveFeed()
+            if (feed.positions) feed.positions.forEach(offerEntryChecklist)
 
-            // Nothing to review live, for one of two reasons, and BOTH need history:
-            // the feed is down (null), or it is up and flat (empty). The second case
-            // is not automatically "nothing happened" -- a trade opened and closed
-            // inside one poll interval leaves the feed flat at both ends, and would
-            // otherwise never be offered by anything. Re-offering a trade that WAS
-            // caught live is harmless: the live ticket and the synced positionId are
-            // the same value, so it dedups on tradeId.
-            const recent = await unreviewedRecentTrades()
+            // History every tick, NOT only when the feed is flat. An open position
+            // does not mean every other trade of the day has been reviewed: while
+            // one runs, anything that closed earlier -- or that opened and closed
+            // inside a single tick, leaving the feed flat at both ends -- would
+            // never be offered by anything. Re-offering a trade that WAS caught
+            // live is harmless: the live ticket and the synced positionId are the
+            // same value, so it dedups on tradeId.
+            const recent = await unreviewedRecentTrades(feed.stops)
             recent.forEach(offerEntryChecklist)
         } catch { /* feed down or logged out -- next tick tries again */ }
     }

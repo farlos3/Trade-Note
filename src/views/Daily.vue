@@ -10,7 +10,7 @@ import { spinnerLoadingPage, calendarData, filteredTrades, screenshots, diaries,
 
 import { useCreatedDateFormat, useTwoDecCurrencyFormat, useTimeFormat, useTimeDuration, useMountDaily, useRefreshDailyData, useGetSelectedRange, useLoadMore, useCheckVisibleScreen, useDecimalsArithmetic, useInitTooltip, useDateCalFormat, useSwingDuration, useStartOfDay, useInitTab } from '../utils/utils';
 import { useJournalUpdates } from '../utils/journalStream';
-import { offerEntryChecklist, useLoadChecklistedIds, checklistCutoffUnix, loadEntryChecklists } from '../utils/entryChecklist';
+import { loadEntryChecklists } from '../utils/entryChecklist';
 
 import { useSetupImageUpload, useSaveScreenshot, useGetScreenshots } from '../utils/screenshots';
 
@@ -213,45 +213,22 @@ async function loadEntryReviews() {
     }
 }
 
-let checklistReady = false
-function offerRecentTradesForChecklist() {
-    if (!checklistReady) return
-    // Today only, and from the SHARED cutoff rather than this page's own rolling
-    // window -- three places offer this checklist, and a page with a wider window
-    // would keep re-queueing trades the other two have already stopped asking about.
-    const cutoff = checklistCutoffUnix()
-    for (const day of filteredTrades) {
-        for (const trade of (day.trades || [])) {
-            if (!trade.positionId || !trade.entryTime || trade.entryTime < cutoff) continue
-            offerEntryChecklist({
-                tradeId: String(trade.positionId),
-                dateUnix: trade.entryTime,
-                symbol: trade.symbol,
-                side: trade.strategy,   // 'long' | 'short'
-                entryPrice: trade.entryPrice,
-                // No broker TP/SL on a synced/closed trade -- left for manual entry.
-                tp: null,
-                sl: null,
-                lot: Math.max(trade.buyQuantity, trade.sellQuantity),
-            })
-        }
-    }
-}
+/* This page does not offer the entry checklist. It used to walk filteredTrades and
+   queue today's trades itself, which was the same job startEntryChecklistWatch does
+   from every page (see unreviewedRecentTrades) -- except this copy had no broker
+   TP/SL to pass, so whichever of the two reached a trade first decided whether the
+   modal showed the stops the agent had recorded or two blank fields. One feeder,
+   one answer. What stays here is reviewFor/entryReviews below: reading the saved
+   answers back onto the day cards. */
 
 onBeforeMount(async () => {
 
 })
 onMounted(async () => {
-    // Await both, THEN offer. These used to race: the .then() fired as soon as the
-    // (small, fast) checklisted-ids query came back, which is normally well before
-    // useMountDaily() has filled filteredTrades -- so it walked an empty list and
-    // offered nothing. The checklist then simply never appeared on this page.
     await Promise.all([
-        useLoadChecklistedIds().then(() => { checklistReady = true }),
         useMountDaily(),
         loadEntryReviews(),
     ])
-    offerRecentTradesForChecklist()
     await useGetDayFiles()
     await useInitTooltip()
     useCreateAvailableTagsArray()
@@ -290,7 +267,7 @@ onMounted(async () => {
     // invisible until a manual reload. Now it appears as soon as the sync writes.
     unsubscribeJournal = useJournalUpdates(async () => {
         await useRefreshDailyData()
-        offerRecentTradesForChecklist()
+        await loadEntryReviews()
     })
 })
 
