@@ -1,9 +1,9 @@
 <script setup>
 /**
- * Post-entry review popup, offered by Live.vue (an open position with no
- * checklist yet) and Daily.vue/History (a trade that just synced in). See
- * src/utils/entryChecklist.js for the shared queue this reads from -- one
- * instance here (mounted once in DashboardLayout) serves both pages.
+ * Post-entry review popup. Fed by startEntryChecklistWatch (an open position with
+ * no checklist yet, or a trade that just synced in) -- see
+ * src/utils/entryChecklist.js for the shared queue this reads from. Mounted once
+ * in DashboardLayout, so it can appear on any page.
  */
 import { reactive, ref, computed, watch, onMounted } from 'vue'
 import { currentEntryChecklist, entryChecklistQueueLength, saveEntryChecklist, offerEntryChecklist } from '../utils/entryChecklist'

@@ -126,7 +126,7 @@ changes.
 | `src/utils/calendar.js` | Build calendar P&L data. |
 | `src/utils/charts.js` | ECharts helpers (line/double-line/pie renderers). |
 | `src/utils/daily.js` | Daily satisfaction + daily-page data helpers. |
-| `src/utils/entryChecklist.js` | Post-entry review queue + the shared today-only cutoff. Fed globally by `startEntryChecklistWatch()` (live positions, falling back to today's synced trades). `loadEntryChecklists()` reads answers back for Diary's Entry reviews tab. |
+| `src/utils/entryChecklist.js` | Post-entry review queue + the shared today-only cutoff. Fed **only** by `startEntryChecklistWatch()` (live positions off the shared SSE + today's synced trades every 20s poll) - Live.vue and Daily.vue no longer feed it. `loadEntryChecklists()` reads answers back for Diary's Entry reviews tab. |
 | `src/utils/weeklyGates.js` | Weekly discipline gates (Friday plan / Monday review / missing reflection) + the shared read-write helpers for week plan records. `loadWeekNotes()` is the unfiltered loader; `daily.js`'s `useGetWeekNotes()` drops weeks with no summary and no plan text. |
 | `src/utils/dayFiles.js` | Upload/list/delete day-summary files (R2). Supports multiple files per day. |
 | `src/utils/diary.js` | Diary CRUD (upload is fire-and-forget; errors only logged). |

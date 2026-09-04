@@ -62,8 +62,8 @@ const hasSelectedScreenshot = computed(() => Object.keys(selectedScreenshot).len
   </div>
   <!-- Add Order popup (triggered from the +Add menu in Nav) -->
   <AddOrderModal />
-  <!-- Post-entry review. Fed by startEntryChecklistWatch above (every page), and
-       additionally by Live.vue's own stream and Daily.vue when those are open. -->
+  <!-- Post-entry review. Sole feeder is startEntryChecklistWatch above, which
+       runs on every page. -->
   <EntryChecklistModal />
   <!-- Weekly discipline gates: Friday plan, Monday review, missing reflection -->
   <WeeklyGateModal />

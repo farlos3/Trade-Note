@@ -3,6 +3,15 @@
  * Live MT5 state: open positions and equity, streamed from the host agent
  * (mt5-sync/mt5_live.py -> POST /api/live -> SSE here).
  *
+ * Frames come from the app's one shared EventSource (journalStream.js) rather than
+ * a connection of this page's own: the entry-checklist watcher already holds that
+ * stream open on every page, so opening a second one here meant two connections to
+ * the same endpoint against a browser cap of six.
+ *
+ * This page does NOT feed the entry-checklist queue. The watcher reads the same
+ * frames from the same stream and offers every new position itself, from whatever
+ * page is open -- doing it here as well was the same work twice.
+ *
  * Everything on this page is EPHEMERAL -- it is never read from MongoDB and never
  * written there. The journal pages answer "what happened"; this one answers "what
  * is happening", and the moment the agent stops the honest answer is "I don't
@@ -13,14 +22,13 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import dayjs from 'dayjs'
 import { useTwoDecCurrencyFormat } from '../utils/utils'
 import { usePipSize } from '../utils/addOrder'
-import { useAuthHeaders, useAuthedUrl } from '../utils/apiAuth'
-import { offerEntryChecklist, useLoadChecklistedIds, checklistCutoffUnix, useLivePositionAsEntry } from '../utils/entryChecklist'
+import { useAuthHeaders } from '../utils/apiAuth'
+import { useLiveSnapshots } from '../utils/journalStream'
 
 const snapshot = ref(null)
-const connected = ref(false)
 const lastFrameAt = ref(null)
 const now = ref(Date.now())
-let source = null
+let stopLive = null
 let clockTimer = null
 
 // A live feed that silently stops is worse than one that says so: after 15s with
@@ -108,45 +116,13 @@ function fmtPips(v) {
     return a >= 10 ? v.toFixed(0) : v.toFixed(1)
 }
 
-// Offer every open position that has no checklist yet -- guarded until the set
-// of already-answered trade ids has loaded, or every position would be offered
-// again on each page load before that set was known.
-let checklistReady = false
-function offerPositionsForChecklist(list) {
-    if (!checklistReady) return
-    // Today only, matching the global watcher (see checklistCutoffUnix).
-    const cutoff = checklistCutoffUnix()
-    for (const p of list) {
-        if (p.openTime && p.openTime < cutoff) continue
-        // Shared with the page-wide watcher, so both feeds hand the modal the
-        // same fields -- including the order's own TP/SL to prefill.
-        offerEntryChecklist(useLivePositionAsEntry(p))
-    }
-}
-
 function applySnapshot(s) {
     if (!s) return
     snapshot.value = s
     lastFrameAt.value = Date.now()
-    offerPositionsForChecklist(s.positions || [])
-}
-
-function connect() {
-    source = new EventSource(useAuthedUrl('/api/live/stream'))
-    source.onopen = () => { connected.value = true }
-    source.onmessage = (e) => {
-        connected.value = true
-        try { applySnapshot(JSON.parse(e.data)) } catch { /* ignore a partial frame */ }
-    }
-    // EventSource reconnects on its own; just reflect the gap in the UI meanwhile.
-    source.onerror = () => { connected.value = false }
 }
 
 onMounted(async () => {
-    useLoadChecklistedIds().then(() => {
-        checklistReady = true
-        offerPositionsForChecklist(positions.value)
-    })
     // Paint immediately from the stored snapshot instead of waiting up to a second
     // for the stream's first frame.
     try {
@@ -154,12 +130,12 @@ onMounted(async () => {
         const j = await res.json()
         if (j && j.snapshot && !j.stale) applySnapshot(j.snapshot)
     } catch { /* the stream below is the real source */ }
-    connect()
+    stopLive = useLiveSnapshots(applySnapshot)
     clockTimer = setInterval(() => { now.value = Date.now() }, 1000)
 })
 
 onUnmounted(() => {
-    if (source) source.close()
+    if (stopLive) stopLive()
     if (clockTimer) clearInterval(clockTimer)
 })
 </script>
@@ -169,10 +145,14 @@ onUnmounted(() => {
         <div class="col-12">
 
             <!-- Connection state, always visible: this page is only trustworthy
-                 while the feed is actually flowing. -->
+                 while the feed is actually flowing. Read off the frames themselves
+                 rather than off the socket -- an EventSource that is open but
+                 receiving nothing (agent down, terminal closed) is not "live", and
+                 shared as the stream now is, its open/error events belong to the
+                 whole app rather than to this page. -->
             <div class="liveBar mb-3">
-                <span class="liveDot" v-bind:class="{ on: connected && !isStale }"></span>
-                <span v-if="connected && !isStale" class="liveLabel">Live</span>
+                <span class="liveDot" v-bind:class="{ on: !isStale }"></span>
+                <span v-if="!isStale" class="liveLabel">Live</span>
                 <span v-else-if="snapshot" class="liveLabelStale">
                     Stale — no update for {{ secondsSinceFrame }}s. Is the live agent running?
                 </span>
