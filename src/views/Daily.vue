@@ -213,13 +213,9 @@ async function loadEntryReviews() {
     }
 }
 
-/* This page does not offer the entry checklist. It used to walk filteredTrades and
-   queue today's trades itself, which was the same job startEntryChecklistWatch does
-   from every page (see unreviewedRecentTrades) -- except this copy had no broker
-   TP/SL to pass, so whichever of the two reached a trade first decided whether the
-   modal showed the stops the agent had recorded or two blank fields. One feeder,
-   one answer. What stays here is reviewFor/entryReviews below: reading the saved
-   answers back onto the day cards. */
+/* Nothing here asks for an entry review any more -- the popup that used to queue
+   today's trades is gone. What stays is reviewFor/entryReviews above: reading the
+   answers that were written while it existed back onto the day cards. */
 
 onBeforeMount(async () => {
 

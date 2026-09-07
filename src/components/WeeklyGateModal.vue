@@ -24,9 +24,9 @@ const planDraftText = ref('')
 const planFile = ref(null)
 const reflectionDraft = ref('')
 
-// What the modal renders -- kept separate from weeklyGate/weeklyGateTarget so
-// the close (fade) animation always has real data, same reasoning as
-// EntryChecklistModal's `displayed`.
+// What the modal renders -- kept separate from weeklyGate/weeklyGateTarget so the
+// close (fade) animation always has real data instead of the DOM being torn out
+// from under it the instant the gate clears.
 const displayedGate = ref(null)
 const displayedWeek = ref(null)
 
