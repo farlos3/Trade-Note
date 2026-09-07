@@ -4,13 +4,11 @@ import Nav from '../components/Nav.vue'
 import Screenshot from '../components/Screenshot.vue'
 import ReturnToTopButton from '../components/ReturnToTopButton.vue'
 import AddOrderModal from '../components/AddOrderModal.vue'
-import EntryChecklistModal from '../components/EntryChecklistModal.vue'
 import WeeklyGateModal from '../components/WeeklyGateModal.vue'
-import { onBeforeMount, onMounted, onUnmounted, computed } from 'vue'
+import { onBeforeMount, computed } from 'vue'
 import { useInitParse, usePageId, useScreenType, useGetTimeZone, useGetPeriods, useReconcileSelectedDateRange, useInitPostHog, useCreatedDateFormat, useTimeFormat, useHourMinuteFormat } from '../utils/utils.js'
 import { screenType, sideMenuMobileOut, screenshots, pageId, screenshot, selectedScreenshot, selectedScreenshotIndex, getMore } from '../stores/globals'
 import { useSelectedScreenshotFunction } from '../utils/screenshots'
-import { startEntryChecklistWatch, stopEntryChecklistWatch } from '../utils/entryChecklist'
 
 /*========================================
   Functions used on all Dashboard components
@@ -24,16 +22,6 @@ onBeforeMount(async () => {
   useScreenType()
 })
 useInitPostHog()
-
-/* New orders are watched from the layout, not from a page.
-   The modal has always been mounted here (i.e. on every page) but only
-   Live.vue and Daily.vue ever fed its queue, so a fill that landed while the
-   trader was on the Dashboard or the Calendar was never offered at all.
-
-   onMounted, NOT setup: useInitParse() runs in onBeforeMount above, and touching
-   Parse.User.current() before it throws. */
-onMounted(startEntryChecklistWatch)
-onUnmounted(stopEntryChecklistWatch)
 
 // Keyed off "has anything been assigned" rather than a particular field, because
 // useSelectedScreenshotFunction fills this object from two different shapes (a
@@ -62,9 +50,6 @@ const hasSelectedScreenshot = computed(() => Object.keys(selectedScreenshot).len
   </div>
   <!-- Add Order popup (triggered from the +Add menu in Nav) -->
   <AddOrderModal />
-  <!-- Post-entry review. Sole feeder is startEntryChecklistWatch above, which
-       runs on every page. -->
-  <EntryChecklistModal />
   <!-- Weekly discipline gates: Friday plan, Monday review, missing reflection -->
   <WeeklyGateModal />
   <!-- Modal -->

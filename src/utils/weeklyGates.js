@@ -1,11 +1,9 @@
 /**
- * Weekly discipline gates -- global, non-dismissible until satisfied. Unlike
- * entryChecklist (queued, one popup per new order), these are date-driven and
- * read/write the SAME `notes` week records Diary.vue already shows (plan
+ * Weekly discipline gates -- global, non-dismissible until satisfied. Date-driven,
+ * and they read/write the SAME `notes` week records Diary.vue already shows (plan
  * fields + reflection/checkReflected), re-evaluated on every page load: this
  * app navigates by full page reload, not SPA routing, so "keeps popping up
- * across pages" just means re-checking fresh each time, same as
- * entryChecklist's own queue does for open positions.
+ * across pages" just means re-checking fresh each time.
  *
  * Three gates, in this priority when more than one applies on the same day:
  *   1. reflection  - last week has a summary but no written reflection
