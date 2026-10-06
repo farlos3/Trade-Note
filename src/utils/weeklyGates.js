@@ -5,7 +5,8 @@
  * app navigates by full page reload, not SPA routing, so "keeps popping up
  * across pages" just means re-checking fresh each time.
  *
- * Three gates, in this priority when more than one applies on the same day:
+ * Three gates, each switchable in journalConfig.js (`review` is off by default),
+ * in this priority when more than one applies on the same day:
  *   1. reflection  - last week has a summary but no written reflection
  *   2. review      - today is Monday and this week's plan hasn't been re-read
  *   3. plan        - the weekend has started (Friday 23:59 through Sunday) and
@@ -22,6 +23,7 @@ dayjs.extend(utc)
 dayjs.extend(timezone)
 import { timeZoneTrade } from '../stores/globals.js'
 import { useUploadImageToR2, useDeleteImageFromR2 } from './r2.js'
+import { weeklyGateConfig } from './journalConfig.js'
 
 const activeGate = ref(null)     // 'reflection' | 'review' | 'plan' | null
 const targetWeek = ref(null)     // the week note (real or stub) the gate concerns
@@ -145,14 +147,14 @@ export async function evaluateWeeklyGates() {
 
     // 1. reflection: last week had a summary written but no reflection on it.
     const lastWeek = findWeek(monday.subtract(7, 'day').unix(), notes)
-    if (lastWeek && lastWeek.note.trim() && !lastWeek.checkReflected) {
+    if (weeklyGateConfig.reflection && lastWeek && lastWeek.note.trim() && !lastWeek.checkReflected) {
         activeGate.value = 'reflection'
         targetWeek.value = lastWeek
         return
     }
 
     // 2. review: Monday from 06:00, this week's plan not yet re-read/acknowledged.
-    if (reviewWindow) {
+    if (weeklyGateConfig.review && reviewWindow) {
         const week = findWeek(monday.unix(), notes) || stubWeek(monday.unix())
         if (!week.planReviewed) {
             activeGate.value = 'review'
@@ -163,7 +165,7 @@ export async function evaluateWeeklyGates() {
 
     // 3. plan: the weekend is here and next week's plan (text + PDF, both
     //    required) is missing. See isWeekendPlanningWindow for the timing.
-    if (planningWindow) {
+    if (weeklyGateConfig.plan && planningWindow) {
         const nextMonday = monday.add(7, 'day').unix()
         const week = findWeek(nextMonday, notes) || stubWeek(nextMonday)
         if (!week.planText.trim() || (!week.planPdfUrl && !week.planPdfBase64)) {

@@ -29,6 +29,7 @@ import NoData from '../components/NoData.vue'
 import PlanChart from '../components/PlanChart.vue'
 import { timeZoneTrade } from '../stores/globals'
 import { saveWeeklyPlan, markPlanReviewed, evaluateWeeklyGates, loadWeekNotes, planAttachmentIsImage, isWeekendPlanningWindow, isMondayReviewWindow } from '../utils/weeklyGates'
+import { weeklyGateConfig } from '../utils/journalConfig'
 
 // Grows the textarea to fit content as the user types, but never shrinks
 // below its rows-defined default -- that min height is captured once, from
@@ -124,9 +125,9 @@ const isImageAttachment = (w) => {
    what is actually enforced. Keeping them separate means a change to the rules
    cannot leave this banner quietly contradicting the popup. */
 const reminder = computed(() => {
-    // Same window the gate enforces (Monday from 06:00), so the two can never
-    // describe different times.
-    if (inReviewWindow.value && !currentWeek.value.planReviewed) {
+    // Same window AND the same config flag the gate reads, so the two can never
+    // describe different times -- or announce a re-read that nothing will ask for.
+    if (weeklyGateConfig.review && inReviewWindow.value && !currentWeek.value.planReviewed) {
         return {
             tone: 'due',
             icon: 'uil-bell',
@@ -134,8 +135,8 @@ const reminder = computed(() => {
             body: 'Read what you wrote on Friday before the first entry, then mark it reviewed.',
         }
     }
-    // Same window the gate enforces, so the two can never describe different days.
-    if (inPlanningWindow.value && !isPlanComplete(upcomingWeek.value)) {
+    // Same window and flag as the gate, for the same reason.
+    if (weeklyGateConfig.plan && inPlanningWindow.value && !isPlanComplete(upcomingWeek.value)) {
         return {
             tone: 'due',
             icon: 'uil-edit',
