@@ -49,3 +49,9 @@ mt5-sync/.live-agent.pid
 
 # Local .env backups (contain secrets; .env.example is deliberately tracked)
 .env.bak*
+
+# Headless-Chrome scratch from local verification runs. These belong in the
+# scratchpad, but a profile dir landing here once swept 203 cache files into a
+# commit, so the pattern is ignored rather than relied on not to appear.
+cprof*/
+chrome.log
