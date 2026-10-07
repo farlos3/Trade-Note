@@ -1,5 +1,6 @@
 import { useRoute } from "vue-router";
 import { clampRangeToProfile } from './statsProfile.js'
+import { useApplyActiveAccount } from './mt5Accounts.js'
 import { pageId, timeZoneTrade, currentUser, periodRange, selectedDashTab, renderData, selectedPeriodRange, selectedPositions, selectedTimeFrame, selectedRatio, selectedAccount, selectedGrossNet, selectedPlSatisfaction, selectedBroker, selectedDateRange, selectedMonth, selectedAccounts, amountCase, screenshotsPagination, diaryUpdate, diaryButton, selectedItem, playbookUpdate, playbookButton, sideMenuMobileOut, spinnerLoadingPage, dashboardChartsMounted, dashboardIdMounted, hasData, renderingCharts, screenType, selectedRange, dailyQueryLimit, dailyPagination, endOfList, spinnerLoadMore, windowIsScrolled, legacy, selectedTags, tags, filteredTrades, idCurrent, idPrevious, idCurrentType, idCurrentNumber, idPreviousType, idPreviousNumber, screenshots, screenshotsInfos, tabGettingScreenshots, apis, layoutStyle, countdownInterval, countdownSeconds, barChartNegativeTagGroups, availableTags, groups } from "../stores/globals.js"
 import { useECharts, useRenderDoubleLineChart, useRenderPieChart } from './charts.js';
 import { useDeleteDiary, useGetDiaries, useUploadDiary } from "./diary.js";
@@ -171,9 +172,9 @@ export function useInitParse() {
 
         if ((parse_app_id == "") && path != "/" && path != "/register") window.location.replace("/")
         if (parse_app_id != "") await useCheckCurrentUser()
-        // Heal a stale account filter on every load (not just at login), so a
-        // changed account label can't leave the dashboard silently empty.
-        if (parse_app_id != "") await useReconcileSelectedAccounts()
+        // Refresh the user record before anything reads it: the account profile
+        // (which account is active, which exist, their balances) lives there.
+        if (parse_app_id != "") await useRefreshCurrentUser()
         resolve()
     })
 }
@@ -1111,10 +1112,11 @@ export function usePageId() {
 
 export function useGetSelectedRange() {
     return new Promise(async (resolve, reject) => {
-        // Runs first in every page mount (before trades are filtered), so stale
-        // filters are healed before they can hide anything -- covers page reloads,
-        // where useSetValues (login-only) never runs.
-        await useReconcileSelectedAccounts()
+        // Runs first in every page mount, before trades are filtered: the active
+        // account has to be pointing at the right place before anything reads it.
+        // Covers page reloads, where useSetValues (login-only) never runs.
+        await useRefreshCurrentUser()
+        useApplyActiveAccount()
         useReconcileSelectedMonth()
         if (pageId.value == "dashboard") {
             selectedRange.value = selectedDateRange.value
@@ -1145,21 +1147,23 @@ export function useScreenType() {
 }
 
 /**
- * Keep the account filter (`selectedAccounts`) in sync with the accounts that
- * actually exist on the user. Selects all of them whenever what's stored is
- * null, empty, or stale -- i.e. references an account value that no longer
- * exists (e.g. after an account label changes). Without this, a stale stored
- * value silently filters out every trade while the UI still reads "All accounts"
- * (the length matches, so it looks selected). Safe to call on every page load;
- * it only writes when the stored selection is invalid.
+ * Pull a fresh copy of the logged-in user into `currentUser`.
+ *
+ * Parse caches the current user in localStorage, so `Parse.User.current()` can
+ * hold a snapshot from an earlier login -- and a page reload does NOT refetch it.
+ * That matters because the account profile reads everything from this record: the
+ * account list, the synced balances, and which account is active. Without this
+ * refresh a second MT5 account pushed by the sync (server-side, into
+ * `mt5Accounts`) would not appear in the switcher until the next login.
+ *
+ * On a dead or offline session it keeps the cached copy and says nothing -- the
+ * mount's own 209 handling (useHandleMountError) owns that case.
+ *
+ * This replaced useReconcileSelectedAccounts, which healed a multi-select account
+ * filter that no longer exists: the filter is now driven from this record by
+ * useApplyActiveAccount, so there is nothing left to heal.
  */
-export async function useReconcileSelectedAccounts() {
-    // Parse caches the current user in localStorage, so `Parse.User.current()`
-    // can hold accounts from an earlier login even after they changed server-side
-    // (e.g. a new trade added an account, or an account label was corrected). A
-    // page reload does NOT refetch it. Pull a fresh copy first so the reconcile
-    // below compares against reality; on a dead/offline session just fall back to
-    // the cached user (the mount's own 209 handling takes over).
+export async function useRefreshCurrentUser() {
     try {
         const u = Parse.User.current()
         if (u) {
@@ -1168,18 +1172,6 @@ export async function useReconcileSelectedAccounts() {
         }
     } catch (e) {
         // stale/invalid session or offline -- keep the cached user
-    }
-
-    if (currentUser.value && currentUser.value.hasOwnProperty("accounts") && currentUser.value.accounts.length > 0) {
-        const accountValues = currentUser.value.accounts.map(a => a.value)
-        const storedAccounts = localStorage.getItem('selectedAccounts')
-        const storedArr = storedAccounts ? storedAccounts.split(",").filter(Boolean) : []
-        const anyValid = storedArr.some(v => accountValues.includes(v))
-        if (!anyValid) {
-            selectedAccounts.value = [...accountValues]
-            localStorage.setItem('selectedAccounts', selectedAccounts.value)
-            selectedAccounts.value = localStorage.getItem('selectedAccounts').split(",")
-        }
     }
 }
 
@@ -1268,7 +1260,7 @@ export async function useSetValues() {
         if (!localStorage.getItem('selectedMonth')) localStorage.setItem('selectedMonth', JSON.stringify({ start: periodRange.filter(element => element.value == 'thisMonth')[0].start, end: periodRange.filter(element => element.value == 'thisMonth')[0].end }))
         selectedMonth.value = JSON.parse(localStorage.getItem('selectedMonth'))
 
-        useReconcileSelectedAccounts()
+        useApplyActiveAccount()
 
         let selectedTagsNull = Object.is(localStorage.getItem('selectedTags'), null)
         console.log("selectedTagsNull " + selectedTagsNull)

@@ -5,7 +5,7 @@ import axios from 'axios'
 import dayjs from 'dayjs'
 import utc from 'dayjs/plugin/utc.js'; dayjs.extend(utc)
 import timezone from 'dayjs/plugin/timezone.js'; dayjs.extend(timezone)
-import { timeZoneTrade, currentUser } from '../stores/globals'
+import { timeZoneTrade } from '../stores/globals'
 import PlanSelector from '../components/PlanSelector.vue'
 import PlanDepositsEditor from '../components/PlanDepositsEditor.vue'
 import PlanCostsEditor from '../components/PlanCostsEditor.vue'
@@ -15,6 +15,7 @@ import { numOrNull, buildProjection, fmt, pnlClass } from '../utils/planMath'
 import { useJournalUpdates } from '../utils/journalStream'
 import { useAuthHeaders } from '../utils/apiAuth'
 import { clampFromDate } from '../utils/statsProfile'
+import { activeAccount, useScopedMt5Balance, useScopedMt5CashFlows } from '../utils/mt5Accounts'
 
 /* Everything here reads from the active plan (see PlanSelector) — the same
    plan you edit on the Trading Plan page, including its deposits. */
@@ -68,7 +69,7 @@ async function load() {
     error.value = null
     try {
         const { from, to } = rangeFor(period.value)
-        const params = { tz: timeZoneTrade.value || 'UTC' }
+        const params = { tz: timeZoneTrade.value || 'UTC', account: activeAccount.value }
         // The stats profile floors the window, so a profile that starts today
         // keeps pre-reset trades out even under the "All" period.
         const flooredFrom = clampFromDate(from, isoFromUnix)
@@ -169,14 +170,14 @@ const equity = computed(() => {
     const s = start.value
     const t = target.value
     const tz = timeZoneTrade.value || 'UTC'
-    const accs = (currentUser.value && Array.isArray(currentUser.value.mt5Accounts)) ? currentUser.value.mt5Accounts : []
     // Net P&L per traded date.
     const netByDate = new Map()
     daily.value.forEach((d) => netByDate.set(d.date, (netByDate.get(d.date) || 0) + (Number(d.net) || 0)))
     const firstDate = [...netByDate.keys()].sort()[0]
     // Real cash flows from MT5's dated balance ops (pushed by the sync), summed
     // per date. A cash flow on a day with no trades still gets its own point.
-    const cashFlows = accs.flatMap((a) => (Array.isArray(a.cashFlows) ? a.cashFlows : []))
+    // Scoped to the account filter: see useScopedMt5CashFlows.
+    const cashFlows = useScopedMt5CashFlows()
     const sumByDate = (type) => {
         const m = new Map()
         cashFlows
@@ -330,11 +331,12 @@ const statTileCount = computed(() =>
    which was never your money to begin with. Read straight off MT5's own cash
    flows so it stays right regardless of how the plan's startBalance is set. */
 const breakeven = computed(() => {
-    const accs = (currentUser.value && Array.isArray(currentUser.value.mt5Accounts)) ? currentUser.value.mt5Accounts : []
-    if (!accs.length) return null
-    const balance = Number(accs[0].balance)
+    // Balance and flows from the SAME accounts -- the filtered ones. Reading the
+    // balance off one account while summing every account's deposits made the gap
+    // below the distance to the wrong number entirely.
+    const balance = useScopedMt5Balance()
     if (!Number.isFinite(balance)) return null
-    const flows = accs.flatMap((a) => (Array.isArray(a.cashFlows) ? a.cashFlows : []))
+    const flows = useScopedMt5CashFlows()
     const sum = (type) => flows
         .filter((f) => f && f.type === type)
         .reduce((acc, f) => acc + Math.abs(Number(f.amount) || 0), 0)
@@ -687,6 +689,18 @@ watch([equity, chartMode, yScale], async () => {
             <a href="/plan">Trading Plan</a>. This is the same plan — editing it here updates that page too.
         </p>
 
+        <!-- The two halves of this page come from different scopes and saying so
+             is the honest fix: the plan is one set of targets shared by every
+             account, while everything it is compared against (trades, cash flows,
+             closing balance) belongs to the account selected in the nav. Reading
+             a shared target against one account's balance is only meaningful if
+             you know that is what you are looking at. -->
+        <p v-if="activeAccount" class="txt-small planScopeNote mb-3">
+            <i class="uil uil-info-circle me-1"></i>
+            Actuals are account <strong>{{ activeAccount }}</strong>. The plan above is shared by all
+            accounts — switch accounts in the top bar to compare the same plan against the other one.
+        </p>
+
         <!-- Plan inputs (shared with /plan) -->
         <div class="planInputs mb-3">
             <div>
@@ -920,6 +934,14 @@ watch([equity, chartMode, yScale], async () => {
 </template>
 
 <style scoped>
+.planScopeNote {
+    color: var(--white-60);
+    background: rgba(47, 155, 255, 0.08);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.7rem;
+}
+
 /* Fixed column counts, each a divisor of the six tiles, so every row comes out
    full: 6 across on desktop, 3 on tablet, 2 on phone. Content-driven wrapping
    was the problem before -- auto-fit and flex-wrap both pick whatever number

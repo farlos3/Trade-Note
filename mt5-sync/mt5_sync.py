@@ -607,7 +607,41 @@ def load_state():
                 "UTC-corrected deals are not mistaken for old ones.")
         state["times_are_utc"] = True
         save_state(state)
+
+    # Per-account state, replacing the single watermark + signature this file used
+    # to hold for the whole account. One shared watermark is wrong the moment the
+    # terminal is logged into a second account: the two accounts' deals interleave
+    # in time, so account A's newest deal sits BEHIND the watermark account B just
+    # advanced -- and every later run on A reports "nothing new to sync" while A's
+    # trades never arrive. One bucket per login (see account_state) fixes it;
+    # dropping the shared values costs a single re-send of the sliding window,
+    # which TradeNote dedups.
+    #
+    # Unconditional rather than gated on a first sighting: this job runs every
+    # minute, so an upgrade lands mid-flight and a run of the old code can write a
+    # legacy key back AFTER the migration -- where a one-shot migration would then
+    # leave it forever, ignored and misleading. Cleaning whenever one is seen is
+    # idempotent and self-healing.
+    legacy_watermark = state.pop("last_deal_unix", None)
+    legacy_sig = state.pop("last_account_sig", None)
+    if "accounts" not in state:
+        state["accounts"] = {}
+        if legacy_watermark is not None:
+            log("State was shared across accounts; moving to per-account "
+                "watermarks (one re-send of the window, then steady again).")
+    if legacy_watermark is not None or legacy_sig is not None:
+        save_state(state)
     return state
+
+
+def account_state(state, login):
+    """This login's own bucket of state, created on first sight.
+
+    Keyed by login rather than by login@server: a server migration (Live8 ->
+    Live16) keeps the account number, and the watermark is about the account's
+    deals, not about which gateway served them."""
+    accounts = state.setdefault("accounts", {})
+    return accounts.setdefault(str(login), {})
 
 
 def save_state(state):
@@ -1014,7 +1048,6 @@ def main():
     now = dt.datetime.now()
     frm = now - dt.timedelta(days=lookback_days)
     to = now + dt.timedelta(days=2)
-    last_deal_unix = 0 if args.force else int(state.get("last_deal_unix", 0))
     log(f"Sync window (sliding): {frm:%Y-%m-%d %H:%M} -> {to:%Y-%m-%d %H:%M}")
 
     backend = pick_backend(cfg)
@@ -1027,7 +1060,12 @@ def main():
         log("MT5 terminal not running -- skipping (won't auto-launch it).")
         return
 
-    connect(cfg, backend)
+    info = connect(cfg, backend)
+    # Everything below is about ONE account -- whichever the terminal is logged
+    # into right now. Its state is read only now, because until connect() returns
+    # there is no login to look it up by.
+    acct_state = account_state(state, info.login)
+    last_deal_unix = 0 if args.force else int(acct_state.get("last_deal_unix", 0))
     try:
         # Refresh the account snapshot (balance/deposit/withdrawal) so the
         # Dashboard stays current even on ticks with no new trades -- but only
@@ -1046,9 +1084,9 @@ def main():
             "withdrawal": round(withdrawal, 2),
             "cashflows": sorted((int(c["t"]), round(float(c["amount"]), 2)) for c in cashflows),
         }, sort_keys=True)
-        if args.force or account_sig != state.get("last_account_sig"):
+        if args.force or account_sig != acct_state.get("last_account_sig"):
             push_account(cfg, ai, deposit, withdrawal, cashflows)
-            state["last_account_sig"] = account_sig
+            acct_state["last_account_sig"] = account_sig
             save_state(state)
         else:
             log("Account snapshot unchanged -- not re-pushing.")
@@ -1065,8 +1103,8 @@ def main():
         xlsx = build_report_xlsx(ai.login, ai.server, deals)
         resp = push(cfg, xlsx)
         log(f"TradeNote response: {resp}")
-        # Advance the watermark to the newest deal we've now pushed.
-        state["last_deal_unix"] = max(d.time for d in deals)
+        # Advance THIS account's watermark to the newest deal we've now pushed.
+        acct_state["last_deal_unix"] = max(d.time for d in deals)
         save_state(state)
         # Email reminder disabled for now (not needed yet). Re-enable by
         # uncommenting the call below; the notify_email() helper and its

@@ -172,8 +172,12 @@ async function saveOrderScreenshot({ name, symbol, side, dateUnix, base64, tz })
     await object.save()
 }
 
-/* Makes sure the order's account exists on the user and is selected, otherwise the
-   dashboard account filter would hide the new trade. Mirrors checkTradeAccounts. */
+/* Makes sure the order's account exists on the user, so it can be selected as an
+   account profile. Mirrors checkTradeAccounts.
+
+   It no longer touches the account selection: the active account is a profile on
+   the user record now (utils/mt5Accounts.js), not a localStorage list, and a
+   manual order must not silently switch which account the whole app is showing. */
 async function ensureManualAccount(accountValue) {
     const user = Parse.User.current()
     let accounts = user.get('accounts') || []
@@ -182,13 +186,6 @@ async function ensureManualAccount(accountValue) {
         user.set('accounts', accounts)
         await user.save()
         if (currentUser.value) currentUser.value.accounts = accounts
-    }
-    let selected = []
-    const raw = localStorage.getItem('selectedAccounts')
-    if (raw) selected = raw.includes(',') ? raw.split(',') : [raw]
-    if (!selected.includes(accountValue)) {
-        selected.push(accountValue)
-        localStorage.setItem('selectedAccounts', selected.join(','))
     }
 }
 
@@ -199,10 +196,21 @@ async function upsertDay(dayUnix, tz) {
     const newTrades = trades[dayUnix] || []
     if (newTrades.length === 0 && newExecs.length === 0) return
 
+    // The account these trades belong to -- the day document is per account, so
+    // merging into another account's day would mix two journals into one.
+    const account = (newTrades[0] && newTrades[0].account) || (newExecs[0] && newExecs[0].account) || ''
+
     const parseObject = Parse.Object.extend('trades')
     const query = new Parse.Query(parseObject)
+    // The user predicate was missing entirely: with a class-level find permission
+    // of "*", this could merge a manual order into another user's day.
+    query.equalTo('user', Parse.User.current())
     query.equalTo('dateUnix', Number(dayUnix))
-    const existing = await query.first()
+    const candidates = await query.find()
+    // Prefer this account's day; adopt one written before the column existed.
+    const existing = account
+        ? (candidates.find((d) => d.get('account') === account) || candidates.find((d) => !d.get('account')))
+        : candidates[0]
 
     if (existing) {
         console.log(' -> Merging manual order into existing day ' + dayUnix)
@@ -218,6 +226,7 @@ async function upsertDay(dayUnix, tz) {
         existing.set('blotter', blotter[dayUnix])
         existing.set('pAndL', pAndL[dayUnix])
         existing.set('openPositions', mergedTrades.some(t => t.openPosition))
+        if (account) existing.set('account', account)
         await existing.save()
     } else {
         console.log(' -> Creating new day document ' + dayUnix)
@@ -232,6 +241,7 @@ async function upsertDay(dayUnix, tz) {
         object.set('blotter', blotter[dayUnix])
         object.set('pAndL', pAndL[dayUnix])
         object.set('openPositions', (trades[dayUnix] || []).some(t => t.openPosition))
+        object.set('account', account)
         object.setACL(new Parse.ACL(Parse.User.current()))
         await object.save()
     }

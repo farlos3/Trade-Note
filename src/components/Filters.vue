@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onBeforeMount, onMounted } from "vue";
 import { useMonthFormat, useDateCalFormat, useDateCalFormatMonth, useMountCalendar, useMountDashboard, useMountDaily, useCheckVisibleScreen, useExport } from "../utils/utils.js";
-import { pageId, currentUser, timeZoneTrade, periodRange, positions, timeFrames, ratios, grossNet, plSatisfaction, selectedPositions, selectedTimeFrame, selectedRatio, selectedAccounts, selectedGrossNet, selectedPlSatisfaction, selectedDateRange, selectedMonth, selectedPeriodRange, tempSelectedPlSatisfaction, amountCase, amountCapital, hasData, selectedTags, tags, availableTags, filteredTradesTrades } from "../stores/globals"
+import { pageId, currentUser, timeZoneTrade, periodRange, positions, timeFrames, ratios, grossNet, plSatisfaction, selectedPositions, selectedTimeFrame, selectedRatio, selectedGrossNet, selectedPlSatisfaction, selectedDateRange, selectedMonth, selectedPeriodRange, tempSelectedPlSatisfaction, amountCase, amountCapital, hasData, selectedTags, tags, availableTags, filteredTradesTrades } from "../stores/globals"
 import { useECharts } from "../utils/charts.js";
 import { useRefreshScreenshot } from "../utils/screenshots"
 import FpDate from "./FpDate.vue"
@@ -27,10 +27,14 @@ dayjs.extend(customParseFormat)
 
 let filtersOpen = ref(false)
 let filters = ref({
-    "dashboard": ["accounts", "periodRange", "grossNet", "positions", "timeFrame", "ratio", "tags"],
+    /* No "accounts" entry any more: the account is a PROFILE chosen in the nav
+       (see utils/mt5Accounts.js), not a per-page filter. It used to be listed
+       here for three pages while silently applying to Calendar as well, which
+       had no control to show or clear it. */
+    "dashboard": ["periodRange", "grossNet", "positions", "timeFrame", "ratio", "tags"],
     "calendar": ["month", "grossNet", "plSatisfaction"],
-    "daily": ["accounts", "month", "grossNet", "positions", "tags"],
-    "screenshots": ["accounts", "grossNet", "positions", "tags"],
+    "daily": ["month", "grossNet", "positions", "tags"],
+    "screenshots": ["grossNet", "positions", "tags"],
 })
 
 
@@ -85,18 +89,6 @@ function filtersClick() {
         }
 
         //console.log(" -> Filters click (on close): Selected Period Range " + JSON.stringify(selectedPeriodRange))
-
-        // Restore temp selected accounts
-        if (localStorage.getItem('selectedAccounts')) {
-            if (localStorage.getItem('selectedAccounts').includes(",")) {
-                selectedAccounts.value = localStorage.getItem('selectedAccounts').split(",")
-            } else {
-                selectedAccounts.value = []
-                selectedAccounts.value.push(localStorage.getItem('selectedAccounts'))
-            }
-        } else {
-            selectedAccounts.value = []
-        }
 
 
         //console.log(" Selected accounts " + selectedAccounts)
@@ -210,7 +202,6 @@ async function saveFilter() {
     }
 
     localStorage.setItem('selectedPeriodRange', JSON.stringify(selectedPeriodRange.value))
-    localStorage.setItem('selectedAccounts', selectedAccounts.value)
 
     localStorage.setItem('selectedGrossNet', selectedGrossNet.value)
     amountCase.value = selectedGrossNet.value
@@ -306,14 +297,6 @@ const selectAllTags = () => {
                 </span>
 
                 <span v-if="!filtersOpen" class="filtersChips">
-                    <span v-show="filters[pageId].includes('accounts')" class="filterChip">
-                        <i class="uil uil-user-circle"></i>
-                        <span
-                            v-if="currentUser.hasOwnProperty('accounts') && currentUser.accounts.length == selectedAccounts.length">All
-                            accounts</span>
-                        <span v-else>{{ selectedAccounts.length }} account(s)</span>
-                    </span>
-
                     <span v-show="filters[pageId].includes('periodRange')" class="filterChip">
                         <i class="uil uil-calendar-alt"></i>{{ selectedPeriodRange.label }}
                     </span>
@@ -383,22 +366,6 @@ const selectAllTags = () => {
                         <label class="filterLabel">Month</label>
                         <FpDate mode="month" :model-value="useDateCalFormatMonth(selectedMonth.start)"
                             @update:model-value="inputMonth($event)" />
-                    </div>
-
-                    <!-- Accounts -->
-                    <div class="col-6 col-lg-3 filterField dropdown" v-show="pageId != 'screenshots' && pageId != 'calendar'">
-                        <label class="filterLabel">Accounts</label>
-                        <button class="btn btn-secondary dropdown-toggle filterDropdownBtn" type="button"
-                            data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
-                            {{ currentUser.hasOwnProperty('accounts') && currentUser.accounts.length == selectedAccounts.length ? 'All' : selectedAccounts.length + ' selected' }}
-                        </button>
-                        <ul class="dropdown-menu dropdownCheck">
-                            <div v-for="item in currentUser.accounts" :key="item.value" class="form-check">
-                                <input class="form-check-input" type="checkbox" :value="item.value"
-                                    v-model="selectedAccounts">
-                                {{ item.label }}
-                            </div>
-                        </ul>
                     </div>
 
                     <!-- Tags -->
