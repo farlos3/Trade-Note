@@ -39,6 +39,16 @@ changes.
     backup + MT5 sync jobs (Windows: `scripts/install-agents.ps1`; macOS:
     `scripts/install-backup-agent.sh`), so no shutdown command is needed to save.
 
+## Two MT5 accounts
+
+One terminal, switched between logins. `config.ini` leaves `login`/`server` blank, so
+each sync run follows whatever account is open, and `state.json` holds a separate
+watermark per login. In the app an account is a `<login>@<server>` label: the account
+filter scopes the journal and the money (see `src/utils/mt5Accounts.js`), and a newly
+synced account is auto-ticked once (`knownAccounts` in localStorage distinguishes
+"new" from "deliberately unticked"). Simultaneous accounts would need a second
+terminal, a config and an agent per account — not set up.
+
 ## Timezone gotcha (important)
 
 - Trades bucket by **trade timezone** (`timeZoneTrade`, e.g. Asia/Bangkok UTC+7), not
@@ -135,6 +145,7 @@ changes.
 | `src/utils/filters.js` | Filter state helpers. |
 | `src/utils/planMath.js` | Plan projection math: `numOrNull`, `buildProjection`, compounding, `fmt`, `pnlClass`. |
 | `src/utils/planStore.js` | Plan persistence + `activePlan` / `plans` reactive store. |
+| `src/utils/mt5Accounts.js` | Which MT5 accounts a page's money is about. Joins `currentUser.mt5Accounts` (balance/cashFlows, keyed by login) to the trade-filter labels (`<login>@<server>`) and scopes balance + cash flows to `selectedAccounts`. `useActiveMt5Account()` is the single account for things that cannot be a sum (the risk calculator). |
 | `src/utils/r2.js` | Client helpers hitting backend R2 upload/delete; remote-image detection. |
 
 ### Assets
@@ -157,7 +168,7 @@ changes.
 
 | File | Purpose |
 |------|---------|
-| `mt5-sync/mt5_sync.py` | Reads MT5 deals, maps to trades, buckets by trade tz, computes account financials (deposits/withdrawals as dated `cashFlows`), pushes to `POST /api/account` + trade import. Email notify is commented out. Two interchangeable backends (`pick_backend`), see below. |
+| `mt5-sync/mt5_sync.py` | Reads MT5 deals, maps to trades, buckets by trade tz, computes account financials (deposits/withdrawals as dated `cashFlows`), pushes to `POST /api/account` + trade import. Email notify is commented out. Two interchangeable backends (`pick_backend`), see below. **`state.json` is keyed per login** (`accounts.<login>.last_deal_unix` / `last_account_sig`) so one terminal switched between accounts does not hide the other's trades behind a shared watermark. |
 | `mt5-sync/mql5/TradeNoteExport.mq5` | Read-only Expert Advisor. Runs inside the terminal and writes deals + account + open positions + balance ops to `<data folder>/MQL5/Files/tradenote_deals.json` every 15s and on each `OnTrade`. Temp-file-then-rename, so a reader never sees a partial write. |
 | `mt5-sync/mql5/TradeNoteBreakEven.mq5` | Read-only **indicator**. Draws the price at which every open position on the chart's symbol nets to 0.00 — swap and entry commission included, longs closed at bid and shorts at ask. Closed form (the basket's P&L is linear in price), so no iteration; a perfectly hedged basket has no such price and says so. Nothing to do with the sync — it never writes a file. |
 | `mt5-sync/install-ea.sh` | Copies the EA into `MQL5/Experts` and the indicator into `MQL5/Indicators`, in every MT5 data folder found — normal, portable, and macOS Wine-bottle layouts. Compiling (F7) stays manual: MetaEditor's headless `/compile` does not work under MT5-for-Mac's Wine build. |

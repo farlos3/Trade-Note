@@ -11,6 +11,7 @@ import { useThousandCurrencyFormat, useTwoDecCurrencyFormat, useXDecCurrencyForm
 import { activePlan } from '../utils/planStore'
 import { numOrNull } from '../utils/planMath'
 import { useJournalUpdates } from '../utils/journalStream'
+import { useScopedMt5Balance, useScopedMt5CashFlows } from '../utils/mt5Accounts'
 import { profileStartUnix, activeStatsProfile } from '../utils/statsProfile'
 import NoData from '../components/NoData.vue';
 
@@ -215,7 +216,11 @@ const equitySeries = computed(() => {
     // Cash-flow totals per date, from MT5's dated balance ops (pushed by the sync)
     // — so the curve moves on the day money actually left or landed, even a day
     // with no trades.
-    const cashFlows = mt5Accounts.value.flatMap((a) => (Array.isArray(a.cashFlows) ? a.cashFlows : []))
+    //
+    // Scoped to the account filter, like filteredTrades above: taking every
+    // account's deposits while charting one account's trades put a second
+    // account's funding into this account's curve.
+    const cashFlows = useScopedMt5CashFlows()
     const sumByDate = (type) => {
         const m = new Map()
         cashFlows
@@ -254,7 +259,10 @@ const equitySeries = computed(() => {
        commission, a trade that never imported) lands in the distant past instead
        of corrupting today's figure. Falls back to the old forward walk only when
        no MT5 balance is available. */
-    const liveBalance = mt5Accounts.value.length ? Number(mt5Accounts.value[0].balance) : null
+    // Of the accounts the filter selects -- mt5Accounts[0] was whichever account
+    // the sync happened to push first, which stopped being the charted one the
+    // moment a second account existed.
+    const liveBalance = useScopedMt5Balance()
     const equity = new Array(allDates.length)
     if (Number.isFinite(liveBalance)) {
         let bal = liveBalance

@@ -179,6 +179,9 @@
       },
       "openPositions": {
         "type": "Boolean"
+      },
+      "account": {
+        "type": "String"
       }
     },
     "classLevelPermissions": {
@@ -685,6 +688,9 @@
       },
       "satisfaction": {
         "type": "Boolean"
+      },
+      "account": {
+        "type": "String"
       }
     },
     "classLevelPermissions": {
@@ -747,6 +753,9 @@
       },
       "tags": {
         "type": "Array"
+      },
+      "account": {
+        "type": "String"
       }
     },
     "classLevelPermissions": {
@@ -845,6 +854,9 @@
       },
       "planReviewed": {
         "type": "Boolean"
+      },
+      "account": {
+        "type": "String"
       }
     },
     "classLevelPermissions": {

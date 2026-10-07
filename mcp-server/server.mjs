@@ -30,6 +30,16 @@ function isoToUnix(s) {
 
 const dateArg = z.string().regex(/^\d{4}-\d{2}-\d{2}/).optional()
 
+/* Which account to answer for, as `<login>@<server>` -- the label the journal
+   stamps on every trade and day. Omitted, every tool answers for all accounts
+   together, which is the old behaviour and is only right when there is one
+   account: two accounts' trades concatenated in time order make the sequential
+   patterns (revenge trading, size tilt) describe reactions that never happened.
+   TRADENOTE_ACCOUNT sets the default so an MCP client does not have to repeat it. */
+const accountArg = z.string().optional()
+const ACCOUNT = process.env.TRADENOTE_ACCOUNT || undefined
+const acct = (account) => account || ACCOUNT
+
 const json = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] })
 
 const server = new McpServer({ name: 'tradenote', version: '0.1.0' })
@@ -42,10 +52,10 @@ server.registerTool(
       'Headline performance stats for a date range: win rate, profit factor, ' +
       'expectancy, avg win/loss, plus breakdowns by symbol, weekday, and entry hour. ' +
       'Dates are YYYY-MM-DD; omit both for all-time.',
-    inputSchema: { from: dateArg, to: dateArg },
+    inputSchema: { from: dateArg, to: dateArg, account: accountArg },
   },
-  async ({ from, to }) => {
-    const days = await fetchDayDocs({ fromUnix: isoToUnix(from), toUnix: isoToUnix(to) })
+  async ({ from, to, account }) => {
+    const days = await fetchDayDocs({ fromUnix: isoToUnix(from), toUnix: isoToUnix(to), account: acct(account) })
     const trades = flattenTrades(days)
     return json({ range: { from: from ?? null, to: to ?? null }, timezone: TZ, ...computeStats(trades, TZ) })
   },
@@ -64,10 +74,11 @@ server.registerTool(
       from: dateArg,
       to: dateArg,
       revenge_window_minutes: z.number().int().positive().max(240).optional(),
+      account: accountArg,
     },
   },
-  async ({ from, to, revenge_window_minutes }) => {
-    const days = await fetchDayDocs({ fromUnix: isoToUnix(from), toUnix: isoToUnix(to) })
+  async ({ from, to, revenge_window_minutes, account }) => {
+    const days = await fetchDayDocs({ fromUnix: isoToUnix(from), toUnix: isoToUnix(to), account: acct(account) })
     const trades = flattenTrades(days)
     const report = findBehaviorPatterns(trades, {
       revengeWindowMinutes: revenge_window_minutes ?? 15,
@@ -91,10 +102,11 @@ server.registerTool(
       symbol: z.string().optional(),
       outcome: z.enum(['win', 'loss']).optional(),
       limit: z.number().int().positive().max(500).optional(),
+      account: accountArg,
     },
   },
-  async ({ from, to, symbol, outcome, limit }) => {
-    const days = await fetchDayDocs({ fromUnix: isoToUnix(from), toUnix: isoToUnix(to) })
+  async ({ from, to, symbol, outcome, limit, account }) => {
+    const days = await fetchDayDocs({ fromUnix: isoToUnix(from), toUnix: isoToUnix(to), account: acct(account) })
     let trades = flattenTrades(days)
     if (symbol) trades = trades.filter((t) => t.symbol.toUpperCase() === symbol.toUpperCase())
     if (outcome === 'win') trades = trades.filter((t) => t.pnl > 0)

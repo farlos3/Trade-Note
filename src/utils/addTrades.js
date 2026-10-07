@@ -57,10 +57,22 @@ export async function useBuildManualTrades() {
 /****************************
  * TRADES
  ****************************/
+/**
+ * Which account(s) each already-imported date already holds, {dateUnix: Set}.
+ *
+ * Paired with existingTradesArray, which records only the DATE. On its own that
+ * date is enough to decide "already imported" for one account and wrong for two:
+ * filterExisting drops the whole date, so importing the second account's
+ * statement for a day the first account already traded was discarded in full and
+ * reported as "Already imported date".
+ */
+const existingDayAccounts = new Map()
+
 export async function useGetExistingTradesArray(param99, param0) {
     console.log(" -> Getting existing trades for filter")
 
     existingTradesArray.length = 0 // reinitialize, for API
+    existingDayAccounts.clear()
 
     return new Promise(async (resolve, reject) => {
         try {
@@ -82,6 +94,12 @@ export async function useGetExistingTradesArray(param99, param0) {
                 const object = results[i];
                 //console.log("unix time "+ object.get('dateUnix'));
                 existingTradesArray.push(object.get('dateUnix'))
+                const day = object.get('dateUnix')
+                if (!existingDayAccounts.has(day)) existingDayAccounts.set(day, new Set())
+                // A document written before the account column existed has none;
+                // '' then means "belongs to whoever asks", preserving the old
+                // single-account behaviour for data that predates the split.
+                existingDayAccounts.get(day).add(object.get('account') || '')
             }
             gotExistingTradesArray.value = true
             console.log(" -> Finished getting existing trades for filter")
@@ -962,11 +980,20 @@ async function getOpenPositionsParse(param99, param0) {
         query.descending("dateUnix");
         query.equalTo("openPositions", true);
         const results = await query.find(param99 === "api" ? { useMasterKey: true } : undefined);
+        /* Only this import's own accounts. These positions are matched against the
+           incoming file and closed from it, so another account's open position
+           pulled in here would be matched against trades that cannot contain it --
+           and then closed, or left open forever. Empty means the incoming data
+           carries no account labels at all (a broker without the column), where
+           the old unscoped behaviour is still the right one. */
+        const importAccounts = new Set()
+        for (const day in executions) for (const e of (executions[day] || [])) if (e && e.account) importAccounts.add(e.account)
         for (let i = 0; i < results.length; i++) {
             const object = results[i];
             //console.log("unix time "+ object.get('dateUnix'));
             object.get('trades').forEach(element => {
                 if (element.openPosition) {
+                    if (importAccounts.size && element.account && !importAccounts.has(element.account)) return
                     openPositionsParse.push(element)
                 }
             });
@@ -1624,21 +1651,29 @@ async function filterExisting(param) {
         } */
 
         if (param == "trades") {
-            //console.log(" -> ExistingTradesArray "+existingTradesArray)
-            existingTradesArray.forEach(element => {
-                //console.log("element "+element)
-                if (executions.hasOwnProperty(element)) {
-                    console.log(" -> Already imported date " + element)
-                    existingImports.push(element)
-                }
+            /* A date counts as already imported only for the account that
+               imported it. Dropping it for every account meant the second
+               account's statement for a shared trading day vanished silently,
+               logged as "Already imported date". */
+            const alreadyImported = existingTradesArray.filter((day) => {
+                if (!executions.hasOwnProperty(day)) return false
+                const stored = existingDayAccounts.get(day) || existingDayAccounts.get(Number(day))
+                const incoming = accountOfDay(day)
+                // No account on either side: the pre-split behaviour, date alone.
+                if (!stored || !incoming) return true
+                return stored.has(incoming) || stored.has('')
+            })
+            alreadyImported.forEach((day) => {
+                console.log(" -> Already imported date " + day + " for " + (accountOfDay(day) || "this account"))
+                existingImports.push(day)
             });
 
-            let tempExecutions = _.omit(executions, existingTradesArray)
+            let tempExecutions = _.omit(executions, alreadyImported)
             for (let key in executions) delete executions[key]
             Object.assign(executions, tempExecutions)
             //console.log(" -> executions "+JSON.stringify(executions))
 
-            let tempTrades = _.omit(trades, existingTradesArray)
+            let tempTrades = _.omit(trades, alreadyImported)
             for (let key in trades) delete trades[key]
             Object.assign(trades, tempTrades)
         }
@@ -2074,6 +2109,29 @@ export async function useCreatePnL() {
 }
 
 /* ---- 4: UPLOAD TO PARSE TRADES  ---- */
+/**
+ * Which account a day's incoming trades belong to.
+ *
+ * Read off the trades themselves rather than passed in, because every writer
+ * already has them in hand and the label is the only account identity the data
+ * carries. Falls back to the executions: a day can legitimately hold executions
+ * with no completed trade (an entry whose position is still open), and that
+ * document still has to be stamped or it would be invisible to its own account.
+ *
+ * One account per import by construction -- the MT5 sync posts one login per
+ * request and a CSV is one account's statement -- so a mixed day means something
+ * upstream is wrong and is worth a line in the log rather than a silent pick.
+ */
+function accountOfDay(dayUnix) {
+    const labels = new Set()
+    for (const t of (trades[dayUnix] || [])) if (t && t.account) labels.add(t.account)
+    for (const e of (executions[dayUnix] || [])) if (e && e.account) labels.add(e.account)
+    if (labels.size > 1) {
+        console.log(` -> WARNING ${dayjs.unix(dayUnix).format("YYYY-MM-DD")} carries ${labels.size} accounts (${[...labels].join(", ")}); storing the first`)
+    }
+    return [...labels][0] || ""
+}
+
 export async function useUploadTrades(param99, param0) {
 
     console.log("\nUPLOADING TRADES")
@@ -2099,9 +2157,26 @@ export async function useUploadTrades(param99, param0) {
                 // (a 2nd/3rd trade on a day first imported with one) and never
                 // duplicates a day. Delete-then-create avoids stale-object update
                 // errors ("Object not found").
-                const existingQuery = new ParseNode.Query(parseObject);
-                existingQuery.equalTo("user", { "__type": "Pointer", "className": "_User", "objectId": currentUser.value.objectId })
-                existingQuery.equalTo("dateUnix", Number(param1))
+                /* Scoped to ONE account, which is what makes two accounts able to
+                   trade the same day at all.
+                   The sync posts a single account per request, and this used to
+                   destroy every document for the date regardless of whose trades
+                   were in it -- so the second account either wiped the first
+                   account's day or, via the count floor below, was refused
+                   outright. Neither failure said anything in the log.
+                   The `doesNotExist` leg adopts a day document written before the
+                   account column existed (or restored from a snapshot taken then)
+                   instead of leaving it behind as a duplicate of the date. */
+                const dayAccount = accountOfDay(param1)
+                const scoped = new ParseNode.Query(parseObject);
+                scoped.equalTo("user", { "__type": "Pointer", "className": "_User", "objectId": currentUser.value.objectId })
+                scoped.equalTo("dateUnix", Number(param1))
+                scoped.equalTo("account", dayAccount)
+                const legacy = new ParseNode.Query(parseObject);
+                legacy.equalTo("user", { "__type": "Pointer", "className": "_User", "objectId": currentUser.value.objectId })
+                legacy.equalTo("dateUnix", Number(param1))
+                legacy.doesNotExist("account")
+                const existingQuery = ParseNode.Query.or(scoped, legacy)
                 const existingDocs = await existingQuery.find({ useMasterKey: true })
 
                 // "The incoming day is authoritative" assumes every sync run sees the
@@ -2141,6 +2216,10 @@ export async function useUploadTrades(param99, param0) {
             object.set("dateUnix", Number(param1))
             object.set("openPositions", param3)
             if (param2 == "trades") {
+                // The account this day belongs to. Without it the document is
+                // invisible to the account profile and collides with the other
+                // account's day on the next import.
+                object.set("account", accountOfDay(param1))
                 // Same missing-day case as in uploadFunction: write an empty array
                 // rather than leaving the field unset, so every day document has the
                 // shape the readers expect.
@@ -2238,30 +2317,17 @@ export async function useUploadTrades(param99, param0) {
                 if (results) {
                     results.set("accounts", param)
                     //console.log("param 2" + JSON.stringify(param2))
+                    /* Registering the account is all this does now.
+                       It used to also append the label to the localStorage account
+                       filter, so an import switched what the app was showing. The
+                       active account is a profile on this same user record now
+                       (utils/mt5Accounts.js), chosen deliberately in the Nav
+                       switcher -- an import must not move it. The new account
+                       appears in that switcher as soon as it is registered here. */
                     if (param99 === "api") {
                         await results.save(null, { useMasterKey: true }) //very important to have await or else too quick to update
                     } else {
                         await results.save()
-
-                        //console.log("current accounts " + JSON.stringify(currentUser.value.accounts))
-
-                        let selectedItems = "selectedAccounts"
-
-                        let selectedItemsArray = []
-                        if (localStorage.getItem(selectedItems)) {
-                            if (localStorage.getItem(selectedItems).includes(",")) {
-                                selectedItemsArray = localStorage.getItem(selectedItems).split(",")
-                            } else {
-                                selectedItemsArray = []
-                                selectedItemsArray.push(localStorage.getItem(selectedItems))
-                            }
-                        } else {
-                            selectedItemsArray = []
-                        }
-                        //console.log(" selected items value " + JSON.stringify(selectedItemsArray))
-                        selectedItemsArray.push(param2)
-                        localStorage.setItem(selectedItems, selectedItemsArray)
-                        //console.log(" -> Updated selectedItems / localstorage " + selectedItemsArray)
                     }
                 } else {
                     alert("Update query did not return any results")
@@ -2294,7 +2360,7 @@ export async function useUploadTrades(param99, param0) {
         })
     }
 
-    const updateOpenPositions = async (param1, param2, param3) => {
+    const updateOpenPositions = async (param1, param2, param3, param4) => {
         //console.log(" -> Upload function for "+param)
         return new Promise(async (resolve, reject) => {
             console.log(" -> Updating open position " + param1 + " from " + param2)
@@ -2312,7 +2378,17 @@ export async function useUploadTrades(param99, param0) {
 
             query.equalTo("dateUnix", param2);
 
-            const results = await query.first(param99 === "api" ? { useMasterKey: true } : undefined);
+            /* Two accounts can now hold a day with the same dateUnix, and .first()
+               would close the position on whichever document happened to come
+               back -- leaving the real one open forever and closing a position
+               that is still running. param4 is the position's own account label.
+               Prefer its exact document; fall back to one written before the
+               column existed, which belongs to whoever asks. */
+            const candidates = await query.find(param99 === "api" ? { useMasterKey: true } : undefined);
+            const results = param4
+                ? (candidates.find((d) => d.get('account') === param4)
+                    || candidates.find((d) => !d.get('account')))
+                : candidates[0];
             //console.log(' results '+JSON.stringify(results))
             if (results) {
                 let parsedRes = JSON.parse(JSON.stringify(results))
@@ -2369,7 +2445,7 @@ export async function useUploadTrades(param99, param0) {
                 //console.log(" element openPosition "+JSON.stringify(element.openPosition))
                 
                 if(element.exitTime != 0){
-                    await updateOpenPositions(element.id, element.td, element.exitTime)
+                    await updateOpenPositions(element.id, element.td, element.exitTime, element.account)
                 }
 
                 /*let opIndex = openPositionsFile.findIndex(x => x.id == element.id)

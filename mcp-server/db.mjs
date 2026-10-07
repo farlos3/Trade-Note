@@ -117,10 +117,24 @@ async function getUserFilter(db, userId) {
 
 const HEAVY = { executions: 0, blotter: 0, pAndL: 0 }
 
-/** Fetch day documents whose dateUnix falls in [fromUnix, toUnix). */
-export async function fetchDayDocs({ fromUnix, toUnix, userId } = {}) {
+/**
+ * Fetch day documents whose dateUnix falls in [fromUnix, toUnix).
+ *
+ * `account` is the `<login>@<server>` label a day belongs to. Scoping here rather
+ * than inside the analysis functions is deliberate: this is the one door all four
+ * HTTP endpoints and all four MCP tools come through, so one predicate makes every
+ * statistic answer for one account. Without it the behaviour patterns are not just
+ * mixed but wrong -- findBehaviorPatterns walks trades in time order, so a loss on
+ * one account followed minutes later by an entry on the other reads as revenge
+ * trading, which is a reaction to nothing.
+ *
+ * Omitting it still returns every account, which is what the MCP server does when
+ * no account is given.
+ */
+export async function fetchDayDocs({ fromUnix, toUnix, userId, account } = {}) {
   const db = await getDb()
   const q = { ...(await getUserFilter(db, userId)) }
+  if (account) q.account = account
   if (fromUnix != null || toUnix != null) {
     q.dateUnix = {}
     if (fromUnix != null) q.dateUnix.$gte = fromUnix
@@ -198,9 +212,12 @@ export async function fetchNotes({ fromUnix, toUnix, userId } = {}) {
  * a brand-new day bumps the count; adding orders to an existing day re-writes
  * that day doc (import upserts), bumping its _updated_at. No heavy fields read.
  */
-export async function fetchTradesFingerprint({ fromUnix, toUnix, userId } = {}) {
+export async function fetchTradesFingerprint({ fromUnix, toUnix, userId, account } = {}) {
   const db = await getDb()
   const q = { ...(await getUserFilter(db, userId)) }
+  // Must match fetchDayDocs exactly, or the fingerprint says "unchanged" for a
+  // set of documents the analysis did not actually read.
+  if (account) q.account = account
   if (fromUnix != null || toUnix != null) {
     q.dateUnix = {}
     if (fromUnix != null) q.dateUnix.$gte = fromUnix

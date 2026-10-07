@@ -7,6 +7,7 @@ import { routeComponentLoaders } from '../router/index.js'
 import { statsProfiles, activeStatsProfile, setActiveStatsProfile, addStatsProfile, removeStatsProfile } from '../utils/statsProfile'
 import { pageId, currentUser, renderProfile, screenType, latestVersion } from "../stores/globals"
 import { version } from '../../package.json';
+import { accountProfiles, activeAccount, setActiveAccount, useActiveMt5Account } from '../utils/mt5Accounts'
 
 /* MODULES */
 import Parse from 'parse/dist/parse.min.js'
@@ -203,6 +204,34 @@ const newProfileDate = ref(new Date().toISOString().slice(0, 10))
 // durable so a slow connection can't reload onto the pre-change state.
 const profileBusy = ref(false)
 
+/* Account profile: WHICH account every page is about. Separate question from the
+   stats profile below it (which is WHEN to measure from), so they are separate
+   sections of the same menu rather than one combined list.
+   Same reload for the same reason, and the same busy flag -- switching account
+   changes every query on every page, so a half-switched state is worse than a
+   reload. */
+async function pickAccount(label) {
+    if (label === activeAccount.value || profileBusy.value) return
+    profileBusy.value = true
+    try {
+        await setActiveAccount(label)
+        window.location.reload()
+    } catch (e) {
+        console.error('could not switch account', e)
+        profileBusy.value = false
+    }
+}
+
+/* "135174823@HFMarketsGlobal-Live8" is unreadable in a menu. The login is what
+   the trader knows the account by, so it leads; the server follows, quietly. */
+function accountLogin(label) {
+    return String(label || '').split('@')[0] || label
+}
+function accountServer(label) {
+    const parts = String(label || '').split('@')
+    return parts.length > 1 ? parts.slice(1).join('@') : ''
+}
+
 async function pickProfile(id) {
     if (id === activeStatsProfile.value.id || profileBusy.value) return
     profileBusy.value = true
@@ -278,8 +307,11 @@ const riskCalcSymbol = ref('XAUUSDr')
 const riskCalcSlPips = ref('')
 
 function prefillRiskCalcBalance() {
-    const accts = (currentUser.value && Array.isArray(currentUser.value.mt5Accounts)) ? currentUser.value.mt5Accounts : []
-    if (accts.length && accts[0].balance != null) riskCalcBalance.value = accts[0].balance
+    // The account actually being traded, not accounts[0]: sizing a position off
+    // the other account's balance is how you place a trade that risks a multiple
+    // of what you meant to. See useActiveMt5Account.
+    const acct = useActiveMt5Account()
+    if (acct && acct.balance != null) riskCalcBalance.value = acct.balance
 }
 
 const riskCalcSuggestedLot = computed(() => {
@@ -396,10 +428,24 @@ function getLatestVersion() {
         <div class="navActions">
             <div class="dropdown me-2">
                 <button class="btn btn-sm profileBtn" type="button" data-bs-toggle="dropdown" aria-expanded="false"
-                    title="Stats profile — what every statistic is measured from">
-                    <i class="uil uil-layer-group me-1"></i>{{ activeStatsProfile.name }}
+                    title="Account profile — which account every page is about, and what its statistics are measured from">
+                    <i class="uil uil-user-circle me-1"></i>{{ accountLogin(activeAccount) || 'No account' }}
+                    <span v-if="activeStatsProfile.id !== 'all'" class="profileBtnSub">{{ activeStatsProfile.name }}</span>
                 </button>
                 <ul class="dropdown-menu dropdown-menu-end statsProfileMenu">
+                    <li class="spHeader">Account</li>
+                    <li v-for="label in accountProfiles" :key="label">
+                        <div class="spRow" v-bind:class="{ on: label === activeAccount }"
+                            v-on:click="pickAccount(label)">
+                            <i class="spTick uil" v-bind:class="label === activeAccount ? 'uil-check' : ''"></i>
+                            <span class="spName">{{ accountLogin(label) }}</span>
+                            <span class="spFrom">{{ accountServer(label) }}</span>
+                        </div>
+                    </li>
+                    <li v-if="!accountProfiles.length" class="spRow">
+                        <span class="spName">No account yet — import trades or run the MT5 sync</span>
+                    </li>
+                    <li class="spDivider"></li>
                     <li class="spHeader">Measure stats from</li>
                     <li v-for="p in statsProfiles" :key="p.id">
                         <!-- Own classes rather than .dropdown-item/.active: the global
@@ -615,6 +661,18 @@ function getLatestVersion() {
     color: var(--white-87);
     font-size: 0.8rem;
     white-space: nowrap;
+}
+
+/* The stats profile rides along as a quiet second line, because the button now
+   answers two questions and the account is the one that decides what you are
+   looking at. Hidden when it says "All time", which is the absence of a floor
+   rather than a setting worth announcing. */
+.profileBtnSub {
+    margin-left: 0.4rem;
+    padding-left: 0.4rem;
+    border-left: 1px solid rgba(255, 255, 255, 0.18);
+    font-size: 0.72rem;
+    color: var(--white-60);
 }
 
 

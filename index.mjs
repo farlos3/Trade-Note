@@ -502,7 +502,10 @@ const setupApiRoutes = (app) => {
             const tz = req.query.tz || process.env.TRADENOTE_TZ || 'UTC'
             const fromUnix = isoToUnix(req.query.from, tz)
             const toUnix = isoToUnix(req.query.to, tz)
-            const days = await fetchDayDocs({ fromUnix, toUnix, userId: req.tradenoteUserId })
+            // `account` scopes every number to one account profile (see
+            // fetchDayDocs). Absent, it answers for all of them, which is what a
+            // caller that predates account profiles gets.
+            const days = await fetchDayDocs({ fromUnix, toUnix, userId: req.tradenoteUserId, account: req.query.account })
             const trades = flattenTrades(days)
             const stats = computeStats(trades, tz)
             const patterns = findBehaviorPatterns(trades, { revengeWindowMinutes: 15, tz, overtradeLotCap: Number(process.env.OVERTRADE_LOT_CAP) || 0.1 })
@@ -564,7 +567,7 @@ const setupApiRoutes = (app) => {
             const tz = req.query.tz || process.env.TRADENOTE_TZ || 'UTC'
             const fromUnix = isoToUnix(req.query.from, tz)
             const toUnix = isoToUnix(req.query.to, tz)
-            const fp = await fetchTradesFingerprint({ fromUnix, toUnix, userId: req.tradenoteUserId })
+            const fp = await fetchTradesFingerprint({ fromUnix, toUnix, userId: req.tradenoteUserId, account: req.query.account })
             res.status(200).json({ fingerprint: `${fp.count}:${fp.lastUpdate}` })
         } catch (error) {
             console.error(' -> Fingerprint error', error)
@@ -595,7 +598,10 @@ const setupApiRoutes = (app) => {
             const tz = req.query.tz || process.env.TRADENOTE_TZ || 'UTC'
             const fromUnix = isoToUnix(req.query.from, tz)
             const toUnix = isoToUnix(req.query.to, tz)
-            const days = await fetchDayDocs({ fromUnix, toUnix, userId: req.tradenoteUserId })
+            // `account` scopes every number to one account profile (see
+            // fetchDayDocs). Absent, it answers for all of them, which is what a
+            // caller that predates account profiles gets.
+            const days = await fetchDayDocs({ fromUnix, toUnix, userId: req.tradenoteUserId, account: req.query.account })
             const trades = flattenTrades(days)
             const stats = computeStats(trades, tz)
             const patterns = findBehaviorPatterns(trades, { revengeWindowMinutes: 15, tz, overtradeLotCap: Number(process.env.OVERTRADE_LOT_CAP) || 0.1 })
@@ -740,7 +746,10 @@ const setupApiRoutes = (app) => {
             // master key since this route only has the session's user id, not a
             // browser-side Parse.User.current() session to query as.
             const noteQuery = new ParseNode.Query(ParseNode.Object.extend('notes'))
-            noteQuery.equalTo('user', { __type: 'Pointer', className: '_User', objectId: currentUser.value.objectId })
+            // req.tradenoteUserId, like the day fetch below -- currentUser is a
+            // module-level value this process mutates per request, so two
+            // overlapping requests can read each other's user.
+            noteQuery.equalTo('user', { __type: 'Pointer', className: '_User', objectId: req.tradenoteUserId })
             noteQuery.equalTo('tradeId', 'week')
             noteQuery.equalTo('dateUnix', weekStart)
             const weekNote = await noteQuery.first({ useMasterKey: true })
@@ -749,7 +758,7 @@ const setupApiRoutes = (app) => {
                 return res.status(400).send({ error: 'Write a reflection for this week before analyzing it.' })
             }
 
-            const days = await fetchDayDocs({ fromUnix: weekStart, toUnix: weekEnd, userId: req.tradenoteUserId })
+            const days = await fetchDayDocs({ fromUnix: weekStart, toUnix: weekEnd, userId: req.tradenoteUserId, account: req.body.account })
             const trades = flattenTrades(days)
             const stats = computeStats(trades, tz)
             const patterns = findBehaviorPatterns(trades, { revengeWindowMinutes: 15, tz, overtradeLotCap: Number(process.env.OVERTRADE_LOT_CAP) || 0.1 })
@@ -1057,7 +1066,34 @@ const setupApiRoutes = (app) => {
         }
     }
 
-    app.post('/api/trades', validateApiKey, async (req, res) => {
+    /* One import at a time, process-wide.
+     *
+     * useImportTrades/useUploadTrades are frontend modules running server-side
+     * here, and they stage the whole import in module-level reactives
+     * (trades/executions/blotter/pAndL in src/stores/globals.js) plus the
+     * per-request currentUser. Two overlapping POSTs therefore do not import two
+     * days -- they interleave in one set of globals, and whichever finishes last
+     * writes a mixture.
+     *
+     * This is not hypothetical: mt5_live.py fires trigger_journal_sync() the
+     * moment a balance moves, which can land on top of the once-a-minute
+     * scheduled run. Until day documents were per account, destroy-then-create
+     * hid it as "one account wins"; now both accounts write, and the interleaving
+     * would decide which account's trades land in which document.
+     *
+     * A promise chain, not a lock with retries: the caller is a sync that wants
+     * its data stored, so waiting a few seconds is the right answer and failing
+     * fast is not. */
+    let importChain = Promise.resolve()
+    const serialiseImport = (work) => {
+        const run = importChain.then(work, work)
+        // Keep the chain alive regardless of outcome; each caller still sees its own
+        // rejection through `run`.
+        importChain = run.then(() => undefined, () => undefined)
+        return run
+    }
+
+    app.post('/api/trades', validateApiKey, async (req, res) => serialiseImport(async () => {
         const data = req.body;
         try {
             if (data && !data.data.length > 0) {
@@ -1085,7 +1121,7 @@ const setupApiRoutes = (app) => {
             console.error(error);
             res.status(500).send({ error: 'Error creating executions' });
         }
-    });
+    }));
 
     /**********************************************
      * ACCOUNT SNAPSHOT (MT5 balance / deposit / withdrawal)
@@ -1193,6 +1229,12 @@ const setupApiRoutes = (app) => {
     })
 
     const applyLiveSnapshot = (b) => {
+        /* One terminal, switched between logins, means consecutive frames can
+           describe DIFFERENT accounts. Every field below is replaced wholesale on
+           each frame, so they follow the switch on their own -- except `stops`,
+           which is deliberately merged across frames (see below) and would
+           otherwise carry the previous account's tickets into this one. */
+        const sameAccount = liveSnapshot && (liveSnapshot.login ?? null) === (b.login ?? null)
         liveSnapshot = {
             login: b.login ?? null,
             currency: b.currency ?? 'USD',
@@ -1206,13 +1248,16 @@ const setupApiRoutes = (app) => {
             // this field, which reads the same as "none pending" -- the shape the
             // page renders either way.
             pending: Array.isArray(b.pending) ? b.pending : [],
-            // {ticket: {sl, tp}} for today's trades, closed ones included -- the
-            // entry checklist reads these when it asks about a trade it only
-            // learned about from history. Merged across frames rather than
-            // replaced: a position that closes drops out of the agent's next
-            // snapshot, and forgetting its stops the moment it closes would
-            // defeat the point of collecting them.
-            stops: { ...(liveSnapshot?.stops || {}), ...(b.stops && typeof b.stops === 'object' ? b.stops : {}) },
+            // {ticket: {sl, tp}} for today's trades, closed ones included. Merged
+            // across frames rather than replaced: a position that closes drops out
+            // of the agent's next snapshot, and forgetting its stops the moment it
+            // closes would lose them for good -- MT5 keeps post-entry stops only
+            // while the position is open. The merge starts over on an account
+            // switch; carrying it would attribute one account's stops to another.
+            stops: {
+                ...(sameAccount ? (liveSnapshot?.stops || {}) : {}),
+                ...(b.stops && typeof b.stops === 'object' ? b.stops : {}),
+            },
             ticks: b.ticks && typeof b.ticks === 'object' ? b.ticks : {},
             agentTime: Number(b.t) || null,
             receivedAt: Date.now(),

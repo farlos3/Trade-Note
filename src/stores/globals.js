@@ -3375,7 +3375,15 @@ export const selectedPositions = typeof localStorage !== 'undefined' ? localStor
 export const selectedTimeFrame = typeof localStorage !== 'undefined' ? ref(localStorage.getItem('selectedTimeFrame')) : ""
 export const selectedRatio = typeof localStorage !== 'undefined' ? ref(localStorage.getItem('selectedRatio')) : ""
 export const selectedAccount = typeof localStorage !== 'undefined' ? ref(localStorage.getItem('selectedAccount')) : ""
-export const selectedAccounts = typeof localStorage !== 'undefined' ? localStorage.getItem('selectedAccounts') ? ref(localStorage.getItem('selectedAccounts').split(",")) : ref([]) : ""
+/* The account the app is currently about, as a one-element list.
+ *
+ * Still the value trades are filtered against (trades.js), but it is no longer a
+ * user-editable multi-select and no longer read from localStorage: it is set from
+ * the active account profile on the user record by useApplyActiveAccount, on every
+ * page mount. Seeding it from localStorage was how a browser could keep filtering
+ * by an account the trader was no longer looking at, with no control left to fix
+ * it. Empty until that first call, which happens before anything is filtered. */
+export const selectedAccounts = ref([])
 export const selectedGrossNet = typeof localStorage !== 'undefined' ? ref(localStorage.getItem('selectedGrossNet')) : ""
 export const selectedPlSatisfaction = typeof localStorage !== 'undefined' ? ref(localStorage.getItem('selectedPlSatisfaction')) : ""
 export const selectedBroker = typeof localStorage !== 'undefined' ? ref(localStorage.getItem('selectedBroker')) : ref()

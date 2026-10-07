@@ -5,6 +5,25 @@ import { daysBack } from "../stores/globals.js";
 import Parse from 'parse/dist/parse.min.js'
 import axios from 'axios'
 import { useAuthHeaders } from './apiAuth.js'
+import { activeAccount } from './mt5Accounts.js'
+
+/**
+ * Does this row belong to the account currently being looked at?
+ *
+ * Applied on READ rather than as a query predicate, because one range query here
+ * serves several kinds of row at once: `tags` carries trade tags and day tags
+ * (which belong to an account) next to screenshot and diary tags (which do not),
+ * and a predicate on the query would hide the ones that are out of scope.
+ *
+ * A row with no `account` predates the split and belongs to whoever asks --
+ * without that the journal written before this change would vanish.
+ */
+function belongsToActiveAccount(object) {
+    const account = activeAccount.value
+    if (!account) return true
+    const rowAccount = object.get('account')
+    return !rowAccount || rowAccount === account
+}
 import dayjs from 'dayjs'
 import utc from 'dayjs/plugin/utc.js'
 dayjs.extend(utc)
@@ -52,6 +71,7 @@ export async function useGetSatisfactions() {
         for (let i = 0; i < results.length; i++) {
             let temp = {}
             const object = results[i];
+            if (!belongsToActiveAccount(object)) continue
             temp.tradeId = object.get('tradeId')
             temp.satisfaction = object.get('satisfaction')
             temp.dateUnix = object.get('dateUnix')
@@ -97,12 +117,25 @@ export const useUpdateDailySatisfaction = async (param1, param2) => { //param1 :
 
         const parseObject = Parse.Object.extend("satisfactions");
         const query = new Parse.Query(parseObject);
+        // The user predicate was missing: this class is find/update-able by "*",
+        // so without it a day rating could land on another user's row.
+        query.equalTo("user", Parse.User.current())
         query.equalTo("dateUnix", param1)
         query.doesNotExist("tradeId") /// this is how we differentiate daily from trades satisfaction records
-        const results = await query.first();
+        /* How you felt about a trading day belongs to the account you traded that
+           day on -- two accounts traded on the same date are two different days.
+           .first() with no account predicate would have overwritten whichever row
+           came back. The second leg adopts a row written before the column
+           existed instead of leaving it stranded. */
+        const account = activeAccount.value
+        const candidates = await query.find();
+        const results = account
+            ? (candidates.find((d) => d.get('account') === account) || candidates.find((d) => !d.get('account')))
+            : candidates[0];
         if (results) {
             console.log(" -> Updating satisfaction")
             results.set("satisfaction", param2)
+            if (account) results.set("account", account)
 
             results.save()
                 .then(async () => {
@@ -117,6 +150,7 @@ export const useUpdateDailySatisfaction = async (param1, param2) => { //param1 :
             object.set("user", Parse.User.current())
             object.set("dateUnix", param1)
             object.set("satisfaction", param2)
+            if (account) object.set("account", account)
             object.setACL(new Parse.ACL(Parse.User.current()));
             object.save()
                 .then(async (object) => {
@@ -225,6 +259,7 @@ export async function useGetTags() {
             for (let i = 0; i < results.length; i++) {
                 let temp = {}
                 const object = results[i];
+                if (!belongsToActiveAccount(object)) continue
                 temp.tradeId = object.get('tradeId')
                 temp.tags = object.get('tags')
                 temp.dateUnix = object.get('dateUnix')
@@ -547,12 +582,22 @@ export const useUpdateTags = async () => {
                 query.equalTo("tradeId", tradeTagsDateUnix.value.toString())
             }
         }
-        const results = await query.first();
+        /* Trade tags and day tags belong to an account; screenshot and diary tags
+           do not -- they are tagging a picture and a journal entry, which are
+           shared. Same adopt-the-unstamped-row fallback as the notes writer. */
+        const tagsAccount = (pageId.value == "addScreenshot" || pageId.value == "addDiary")
+            ? '' : activeAccount.value
+        query.equalTo("user", Parse.User.current())
+        const tagCandidates = await query.find();
+        const results = tagsAccount
+            ? (tagCandidates.find((d) => d.get('account') === tagsAccount) || tagCandidates.find((d) => !d.get('account')))
+            : tagCandidates[0];
         if (results) {
             console.log(" -> Updating tags")
 
             spinnerSetupsText.value = "Updating"
             results.set("tags", tagsArray)
+            if (tagsAccount) results.set("account", tagsAccount)
 
             results.save()
                 .then(async () => {
@@ -570,6 +615,7 @@ export const useUpdateTags = async () => {
             const object = new parseObject();
             object.set("user", Parse.User.current())
             object.set("tags", tagsArray)
+            if (tagsAccount) object.set("account", tagsAccount)
             if (pageId.value == "addScreenshot") {
                 object.set("dateUnix", screenshot.dateUnix)
                 object.set("tradeId", screenshot.name)
@@ -706,6 +752,10 @@ export async function useGetNotes() {
             for (let i = 0; i < results.length; i++) {
                 let temp = {}
                 const object = results[i];
+                // Week records (tradeId 'week') are shared across accounts by
+                // design -- the weekly plan and its reflection are the trader's,
+                // not an account's -- so they are never filtered out here.
+                if (object.get('tradeId') !== 'week' && !belongsToActiveAccount(object)) continue
                 temp.tradeId = object.get('tradeId')
                 temp.note = object.get('note')
                 temp.reason = object.get('reason')
@@ -732,9 +782,17 @@ export const useSaveTradeNote = async (tradeId, dateUnix, note) => {
     query.equalTo("user", Parse.User.current())
     query.equalTo("tradeId", tradeId)
     query.equalTo("dateUnix", dateUnix)
-    const existing = await query.first();
+    /* Per account, except for the week record -- the weekly plan and its
+       reflection are the trader's and stay shared, which is also why this
+       function is the one the week writer goes through. */
+    const account = (tradeId === 'week') ? '' : activeAccount.value
+    const candidates = await query.find();
+    const existing = account
+        ? (candidates.find((d) => d.get('account') === account) || candidates.find((d) => !d.get('account')))
+        : candidates[0];
     if (existing) {
         existing.set("note", note)
+        if (account) existing.set("account", account)
         await existing.save()
     } else {
         const object = new parseObject();
@@ -743,6 +801,7 @@ export const useSaveTradeNote = async (tradeId, dateUnix, note) => {
         object.set("reason", "")
         object.set("dateUnix", dateUnix)
         object.set("tradeId", tradeId)
+        if (account) object.set("account", account)
         object.setACL(new Parse.ACL(Parse.User.current()));
         await object.save()
     }
@@ -819,6 +878,9 @@ export const useGetDayNotes = async () => {
     query.limit(1000)
     const results = await query.find()
     return results
+        // A day note is about a day's trading, so it belongs to the account that
+        // traded it. (Week notes, fetched elsewhere, deliberately are not scoped.)
+        .filter((r) => belongsToActiveAccount(r))
         .map((r) => ({ dateUnix: r.get('dateUnix'), note: r.get('note') || '' }))
         .filter((n) => n.note.trim())
 }
@@ -848,7 +910,9 @@ export const useSaveWeekReflection = async (dateUnix, reflection) => {
  */
 export const useAnalyzeWeekReflection = async (dateUnix, tz) => {
     const res = await axios.post('/api/analysis/week-reflection',
-        { weekStart: Number(dateUnix), tz },
+        // The week record itself is shared across accounts, but the trades the
+        // verdict is drawn from are not -- so it describes the active account.
+        { weekStart: Number(dateUnix), tz, account: activeAccount.value },
         { timeout: 120000, headers: useAuthHeaders() })
     return res.data
 }
@@ -888,14 +952,26 @@ export const useUpdateNote = async () => {
 
         const parseObject = Parse.Object.extend("notes");
         const query = new Parse.Query(parseObject);
+        // The user predicate was missing: this class is updatable by "*", so a
+        // note could be written onto another user's row with a colliding id.
+        query.equalTo("user", Parse.User.current())
         query.equalTo("tradeId", tradeNoteId.value)
-        const results = await query.first();
+        /* Trade ids are built from execution time + symbol + side and carry no
+           account, so two accounts entering the same symbol in the same second
+           produce the same id. Scoping by account is what keeps one account's
+           note off the other's trade; a row with no account predates the split. */
+        const account = activeAccount.value
+        const candidates = await query.find();
+        const results = account
+            ? (candidates.find((d) => d.get('account') === account) || candidates.find((d) => !d.get('account')))
+            : candidates[0];
         if (results) {
             console.log(" -> Updating note")
 
             spinnerSetupsText.value = "Updating"
             results.set("note", tradeNote.value)
             results.set("reason", tradeReason.value)
+            if (account && tradeNoteId.value !== 'week') results.set("account", account)
 
             results.save()
                 .then(async () => {
@@ -914,6 +990,8 @@ export const useUpdateNote = async () => {
             object.set("reason", tradeReason.value)
             object.set("dateUnix", tradeNoteDateUnix.value)
             object.set("tradeId", tradeNoteId.value)
+            // Week records stay shared across accounts; everything else is scoped.
+            if (account && tradeNoteId.value !== 'week') object.set("account", account)
             object.setACL(new Parse.ACL(Parse.User.current()));
             object.save()
                 .then(async (object) => {

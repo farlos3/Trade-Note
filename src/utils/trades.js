@@ -291,7 +291,20 @@ export async function useGetTrades(param) {
         const query = new Parse.Query(parseObject)
         query.equalTo("user", Parse.User.current());
         query.exclude("executions", "blotter", "pAndL") // we omit to make it lighter
+        /* Deliberately NOT filtered by account here, even though day documents now
+           carry one (see the account profile in utils/mt5Accounts.js).
+           loopTrades below already drops every trade belonging to another account
+           (selectedAccounts, holding exactly the active one) and then discards any
+           day whose filtered trades came to nothing -- so the set that reaches
+           filteredTrades is already one account's, and adding the predicate here
+           would only make a missing/unstamped `account` able to blank the whole
+           app. queryLimit is effectively unlimited, so fetching the other
+           account's days costs a little bandwidth and no correctness.
+           The Imports page is the exception: it renders the RAW query results, so
+           it has to be scoped here or it would offer another account's days for
+           deletion. */
         if (pageId.value === "imports" || param === "imports") {
+            if (selectedAccounts.value.length) query.containedIn("account", selectedAccounts.value)
             query.descending("dateUnix");
             query.limit(20);
         } 
@@ -1330,7 +1343,12 @@ export const useDeleteTrade = async () => {
 
         const parseObject = Parse.Object.extend("trades");
         const query = new Parse.Query(parseObject);
+        // user was missing entirely, and without the account a delete from the
+        // Imports list could destroy the OTHER account's day for the same date
+        // -- .first() returned whichever document came back.
+        query.equalTo("user", Parse.User.current());
         query.equalTo("dateUnix", selectedItem.value);
+        if (selectedAccounts.value.length) query.containedIn("account", selectedAccounts.value)
         const results = await query.first();
 
         if (results) {

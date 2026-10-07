@@ -179,6 +179,34 @@ Unregister-ScheduledTask -TaskName "TradeNote MT5 Sync" -Confirm:$false   # remo
 
 > The MT5 terminal must be running (and logged in) when the task fires.
 
+## More than one MT5 account
+
+Supported with no extra setup, as long as `login`/`server` in `config.ini` are left
+**blank** — the sync then reads whichever account the open terminal is logged into.
+Log out, log into the other account, and the next run (within a minute) picks it up.
+
+What makes that work is that `state.json` keeps its watermark **per login**:
+
+```json
+{ "times_are_utc": true,
+  "accounts": {
+    "135174823": { "last_deal_unix": 1791000000, "last_account_sig": "..." },
+    "198654453": { "last_deal_unix": 1790900000 } } }
+```
+
+A single shared watermark would break the second account silently: the two
+accounts' deals interleave in time, so after a run on the newer account every run
+on the other one reports "nothing new to sync" and its trades never arrive.
+
+In the app each account is its own entry everywhere — trades carry a
+`<login>@<server>` account label, and the account filter scopes the journal **and**
+the money (balance, deposits/withdrawals, equity curve) to what is ticked. A newly
+synced account is ticked automatically the first time it appears.
+
+Two accounts at the *same time* is a different thing and is not set up here: MT5
+allows one login per terminal, so it would need a second terminal install, a config
+per account, and an agent per account.
+
 ## Notes & caveats
 
 - **Dedup**: TradeNote drops any imported trade whose date already exists, so the

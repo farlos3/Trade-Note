@@ -9,6 +9,8 @@ import FpDate from '../components/FpDate.vue'
 import { timeZoneTrade } from '../stores/globals'
 import { useAuthHeaders } from '../utils/apiAuth'
 import { clampFromDate } from '../utils/statsProfile'
+// Every number on this page is about ONE account; the server scopes on this.
+import { activeAccount } from '../utils/mt5Accounts'
 
 /* Behavior analysis from real trades, via the backend. Result is cached per
    period in localStorage and only re-fetched when the underlying trade data
@@ -84,7 +86,7 @@ function cacheKeyFor(p) {
 async function fetchFingerprint(from, to) {
     // tz matters here too: the server resolves YYYY-MM-DD in the trade timezone,
     // so omitting it would fingerprint a different range than the one analysed.
-    const params = { tz: timeZoneTrade.value || 'UTC' }
+    const params = { tz: timeZoneTrade.value || 'UTC', account: activeAccount.value }
     if (clampFromDate(from, isoFromUnix)) params.from = clampFromDate(from, isoFromUnix)
     if (to) params.to = to
     const res = await axios.get('/api/analysis/fingerprint', { params, headers: useAuthHeaders() })
@@ -125,7 +127,7 @@ async function run(force = false) {
             return
         }
 
-        const params = { tz: timeZoneTrade.value || 'UTC' }
+        const params = { tz: timeZoneTrade.value || 'UTC', account: activeAccount.value }
         if (clampFromDate(from, isoFromUnix)) params.from = clampFromDate(from, isoFromUnix)
         if (to) params.to = to
         const res = await axios.get('/api/analysis/behavior', { params, headers: useAuthHeaders() })
@@ -232,7 +234,7 @@ async function runAI(force = false) {
     aiLoading.value = true
     try {
         const { from, to } = rangeFor(period.value)
-        const params = { tz: timeZoneTrade.value || 'UTC' }
+        const params = { tz: timeZoneTrade.value || 'UTC', account: activeAccount.value }
         if (clampFromDate(from, isoFromUnix)) params.from = clampFromDate(from, isoFromUnix)
         if (to) params.to = to
         const res = await axios.get('/api/analysis/ai-summary', { params, timeout: 120000, headers: useAuthHeaders() })
