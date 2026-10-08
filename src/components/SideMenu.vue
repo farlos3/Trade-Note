@@ -46,6 +46,10 @@ const weeklyPlanDue = computed(() => weeklyGate.value === 'review' || weeklyGate
                 <a id="step5d" v-bind:class="[pageId === 'planVsActual' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
                     href="/plan-vs-actual">
                     <i class="uil uil-balance-scale me-2"></i>Plan vs Actual</a>
+                <!-- Stats is hidden from the menu on request, same as Mindset/
+                     Screenshots below. Route, view and the underlying trade/tag
+                     data are untouched, so this is reversible by restoring the
+                     link -- /stats still works if opened directly. -->
             </div>
         </div>
 
@@ -57,16 +61,16 @@ const weeklyPlanDue = computed(() => weeklyGate.value === 'review' || weeklyGate
                     <i class="uil uil-calendar-alt me-2"></i>Weekly Plan
                     <span v-if="weeklyPlanDue" class="dueDot" title="Weekly plan needs attention"></span>
                 </a>
-                <a id="step6c" v-bind:class="[pageId === 'mindset' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
-                    href="/mindset">
-                    <i class="uil uil-brain me-2"></i>Mindset
-                </a>
                 <a id="step6" v-bind:class="[pageId === 'diary' ? 'activeNavCss' : '', 'nav-link', 'mb-1']" href="/diary">
                     <i class="uil uil-diary me-2"></i>Diary
                 </a>
-                <!-- Screenshots and Playbook are hidden from the menu on request.
-                     The routes, views and stored data are all left intact, so this
-                     is reversible by restoring these two links -- /screenshots and
+                <!-- Setup: the collection of trade setups (rules + diagram per setup). -->
+                <a id="step6c" v-bind:class="[pageId === 'setups' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
+                    href="/setups">
+                    <i class="uil uil-book-open me-2"></i>Setup</a>
+                <!-- Mindset, Screenshots and Playbook stay hidden from the menu on
+                     request. The routes, views and stored data are left intact, so this
+                     is reversible by restoring the links -- /mindset, /screenshots and
                      /playbook still work if opened directly. -->
             </div>
         </div>

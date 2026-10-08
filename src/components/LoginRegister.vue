@@ -1,6 +1,6 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
-import { pageId, timeZones, availableTags, tradeTags, legacy, registerOff } from '../stores/globals';
+import { pageId, availableTags, tradeTags, legacy, registerOff } from '../stores/globals';
 import { useGetCurrentUser, useGetPeriods, useGetTimeZone, useSetValues, useUpdateLegacy, useGetLegacy } from '../utils/utils';
 import { useGetAvailableTags, useUpdateAvailableTags, useUpdateTags, useFindHighestIdNumber, useFindHighestIdNumberTradeTags } from '../utils/daily';
 
@@ -8,7 +8,11 @@ import { useGetAvailableTags, useUpdateAvailableTags, useUpdateTags, useFindHigh
 import Parse from 'parse/dist/parse.min.js'
 import axios from 'axios'
 
-const loginForm = reactive({ username: null, password: null, timeZone: "America/New_York" })
+// Picker removed from the form, but the trade timezone still has to come from
+// somewhere -- it buckets every trade's dateUnix (see CLAUDE.md) and there is no
+// Settings control to fix it after signup. Use the browser's own zone rather
+// than a hardcoded one, so a non-US trader doesn't get silently mis-bucketed.
+const loginForm = reactive({ username: null, password: null, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York" })
 const signingUp = ref(false)
 let existingSchema = []
 
@@ -458,14 +462,6 @@ const checkLegacy = async (param) => {
         <label class="authLabel mt-3">Password</label>
         <input type="password" id="inputPassword" class="form-control" placeholder="••••••••" required
           v-model="loginForm.password" v-bind:autocomplete="pageId == 'login' ? 'current-password' : 'new-password'">
-
-        <div v-if="pageId == 'register'" class="mt-3">
-          <label class="authLabel">Market timezone</label>
-          <select v-model="loginForm.timeZone" class="form-select">
-            <option v-for="item in timeZones" :key="item.value" :value="item">{{ item }}</option>
-          </select>
-          <p class="authHint">Timezone of the market your trades are imported from.</p>
-        </div>
 
         <button class="authBtn" type="submit" :disabled="signingUp">
           <span>{{ pageId == 'login' ? "Log in" : "Create account" }}</span>

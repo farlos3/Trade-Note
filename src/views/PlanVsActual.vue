@@ -10,8 +10,9 @@ import PlanSelector from '../components/PlanSelector.vue'
 import PlanDepositsEditor from '../components/PlanDepositsEditor.vue'
 import PlanCostsEditor from '../components/PlanCostsEditor.vue'
 import FpDate from '../components/FpDate.vue'
+import PlanLotSizing from '../components/PlanLotSizing.vue'
 import { activePlan } from '../utils/planStore'
-import { numOrNull, buildProjection, fmt, pnlClass } from '../utils/planMath'
+import { numOrNull, buildProjection, tierRateResolver, lotForDollars, floorLot, LOT_STEP, fmt, pnlClass } from '../utils/planMath'
 import { useJournalUpdates } from '../utils/journalStream'
 import { useAuthHeaders } from '../utils/apiAuth'
 import { clampFromDate } from '../utils/statsProfile'
@@ -309,6 +310,54 @@ const equity = computed(() => {
    labels, not index arithmetic. `earned` is trading P&L only — it deliberately
    equals actual.totalNet, which is why the two are never shown as separate
    tiles. */
+/* ---- Lot for today, on the balance you actually have ----
+   Trading Plan sizes the lot on the plan's STARTING balance and projects it
+   forward. Here the account is real, so today's lot comes from today's real
+   balance: the target % of what is actually in the account, over the plan's
+   pip distance. That is the number to trade -- the plan's own balance for
+   today is shown beside it only to say whether you are ahead or behind.
+
+   Real balance, best source first: the active account's MT5 balance (synced,
+   needs nothing loaded), then the journal's equity curve, then the starting
+   balance as a last resort -- labelled, so a fallback never passes as live. */
+const realBalance = computed(() => {
+    const mt5 = useScopedMt5Balance()
+    if (Number.isFinite(mt5) && mt5 > 0) return { value: mt5, source: 'MT5 balance' }
+    if (balanceNow.value > 0) return { value: balanceNow.value, source: 'journal equity' }
+    if (start.value > 0) return { value: start.value, source: 'starting balance — no MT5 balance synced' }
+    return null
+})
+
+// Today's target in $ for a given balance: a share of it in % mode (through
+// the tier resolver, so a stepped plan sizes at the rate that applies at THAT
+// balance), or the flat amount in $ mode, which no balance changes.
+const targetDollarsAt = (balance) => {
+    if (isAmountMode.value) return dailyAmount.value > 0 ? dailyAmount.value : null
+    if (!(balance > 0) || (target.value == null && !hasTiers.value)) return null
+    const d = balance * tierRateResolver(target.value, tiers.value)(balance)
+    return d > 0 ? d : null
+}
+
+const todayDollars = computed(() => (realBalance.value ? targetDollarsAt(realBalance.value.value) : null))
+
+// Where the plan says the balance should be today -- same projection the chart's
+// plan line comes from, read off at today's date.
+const planToday = computed(() => {
+    if (!(start.value > 0) || !hasTarget.value || !startDate.value) return null
+    const today = dayjs().format('YYYY-MM-DD')
+    if (today < startDate.value) return null
+    const monthsToToday = Math.max(1, dayjs().diff(dayjs(startDate.value), 'month') + 1)
+    const days = buildProjection(start.value, target.value == null ? 0 : target.value, monthsToToday,
+        deposits.value, startDate.value, isAmountMode.value ? [] : tiers.value,
+        withdrawals.value, projectionOptions.value).days
+    let balance = start.value
+    for (const d of days) { if (d.date > today) break; balance = d.closing }
+    const pips = numOrNull(activePlan.value.targetPips)
+    const dollars = targetDollarsAt(balance)
+    const lot = pips > 0 && dollars ? floorLot(lotForDollars(dollars, pips, activePlan.value.symbol)) : null
+    return { balance, lot }
+})
+
 const balanceNow = computed(() =>
     equity.value ? equity.value.actual[equity.value.actual.length - 1] : null)
 const earnedNow = computed(() =>
@@ -730,6 +779,31 @@ watch([equity, chartMode, yScale], async () => {
 
         <div class="planCard mb-3">
             <PlanCostsEditor :plan="activePlan" />
+        </div>
+
+        <!-- ---------- Lot for today, on the real balance ---------- -->
+        <div class="planCard mb-3" v-if="todayDollars">
+            <div class="planCardHead">
+                <span class="planCardTitle">Lot for today</span>
+            </div>
+            <p class="txt-small mt-2 mb-2">
+                Your balance now is <strong>{{ fmt(realBalance.value) }}</strong>
+                <span class="text-muted">({{ realBalance.source }})</span>.
+                <template v-if="planToday">
+                    On plan you would be at <strong class="planHi">{{ fmt(planToday.balance) }}</strong><span
+                        v-if="planToday.lot != null">, trading
+                        <strong class="planHi">{{ planToday.lot >= LOT_STEP ? fmt(planToday.lot, 2) : '&lt;0.01' }} lot</strong></span>
+                    —
+                    <span v-bind:class="pnlClass(realBalance.value - planToday.balance)">
+                        {{ realBalance.value >= planToday.balance ? 'ahead by' : 'behind by' }}
+                        {{ fmt(Math.abs(realBalance.value - planToday.balance)) }}</span>.
+                </template>
+            </p>
+            <PlanLotSizing :plan="activePlan" :dollars="todayDollars"
+                :basis="!isAmountMode && !hasTiers ? fmt(target, 2) + '% of your real ' + fmt(realBalance.value) : ''">
+                Sized on your real balance, not the plan's — trade this, and it re-sizes itself as the balance
+                moves. The pip distance is shared with Trading Plan.
+            </PlanLotSizing>
         </div>
 
         <div class="planCard">

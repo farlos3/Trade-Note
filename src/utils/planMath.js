@@ -225,6 +225,11 @@ export function rollup(days, granularity) {
             profit: d.profit,
             closing: d.closing,
             cumulativeReturnPct: d.cumulativeReturnPct,
+            // Present only when the days went through withLots().
+            lot: d.lot,
+            lotExact: d.lotExact,
+            lotDollars: d.lotDollars,
+            lotShort: lotFallsShort(d),
         }))
     }
     const keyOf = (d) =>
@@ -253,6 +258,11 @@ export function rollup(days, granularity) {
             profit: last.closing - first.opening - depositInPeriod + withdrawalInPeriod,
             closing: last.closing,
             cumulativeReturnPct: last.cumulativeReturnPct,
+            // The lot changes daily inside a period as the balance grows, so a
+            // grouped row carries where it starts and where it ends.
+            lotFrom: first.lot,
+            lotTo: last.lot,
+            lotShort: g.some(lotFallsShort),
         }
     })
 }
@@ -292,6 +302,75 @@ export function dollarsToPips(dollars, symbol, lotSize) {
     if (dollars == null || !(lot > 0)) return null
     const perPip = pipValuePerLot(symbol) * lot
     return perPip > 0 ? dollars / perPip : null
+}
+
+/**
+ * Position sizing: the lot that makes `dollars` over a `pips` distance on
+ * `symbol` -- dollars / (pips x $ per pip per lot). The same formula the
+ * trader's own journal sheet uses ("Lot Size ที่แนะนำ": 10% of 100 = $10 over
+ * 1000 points on XAUUSD = 0.01 lot). Null on unusable input rather than a
+ * divide-by-zero.
+ */
+export function lotForDollars(dollars, pips, symbol) {
+    const p = Number(pips)
+    if (!(dollars > 0) || !(p > 0)) return null
+    const perPipPerLot = pipValuePerLot(symbol)
+    return perPipPerLot > 0 ? dollars / (p * perPipPerLot) : null
+}
+
+/** The smallest lot increment brokers accept. */
+export const LOT_STEP = 0.01
+
+/**
+ * Round a lot DOWN to the broker's 0.01 step. Down, never to-nearest: the % of
+ * the account is the ceiling the trader chose, and rounding up would quietly
+ * size a position past it. The epsilon absorbs float noise (0.01 / 0.01 coming
+ * back as 0.9999...) so an exact 0.01 is not floored to 0.
+ */
+export function floorLot(lot) {
+    if (lot == null) return null
+    return Math.floor(lot / LOT_STEP + 1e-9) * LOT_STEP
+}
+
+/**
+ * The lot each projected day calls for, at a fixed pip distance: that day's
+ * profit target / (pips x $ per pip per lot), floored to the 0.01 step. This
+ * is what ties the projection to position sizing -- 10% of a balance that has
+ * doubled is twice the dollars, so over the same distance it needs twice the
+ * lot, and the table says so day by day instead of leaving it to be redone by
+ * hand as the account grows.
+ *
+ * Also returns what the floored lot actually makes (`lotDollars`), because at
+ * small balances the floor can cut deep: 10% of $195 over 1000 pips is 0.0195
+ * lot, and the tradeable 0.01 makes $10, not $19.49. Callers flag that rather
+ * than present the target as reachable at that size.
+ *
+ * Returns the days unchanged when no usable pip distance is given.
+ */
+export function withLots(days, pips, symbol) {
+    const p = Number(pips)
+    const perPipPerLot = pipValuePerLot(symbol)
+    if (!(p > 0) || !(perPipPerLot > 0)) return days
+    return days.map((d) => {
+        const exact = d.profit > 0 ? d.profit / (p * perPipPerLot) : null
+        const lot = exact == null ? null : floorLot(exact)
+        return { ...d, lot, lotExact: exact, lotDollars: lot >= LOT_STEP ? lot * p * perPipPerLot : 0 }
+    })
+}
+
+/** True when the tradeable lot makes noticeably less (>10% short) than the day's target. */
+const lotFallsShort = (d) => d.lot != null && d.profit > 0 && d.lotDollars < 0.9 * d.profit
+
+/**
+ * Pip distances worth offering when the trader has not picked one. Gold is
+ * quoted in 0.01 pips, so a normal day there is hundreds to thousands of pips
+ * (the 500-2000 band calibrated in pipsRealismVerdict); a forex major moves
+ * tens. One list for both would be useless for one of them.
+ */
+export function suggestedPipDistances(symbol) {
+    const s = (symbol || '').toUpperCase()
+    if (s.includes('XAU')) return [100, 200, 300, 500, 1000, 1500, 2000]
+    return [10, 20, 30, 50, 100, 150, 200]
 }
 
 /**
@@ -350,6 +429,25 @@ export function requiredPctPerDay(start, goal, months, deposits = [], fromDate, 
     return (lo + hi) / 2
 }
 
+/**
+ * Goal seek the other way round: at the plan's own target, how long until the
+ * balance reaches `goal`? The usual goal seek needs a horizon to answer "what %
+ * do I need"; this needs none, because the target already fixes the pace and
+ * only the date is unknown.
+ *
+ * Runs the same buildProjection the projection card uses -- so deposits,
+ * withdrawals, tiers and $/day mode all count exactly as they do there -- out
+ * to 120 months (the Horizon field's own maximum) and takes the first trading
+ * day that closes at or above the goal. Null if it isn't reached in that window.
+ */
+export function timeToGoal(start, goal, pctPerDay, fromDate, deposits = [], tiers = [], withdrawals = [], options = {}) {
+    if (!(start > 0) || !(goal > 0)) return null
+    if (goal <= start) return { tradingDays: 0, date: anchorOf(fromDate).format('YYYY-MM-DD'), already: true }
+    const proj = buildProjection(start, pctPerDay, 120, deposits, fromDate, tiers, withdrawals, options)
+    const hit = proj.days.find((d) => d.closing >= goal)
+    return hit ? { tradingDays: hit.n, date: hit.date, already: false } : null
+}
+
 /** How realistic is a given daily target? Used to label goal-seek results. */
 export function realismVerdict(pctPerDay) {
     const p = pctPerDay
@@ -364,5 +462,15 @@ export function realismVerdict(pctPerDay) {
 /* ---- shared formatting ---- */
 export const fmt = (n, d = 2) =>
     n == null || n === '' ? '—' : Number(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })
+/** fmt for space-constrained spots (stat tiles): from a million up, switch to
+ *  K/M/B/T so an aggressive compounding target ("7.00T") still fits its box
+ *  instead of spilling 20 digits over the neighbouring tile. 'en-US' on purpose:
+ *  a Thai-locale compact form ("7 ล้านล้าน") is longer than what it replaces. */
+export const fmtCompact = (n, d = 2) => {
+    if (n == null || n === '') return '—'
+    const v = Number(n)
+    if (!(Math.abs(v) >= 1e6)) return fmt(v, d)
+    return v.toLocaleString('en-US', { notation: 'compact', minimumFractionDigits: d, maximumFractionDigits: d })
+}
 export const pnlClass = (n) => (n == null ? '' : n > 0 ? 'greenTrade' : n < 0 ? 'redTrade' : '')
 export const toneClass = (t) => (t === 'ok' ? 'greenTrade' : t === 'bad' ? 'redTrade' : t === 'warn' ? 'warnTrade' : '')

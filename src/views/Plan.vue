@@ -5,11 +5,13 @@ import PlanSelector from '../components/PlanSelector.vue'
 import PlanDepositsEditor from '../components/PlanDepositsEditor.vue'
 import PlanWithdrawalsEditor from '../components/PlanWithdrawalsEditor.vue'
 import FpDate from '../components/FpDate.vue'
+import PlanLotSizing from '../components/PlanLotSizing.vue'
 import { activePlan, addTier, removeTier } from '../utils/planStore'
 import {
     numOrNull, buildProjection, rollup, requiredPctPerDay, realismVerdict,
     calendarWeeksAhead, equivalentPctForNDays, dollarsToPips, pipsRealismVerdict,
-    fmt, pnlClass, toneClass,
+    pipValuePerLot, tierRateResolver, LOT_STEP, timeToGoal, withLots,
+    fmt, fmtCompact, pnlClass, toneClass,
 } from '../utils/planMath'
 
 /* Pure calculator — no journal data involved. Inputs start empty on purpose:
@@ -58,6 +60,23 @@ const projection = computed(() => {
         isAmountMode.value ? [] : tiers.value, withdrawals.value, projectionOptions.value)
 })
 
+/* Goal seek without a horizon: at the target already set above, when does the
+   balance reach the goal? The %-needed answer below needs a horizon to divide
+   by; this one doesn't, so a goal is never left showing nothing just because
+   the plan has no end date. Same inputs as the projection card, so deposits,
+   withdrawals, tiers and $/day mode are all honoured. */
+const goalTime = computed(() => {
+    if (!(start.value > 0) || !(goal.value > 0)) return null
+    if (isAmountMode.value ? !(dailyAmount.value > 0) : (target.value == null && !hasTiers.value)) return null
+    return timeToGoal(start.value, goal.value, target.value == null ? 0 : target.value,
+        startDate.value, deposits.value, isAmountMode.value ? [] : tiers.value,
+        withdrawals.value, projectionOptions.value)
+})
+// Whether a target is set at all -- to tell "no target" apart from "target set
+// but the goal is out of reach in 10 years" in the hint.
+const hasAnyTarget = computed(() =>
+    isAmountMode.value ? dailyAmount.value > 0 : (target.value != null || hasTiers.value))
+
 const goalSeek = computed(() => {
     if (!(start.value > 0) || !(goal.value > 0) || !months.value) return null
     const p = requiredPctPerDay(start.value, goal.value, months.value, deposits.value, startDate.value, withdrawals.value)
@@ -88,6 +107,68 @@ const GOAL_SEEK_UNITS = [
     { id: 'day', label: 'Daily' },
 ]
 const goalSeekUnit = ref('week')
+
+/* The pip distance every table sizes its lots at -- the "Pips" field in the
+   Lot size box. One value for both the projection and the goal-seek path, so
+   the two cards answer the same question ("what lot today, over this
+   distance?") for their own day-by-day balances, and agree with each other. */
+const sizingPips = computed(() => {
+    const n = numOrNull(activePlan.value.targetPips)
+    return n > 0 ? n : null
+})
+
+/** "0.05", "<0.01", or "0.05 → 0.08" for a period whose lot grows within it. */
+function lotLabel(r) {
+    const one = (x) => (x == null ? '—' : x >= LOT_STEP ? fmt(x, 2) : '<0.01')
+    if ('lotFrom' in r) return r.lotFrom === r.lotTo ? one(r.lotFrom) : one(r.lotFrom) + ' → ' + one(r.lotTo)
+    return one(r.lot)
+}
+
+/** Hover text for a daily lot cell: the unrounded figure and what the
+ *  tradeable lot really earns, so the floor is never invisible. */
+function lotTitle(r) {
+    if ('lotFrom' in r || r.lotExact == null) return ''
+    return `exact ${fmt(r.lotExact, 4)} lot · at ${r.lot >= LOT_STEP ? fmt(r.lot, 2) : '0.00'} lot this makes ${fmt(r.lotDollars)} of the ${fmt(r.profit)} target`
+}
+
+/* The path to the goal, as a table -- grouped by the same Weekly/Daily toggle
+   the headline answer uses, so the rows are in the unit the question asks in.
+
+   Which path: the card's main answer when there is one (the required % over
+   the horizon, which by construction lands on the goal at the end), otherwise
+   the plan's own target run up to the day it reaches the goal (goalTime). Same
+   inputs as the calculation each row restates -- deposits and withdrawals in
+   both; tiers/$-mode only on the target path, because requiredPctPerDay solves
+   for a single flat rate and has none. */
+const goalPath = computed(() => {
+    if (goalSeek.value) {
+        const p = buildProjection(start.value, goalSeek.value.requiredPctPerDay, months.value,
+            deposits.value, startDate.value, [], withdrawals.value)
+        return { source: 'required', days: p.days }
+    }
+    if (goalTime.value && !goalTime.value.already) {
+        const p = buildProjection(start.value, target.value == null ? 0 : target.value, 120,
+            deposits.value, startDate.value, isAmountMode.value ? [] : tiers.value,
+            withdrawals.value, projectionOptions.value)
+        return { source: 'target', days: p.days.slice(0, goalTime.value.tradingDays) }
+    }
+    return null
+})
+
+const goalPathRows = computed(() => {
+    if (!goalPath.value) return []
+    const days = withLots(goalPath.value.days, sizingPips.value, activePlan.value.symbol)
+    return rollup(days, goalSeekUnit.value === 'week' ? 'weekly' : 'daily').map((r) => {
+        // Growth within the period itself, on what was in the account for it --
+        // the money deposited during the period is capital, not return.
+        const base = r.opening + (r.deposit || 0)
+        return {
+            ...r,
+            periodPct: base > 0 ? (r.profit / base) * 100 : null,
+            progressPct: goal.value > 0 ? (r.closing / goal.value) * 100 : null,
+        }
+    })
+})
 
 /* ---- Tie Goal seek to Target projection above it ----
    How the Target % per day you've already set compares to what this goal
@@ -124,6 +205,24 @@ const goalSeekPipsPerDay = computed(() => {
     return pips == null ? null : { pips, ...pipsRealismVerdict(pips) }
 })
 
+/* ---- Lot sizing: the reverse of the pips figures above ----
+   Those take a lot size and say how many pips the target needs. This takes a
+   pip distance and says what lot makes the target over it -- e.g. 10% of the
+   account over 1000 pips -- or, with no distance given, lists the lot for a
+   range of distances to choose from.
+
+   Needs only the starting balance and a target: deliberately NOT the horizon
+   (sizing one day's trade has nothing to do with how many months the plan
+   runs) and not the Lot size field (the lot is the answer here, not an input). */
+const day1TargetDollars = computed(() => {
+    if (isAmountMode.value) return dailyAmount.value > 0 ? dailyAmount.value : null
+    if (!(start.value > 0) || (target.value == null && !hasTiers.value)) return null
+    // Through the same resolver the projection uses, so a stepped plan sizes
+    // against the rate that actually applies at the starting balance.
+    const dollars = start.value * tierRateResolver(target.value, tiers.value)(start.value)
+    return dollars > 0 ? dollars : null
+})
+
 /* How far to zoom into the compounding: every trading day, or rolled up. */
 const GRANULARITIES = [
     { id: 'daily', label: 'Daily' },
@@ -131,7 +230,9 @@ const GRANULARITIES = [
     { id: 'monthly', label: 'Monthly' },
 ]
 const granularity = ref('daily')
-const rows = computed(() => (projection.value ? rollup(projection.value.days, granularity.value) : []))
+const rows = computed(() => (projection.value
+    ? rollup(withLots(projection.value.days, sizingPips.value, activePlan.value.symbol), granularity.value)
+    : []))
 
 /* ---- Balance curve (one series per trading day) ----
    Single series, so no legend — the card title names it. Colors come from the
@@ -339,11 +440,19 @@ watch(projection, async (p) => {
                 </div>
             </div>
 
+            <!-- Lot sizing. Outside the projection template on purpose: it needs a
+                 balance and a target, not a horizon, so it works before one is set. -->
+            <PlanLotSizing class="mt-3" :plan="activePlan" :dollars="day1TargetDollars"
+                :basis="!isAmountMode && !hasTiers ? fmt(target, 2) + '% of ' + fmt(start, 0) : ''">
+                Sized on the starting balance — as the balance grows, the same % needs a bigger lot: with a
+                pip distance set, both tables below show the lot for every day on the way.
+            </PlanLotSizing>
+
             <template v-if="projection">
                 <div class="statGrid my-3">
                     <div class="statTile">
                         <div class="statLabel">Principal</div>
-                        <div class="statValue">{{ fmt(start, 0) }}</div>
+                        <div class="statValue" :title="fmt(start, 0)">{{ fmtCompact(start, 0) }}</div>
                         <div class="statSub">money you started with</div>
                     </div>
                     <div class="statTile">
@@ -353,7 +462,7 @@ watch(projection, async (p) => {
                     </div>
                     <div class="statTile" v-if="projection.deposited > 0">
                         <div class="statLabel">Extra deposits</div>
-                        <div class="statValue">{{ fmt(projection.deposited) }}</div>
+                        <div class="statValue" :title="fmt(projection.deposited)">{{ fmtCompact(projection.deposited) }}</div>
                         <div class="statSub" v-if="projection.ignoredDeposited > 0">
                             +{{ fmt(projection.ignoredDeposited) }} outside horizon, ignored
                         </div>
@@ -361,7 +470,7 @@ watch(projection, async (p) => {
                     </div>
                     <div class="statTile" v-if="projection.withdrawn > 0">
                         <div class="statLabel">Withdrawn</div>
-                        <div class="statValue redTrade">−{{ fmt(projection.withdrawn) }}</div>
+                        <div class="statValue redTrade" :title="fmt(projection.withdrawn)">−{{ fmtCompact(projection.withdrawn) }}</div>
                         <div class="statSub" v-if="projection.ignoredWithdrawn > 0">
                             +{{ fmt(projection.ignoredWithdrawn) }} outside horizon, ignored
                         </div>
@@ -369,22 +478,22 @@ watch(projection, async (p) => {
                     </div>
                     <div class="statTile">
                         <div class="statLabel">Projected balance</div>
-                        <div class="statValue" v-bind:class="pnlClass(projection.profit)">{{ fmt(projection.finalBalance) }}</div>
+                        <div class="statValue" v-bind:class="pnlClass(projection.profit)" :title="fmt(projection.finalBalance)">{{ fmtCompact(projection.finalBalance) }}</div>
                         <div class="statSub" v-if="projection.deposited > 0">of which contributed: {{ fmt(projection.contributed) }}</div>
                     </div>
                     <div class="statTile">
                         <div class="statLabel">Trading profit</div>
-                        <div class="statValue" v-bind:class="pnlClass(projection.profit)">{{ fmt(projection.profit) }}</div>
+                        <div class="statValue" v-bind:class="pnlClass(projection.profit)" :title="fmt(projection.profit)">{{ fmtCompact(projection.profit) }}</div>
                         <div class="statSub" v-if="projection.deposited > 0">excludes deposits</div>
                     </div>
                     <div class="statTile">
                         <div class="statLabel">Total return</div>
-                        <div class="statValue" v-bind:class="pnlClass(projection.totalReturnPct)">{{ fmt(projection.totalReturnPct) }}%</div>
+                        <div class="statValue" v-bind:class="pnlClass(projection.totalReturnPct)" :title="fmt(projection.totalReturnPct) + '%'">{{ fmtCompact(projection.totalReturnPct) }}%</div>
                         <div class="statSub" v-if="projection.deposited > 0">on capital contributed</div>
                     </div>
                     <div class="statTile" v-if="targetPipsPerDay">
                         <div class="statLabel">Pips needed (day 1)</div>
-                        <div class="statValue" v-bind:class="toneClass(targetPipsPerDay.tone)">{{ fmt(targetPipsPerDay.pips, 0) }}</div>
+                        <div class="statValue" v-bind:class="toneClass(targetPipsPerDay.tone)" :title="fmt(targetPipsPerDay.pips, 0)">{{ fmtCompact(targetPipsPerDay.pips, 0) }}</div>
                         <div class="statSub">{{ activePlan.symbol || 'symbol' }} · {{ fmt(lotSize, 2) }} lot</div>
                     </div>
                 </div>
@@ -425,6 +534,7 @@ watch(projection, async (p) => {
                                 <th class="text-end" v-if="projection.withdrawn > 0">Withdraw</th>
                                 <th class="text-end">Profit</th>
                                 <th class="text-end" v-if="lotSize != null">Pips</th>
+                                <th class="text-end" v-if="sizingPips">Lot @ {{ fmt(sizingPips, 0) }} pips</th>
                                 <th class="text-end">Closing</th>
                                 <th class="text-end">Cumulative</th>
                             </tr>
@@ -444,6 +554,8 @@ watch(projection, async (p) => {
                                 </td>
                                 <td class="text-end" v-bind:class="pnlClass(r.profit)">{{ fmt(r.profit) }}</td>
                                 <td class="text-end" v-if="lotSize != null">{{ fmt(dollarsToPips(r.profit, activePlan.symbol, lotSize), 0) }}</td>
+                                <td class="text-end" v-if="sizingPips" v-bind:class="r.lotShort ? 'warnTrade' : 'lotCell'"
+                                    :title="lotTitle(r)">{{ lotLabel(r) }}</td>
                                 <td class="text-end fw-bold">{{ fmt(r.closing) }}</td>
                                 <td class="text-end" v-bind:class="pnlClass(r.cumulativeReturnPct)">{{ fmt(r.cumulativeReturnPct) }}%</td>
                             </tr>
@@ -452,9 +564,18 @@ watch(projection, async (p) => {
                 </div>
                 <p class="txt-small text-muted mt-2 mb-0">
                     {{ rows.length }} rows · weekends skipped (market closed)
+                    <span v-if="sizingPips"> · Lot = that day's profit ÷ ({{ fmt(sizingPips, 0) }} pips ×
+                        {{ fmt(pipValuePerLot(activePlan.symbol), 2) }}/pip/lot), rounded down —
+                        <span class="warnTrade">amber</span> where the tradeable lot makes &gt;10% less than the target (hover for detail)</span>
+                    <span v-else-if="day1TargetDollars"> · enter Pips in the Lot size box above to see the lot to trade each day</span>
                 </p>
             </template>
-            <div v-else class="hintLine">Enter a starting balance, horizon, and target % per day.</div>
+            <!-- Say what is actually missing -- with a balance and a target already
+                 in, the only thing standing between them and the table is a horizon. -->
+            <div v-else class="hintLine">
+                <span v-if="start > 0 && hasAnyTarget">Enter a horizon (months) to see the day-by-day projection.</span>
+                <span v-else>Enter a starting balance, horizon, and target % per day.</span>
+            </div>
         </div>
 
         <!-- ---------- Goal seek ---------- -->
@@ -514,7 +635,82 @@ watch(projection, async (p) => {
                 </p>
                 <p v-else-if="lotSize == null" class="hintLine mt-2 mb-0">Enter a lot size above to see this in pips/day.</p>
             </template>
-            <div v-else class="hintLine">Enter a starting balance, horizon, and goal balance.</div>
+            <!-- Time to goal at the target above. Needs no horizon, so it answers
+                 even when the %-needed calculation above cannot. -->
+            <p v-if="goalTime" class="goalLine mt-3 mb-0">
+                <template v-if="goalTime.already">
+                    You're already at or above <strong>{{ fmt(goal, 0) }}</strong>.
+                </template>
+                <template v-else>
+                    At your target
+                    (<strong>{{ isAmountMode ? fmt(dailyAmount) + ' / day' : (hasTiers ? 'stepped % / day' : fmt(target, 2) + '% / day') }}</strong>)
+                    you reach <strong>{{ fmt(goal, 0) }}</strong> from <strong>{{ fmt(start, 0) }}</strong><span
+                        v-if="deposits.length"> plus your deposits</span> in
+                    <strong class="greenTrade">{{ goalTime.tradingDays }} trading days</strong> — around
+                    <strong>{{ goalTime.date }}</strong>.
+                </template>
+            </p>
+            <p v-else-if="start > 0 && goal > 0 && hasAnyTarget" class="hintLine mb-0">
+                At your target this goal isn't reached within 10 years (120 months).
+            </p>
+
+            <!-- Path to the goal, period by period -->
+            <template v-if="goalPathRows.length">
+                <p class="txt-small text-muted mt-3 mb-2">
+                    <i class="uil uil-table me-1"></i>
+                    <span v-if="goalPath.source === 'required'">Path at the required
+                        {{ fmt(goalSeek.requiredPctPerDay, 3) }}%/day over {{ months }} month(s)</span>
+                    <span v-else>Path at your target, up to the day the goal is reached</span>
+                    — {{ goalSeekUnit === 'week' ? 'by week' : 'by trading day' }}.
+                    <span v-if="sizingPips">Lot column sized at {{ fmt(sizingPips, 0) }} pips, same as the Target projection.</span>
+                    <span v-else>Enter Pips in the Lot size box above to see the lot to trade on the way.</span>
+                </p>
+                <div class="tableScroll">
+                    <table class="table table-sm breakTable mb-0">
+                        <thead>
+                            <tr>
+                                <th>{{ goalSeekUnit === 'week' ? 'Week' : 'Day' }}</th>
+                                <th class="text-end" v-if="goalSeekUnit === 'week'">Days</th>
+                                <th class="text-end">Opening</th>
+                                <th class="text-end" v-if="goalPathRows.some((r) => r.deposit)">Deposit</th>
+                                <th class="text-end" v-if="goalPathRows.some((r) => r.withdrawal)">Withdraw</th>
+                                <th class="text-end">Profit</th>
+                                <th class="text-end">% this {{ goalSeekUnit === 'week' ? 'week' : 'day' }}</th>
+                                <th class="text-end" v-if="sizingPips">Lot @ {{ fmt(sizingPips, 0) }} pips</th>
+                                <th class="text-end">Closing</th>
+                                <th class="text-end">To goal</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="r in goalPathRows" :key="r.label">
+                                <td><span v-if="goalSeekUnit !== 'week'" class="dayNum">{{ r.n }}</span>{{ r.label }}</td>
+                                <td class="text-end" v-if="goalSeekUnit === 'week'">{{ r.tradingDays }}</td>
+                                <td class="text-end">{{ fmt(r.opening) }}</td>
+                                <td class="text-end" v-if="goalPathRows.some((x) => x.deposit)">
+                                    <span v-if="r.deposit">+{{ fmt(r.deposit) }}</span><span v-else class="text-muted">—</span>
+                                </td>
+                                <td class="text-end" v-if="goalPathRows.some((x) => x.withdrawal)">
+                                    <span v-if="r.withdrawal" class="redTrade">−{{ fmt(r.withdrawal) }}</span><span v-else class="text-muted">—</span>
+                                </td>
+                                <td class="text-end" v-bind:class="pnlClass(r.profit)">{{ fmt(r.profit) }}</td>
+                                <td class="text-end" v-bind:class="pnlClass(r.periodPct)">{{ fmt(r.periodPct, 2) }}%</td>
+                                <td class="text-end" v-if="sizingPips" v-bind:class="r.lotShort ? 'warnTrade' : 'lotCell'"
+                                    :title="lotTitle(r)">{{ lotLabel(r) }}</td>
+                                <td class="text-end fw-bold">{{ fmt(r.closing) }}</td>
+                                <td class="text-end" v-bind:class="r.progressPct >= 100 ? 'greenTrade' : ''">
+                                    {{ fmt(Math.min(r.progressPct, 999), 1) }}%
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </template>
+
+            <div v-if="!goalSeek" class="hintLine">
+                <span v-if="!(start > 0) || !(goal > 0)">Enter a starting balance and a goal balance.</span>
+                <span v-else>Enter a horizon (months) to also see the % per {{ goalSeekUnit }} this goal needs<span
+                        v-if="!hasAnyTarget">, or set a target above to see how long it takes</span>.</span>
+            </div>
         </div>
 
         <p class="txt-small text-muted mt-3">
@@ -536,6 +732,7 @@ watch(projection, async (p) => {
     border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 0.6rem;
     padding: 0.75rem 0.9rem;
+    min-width: 0;
 }
 
 .statLabel {
@@ -549,6 +746,9 @@ watch(projection, async (p) => {
     font-size: 1.35rem;
     font-weight: 700;
     margin-top: 0.15rem;
+    /* Last resort if a value is still too long for its tile (fmtCompact keeps
+       the usual cases short): wrap inside the box, never paint over the next. */
+    overflow-wrap: anywhere;
 }
 
 .statSub {
@@ -715,6 +915,12 @@ watch(projection, async (p) => {
     border-top: 1px solid rgba(255, 255, 255, 0.06);
     padding-top: 0.6rem;
 }
+
+/* Lot cells read as the actionable column without shouting -- accent, not bold. */
+.lotCell {
+    color: var(--accent);
+}
+
 
 .tierRows {
     display: flex;

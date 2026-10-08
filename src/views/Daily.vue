@@ -1,7 +1,6 @@
 <script setup>
 import { onBeforeMount, onMounted, onUnmounted, computed, reactive, ref } from 'vue';
 import Filters from '../components/Filters.vue'
-import NoData from '../components/NoData.vue';
 import SpinnerLoadingPage from '../components/SpinnerLoadingPage.vue';
 import Calendar from '../components/Calendar.vue';
 import Screenshot from '../components/Screenshot.vue'
@@ -961,8 +960,20 @@ function getOHLC(date, symbol, type) {
     <SpinnerLoadingPage />
     <div v-if="!spinnerLoadingPage && filteredTrades" class="row mt-2 mb-2">
         <Filters />
-        <div v-if="!hasData">
-            <NoData />
+        <!-- Zero state, same as Dashboard: an empty period reads as $0.00 / 0 trades
+             in the History header's own style rather than an "add data" prompt. -->
+        <div v-if="!hasData" class="row">
+            <div class="col-12 col-xl-9">
+                <div class="histGroupHead mt-2">
+                    <div class="histGroupLabel">
+                        <i class="uil uil-calendar-alt me-2"></i>No trades in this period
+                    </div>
+                    <div class="histGroupStats">
+                        <span class="histGroupPnl">{{ useTwoDecCurrencyFormat(0) }}</span>
+                        <span class="histGroupTrades">0 trades</span>
+                    </div>
+                </div>
+            </div>
         </div>
         <div v-show="hasData">
             <!-- added v-if instead v-show because need to wait for patterns to load -->
