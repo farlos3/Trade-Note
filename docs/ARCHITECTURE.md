@@ -66,7 +66,7 @@ terminal, a config and an agent per account — not set up.
 
 | File | Purpose |
 |------|---------|
-| `index.mjs` | **Backend.** Express + Parse Server. Custom endpoints: R2 upload/delete, `POST /api/account` (MT5 balance + dated `cashFlows`), `GET /api/analysis/behavior` (rule-based stats + daily P&L breakdown + notes), `GET /api/analysis/fingerprint`, `POST /api/analysis/ai-summary` (Claude LLM, off unless `ANTHROPIC_API_KEY`). |
+| `index.mjs` | **Backend.** Express + Parse Server. Custom endpoints: R2 upload/delete, `POST /api/account` (MT5 balance + dated `cashFlows`), `GET /api/analysis/behavior` (rule-based stats + daily P&L breakdown + notes), `GET /api/analysis/fingerprint`, `POST /api/analysis/ai-summary` (Claude LLM, off unless `ANTHROPIC_API_KEY`), `POST /api/sheets-webhook` (one manual trade per Google Sheet row — see `mt5-sync/google-apps-script/`). |
 | `index.html` | SPA entry HTML (Vite). |
 | `package.json` / `package-lock.json` | Frontend + backend deps and scripts. |
 | `vite.config.js` | Vite build/dev config. `optimizeDeps.include` + `server.warmup` to cut first-visit lazy-compile lag. |
@@ -93,15 +93,16 @@ terminal, a config and an agent per account — not set up.
 | `src/views/Dashboard.vue` | Home dashboard: stat tiles (2-tier: Total Trades / Profit / Win Rate hero), Equity chart (withdrawal-aware), Cumulated P&L, per-side stats. |
 | `src/views/Daily.vue` | **History** page. Per-day cards; Daily/Weekly/Monthly filter with group subtotals. |
 | `src/views/Calendar.vue` | Monthly P&L calendar grid. |
-| `src/views/PlanVsActual.vue` | Plan target vs actual equity + daily P&L. Equity is withdrawal-aware (merged timeline); **plan line does NOT subtract withdrawals**. Optional running costs (hosting/VPS/data) as a named list, summed to a monthly figure, charged over calendar time and shown as an after-cost result + break-even per traded day. |
-| `src/views/Plan.vue` | Create/edit growth plans (start balance, % per day, deposits, withdrawals). |
+| `src/views/PlanVsActual.vue` | Plan target vs actual equity + daily P&L. Equity is withdrawal-aware (merged timeline); **plan line does NOT subtract withdrawals**. **Lot for today** card sizes the lot on the active account's real MT5 balance (fallbacks labelled) and compares with where the plan says the balance should be today. Optional running costs (hosting/VPS/data) as a named list, summed to a monthly figure, charged over calendar time and shown as an after-cost result + break-even per traded day. |
+| `src/views/Stats.vue` | Win-rate / net P&L by **Technique tag** — reads trades + tag assignments directly rather than Dashboard's selection-filtered `groups.tags`, so it shows every technique, not just the ones ticked in the tag filter. |
+| `src/views/Plan.vue` | Create/edit growth plans (start balance, % or $ per day, deposits, withdrawals). **Lot sizing** block: day-1 target ÷ (pips × $/pip/lot) → lot, floored to 0.01 (`lotForDollars`/`floorLot` in planMath.js); with no pip distance it lists options (`suggestedPipDistances`). Needs no horizon. Goal seek also answers without a horizon: `timeToGoal` runs the projection at the plan's own target and reports the first trading day it closes at/above the goal. |
 | `src/views/Analysis.vue` | AI Analysis. Server feeds the model trade stats, behaviour flags, notes, weekly reviews, diary entries and entry reviews. Rule-based behavior summary (English) + fingerprint cache; "Analyze behavior" button calls LLM; export prompt+data JSON for Claude. |
 | `src/views/AddTrades.vue` / `Imports.vue` | Import trades (broker CSV / manual). |
 | `src/views/AddDiary.vue` / `Diary.vue` | Diary entries (rich text + day files preview). Three tabs: Day / Week / Entry reviews. "Open a day" adds a card for any date (incl. non-trading days) so files can be attached there; day cards carry the upload control. Weekly plans live on WeeklyPlan.vue, not here. |
 | `src/views/Mindset.vue` | **Mindset** page (Journal section). Principles the trader writes for themselves, pinned-first then newest, filterable by theme. Own `mindsets` class — not date-anchored like `notes`. CRUD in `src/utils/mindset.js`. |
 | `src/views/WeeklyPlan.vue` | **Weekly Plan** page (Journal section). Next week + this week pinned as the two actionable cards, older weeks as history; Monday/Friday reminder banner. Same `notes` week records as the gate popup and Diary's Plan tab. |
 | `src/views/AddScreenshot.vue` / `Screenshots.vue` | Trade screenshots (stored in R2). |
-| `src/views/AddPlaybook.vue` / `Playbook.vue` | Trading playbooks. |
+| `src/views/AddPlaybook.vue` / `Playbook.vue` | Trading playbooks — nav-visible as **"Setup"** (SideMenu.vue/router meta.title relabel only; route, view and the `playbooks` class are unchanged). |
 | `src/views/AddExcursions.vue` | MAE/MFE excursion entry. |
 | `src/views/Settings.vue` | User settings (timezone, currency, broker, etc.). |
 | `src/views/Login.vue` / `Register.vue` | Auth pages. |
@@ -118,6 +119,7 @@ terminal, a config and an agent per account — not set up.
 | `src/components/Screenshot.vue` | Single screenshot card. |
 | `src/components/PlanSelector.vue` | Active-plan dropdown. |
 | `src/components/PlanDepositsEditor.vue` / `PlanWithdrawalsEditor.vue` | Edit a plan's deposits / withdrawals. |
+| `src/components/PlanLotSizing.vue` | Lot for one day's target $ over the plan's `targetPips` (or an options table when blank), floored to 0.01. Shared by Trading Plan (starting balance) and Plan vs Actual (real balance). |
 | `src/components/LoginRegister.vue` | Shared auth form. |
 | `src/components/FpDate.vue` | Flatpickr date field wrapper. |
 | `src/components/NoData.vue`, `SpinnerLoadingPage.vue`, `ReturnToTopButton.vue` | UI primitives. |
@@ -130,12 +132,12 @@ terminal, a config and an agent per account — not set up.
 | `src/stores/counter.js` | Upstream Pinia example (largely unused). |
 | `src/utils/utils.js` | Core helpers: tab init, Parse init, current-user check, misc. |
 | `src/utils/trades.js` | Fetch/filter trades (`useGetFilteredTrades`, `useGetTrades`, per-day filtering). |
-| `src/utils/addTrades.js` | Build/insert trades from imports; dedupe against existing. |
+| `src/utils/addTrades.js` | Build/insert trades from imports; dedupe against existing. `useSaveSheetTrade`/`useEnsureAccountRegistered` are the server-side (ParseNode+masterKey) path the Sheets webhook uses — same `useBuildManualTrades` pipeline `addOrder.js` uses client-side, merge-not-replace into the day doc, de-duplicated by `sheetRowId` so re-editing a Sheet row updates in place. |
 | `src/utils/addOrder.js` | Forex pip/contract-size/PnL math for manual orders. |
 | `src/utils/brokers.js` | Per-broker CSV parsers (TradeZero, MetaTrader5, Td Ameritrade, …). |
 | `src/utils/calendar.js` | Build calendar P&L data. |
 | `src/utils/charts.js` | ECharts helpers (line/double-line/pie renderers). |
-| `src/utils/daily.js` | Daily satisfaction + daily-page data helpers. |
+| `src/utils/daily.js` | Daily satisfaction + daily-page data helpers. `useEnsureTechniqueTag`/`useAssignTag` are the server-side (ParseNode+masterKey) tag writers the Sheets webhook uses, independent of the client-reactive `useUpdateAvailableTags`/`useUpdateTags`. |
 | `src/utils/entryChecklist.js` | `loadEntryChecklists()` — reads saved post-entry reviews back for Diary's Entry reviews tab and History's day cards. The popup that used to collect them (queue, watcher, modal) was removed on request; nothing writes this class any more, the existing rows stay. |
 | `src/utils/weeklyGates.js` | Weekly discipline gates (Friday plan / Monday review / missing reflection) + the shared read-write helpers for week plan records. `loadWeekNotes()` is the unfiltered loader; `daily.js`'s `useGetWeekNotes()` drops weeks with no summary and no plan text. |
 | `src/utils/dayFiles.js` | Upload/list/delete day-summary files (R2). Supports multiple files per day. |
@@ -171,6 +173,7 @@ terminal, a config and an agent per account — not set up.
 | `mt5-sync/mt5_sync.py` | Reads MT5 deals, maps to trades, buckets by trade tz, computes account financials (deposits/withdrawals as dated `cashFlows`), pushes to `POST /api/account` + trade import. Email notify is commented out. Two interchangeable backends (`pick_backend`), see below. **`state.json` is keyed per login** (`accounts.<login>.last_deal_unix` / `last_account_sig`) so one terminal switched between accounts does not hide the other's trades behind a shared watermark. |
 | `mt5-sync/mql5/TradeNoteExport.mq5` | Read-only Expert Advisor. Runs inside the terminal and writes deals + account + open positions + balance ops to `<data folder>/MQL5/Files/tradenote_deals.json` every 15s and on each `OnTrade`. Temp-file-then-rename, so a reader never sees a partial write. |
 | `mt5-sync/mql5/TradeNoteBreakEven.mq5` | Read-only **indicator**. Draws the price at which every open position on the chart's symbol nets to 0.00 — swap and entry commission included, longs closed at bid and shorts at ask. Closed form (the basket's P&L is linear in price), so no iteration; a perfectly hedged basket has no such price and says so. Nothing to do with the sync — it never writes a file. |
+| `mt5-sync/google-apps-script/sheets-webhook.gs` | Pasted into a Google Sheet (Extensions → Apps Script), not run by this repo. An installed `onEdit`-style trigger that POSTs one edited journal row to `POST /api/sheets-webhook` using the same TradeNote API key MT5 sync already uses. Sheet → TradeNote only; no Google credential exists on the TradeNote side. Skips a row until its result $ is filled in (v1 does not sync open/still-planned rows). |
 | `mt5-sync/install-ea.sh` | Copies the EA into `MQL5/Experts` and the indicator into `MQL5/Indicators`, in every MT5 data folder found — normal, portable, and macOS Wine-bottle layouts. Compiling (F7) stays manual: MetaEditor's headless `/compile` does not work under MT5-for-Mac's Wine build. |
 | `mt5-sync/config.example.ini` | Template (backend, login, server, TradeNote URL). Real `config.ini` + `state.json` gitignored. |
 | `mt5-sync/templates/` | Chart templates (`.tpl`) exported from MT5, so the same chart setup restores on any machine. |

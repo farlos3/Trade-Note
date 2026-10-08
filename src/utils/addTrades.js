@@ -2132,6 +2132,166 @@ function accountOfDay(dayUnix) {
     return [...labels][0] || ""
 }
 
+/**
+ * Server-side sibling of addOrder.js's ensureManualAccount(): registers an
+ * account label on the user (so it shows up in the account-profile switcher) if
+ * it isn't there yet. ParseNode+masterKey because this runs under Node, not in
+ * the browser.
+ */
+export async function useEnsureAccountRegistered(ParseNode, account) {
+    if (!account) return
+    const query = new ParseNode.Query(ParseNode.User)
+    query.equalTo('objectId', currentUser.value.objectId)
+    const user = await query.first({ useMasterKey: true })
+    if (!user) return
+    const accounts = user.get('accounts') || []
+    if (accounts.find(a => a.value === account)) return
+    accounts.push({ value: account, label: account })
+    user.set('accounts', accounts)
+    await user.save(null, { useMasterKey: true })
+}
+
+/**
+ * One execution-row half (entry or exit) in the shape createTempExecutions/
+ * createExecutions/createTrades already expect -- mirrors addOrder.js's unexported
+ * buildRow(), reimplemented here rather than imported because addOrder.js is a
+ * client-only module (Parse.User.current(), window.location) and cannot be
+ * required from the server.
+ */
+function buildSheetRow(account, note) {
+    return {
+        Account: account || 'Manual',
+        Currency: 'USD',
+        Type: 'forex',
+        SymbolOriginal: '', Symbol: '',
+        Comm: '0', SEC: '0', TAF: '0', NSCC: '0', Nasdaq: '0',
+        'ECN Remove': '0', 'ECN Add': '0',
+        'Gross Proceeds': '0', 'Net Proceeds': '0',
+        'Clr Broker': '', Liq: '', Note: note || ''
+    }
+}
+
+/**
+ * Build and merge ONE manual trade from a Google Sheet row into the active
+ * account's day document. Server-side sibling of addOrder.js's
+ * useAddManualOrder()+upsertDay() -- same shape, same shared-globals pipeline
+ * (useBuildManualTrades), but using ParseNode+masterKey throughout instead of the
+ * client Parse SDK, because this runs inside index.mjs under Node.
+ *
+ * The Sheet's own realized $ result (`resultAmount`) is written straight into
+ * 'Gross Proceeds'/'Net Proceeds' -- createTrades carries those through to
+ * trde.grossProceeds/netProceeds with no independent price-diff recomputation
+ * (addTrades.js ~439-482), so this is exactly as authoritative as a live price
+ * feed would be, without needing one. Entry/exit PRICE is display only; exitPrice
+ * is a best-available hint (TP on a win, SL on a loss, else entry) since the Sheet
+ * does not record the actual fill.
+ *
+ * Idempotent by `sheetRowId`: re-syncing the same Sheet row (an edit) replaces the
+ * previously-saved trade AND its backing execution rows in place, rather than
+ * appending a second copy -- re-running useCreateBlotter/useCreatePnL on a merge
+ * that still contained the old copy would double-count that row in every stat.
+ */
+export async function useSaveSheetTrade(ParseNode, { account, dateUnix, tz, side, symbol, lot, entryPrice, exitPriceHint, resultAmount, note, sheetRowId }) {
+    const isLong = String(side || '').trim().toLowerCase() !== 'sell'
+    const dayStart = dayjs.unix(dateUnix).tz(tz)
+    const tD = dayStart.format('MM/DD/YYYY')
+    // The Sheet records a date, not a time. Two different rows landing on the same
+    // literal second would otherwise collide in createTrades' grouping, so each row
+    // gets a synthetic time derived from its own (stable) row number -- distinct
+    // between rows, and unchanged across re-edits of the SAME row.
+    const seedSeconds = (Number(sheetRowId.split(':').pop()) * 7) % 86396
+    const entryClock = dayjs.unix(seedSeconds).utc().format('HH:mm:ss')
+    const exitClock = dayjs.unix(seedSeconds + 1).utc().format('HH:mm:ss')
+
+    tradesData.length = 0
+    const entryRow = buildSheetRow(account, note)
+    entryRow.SymbolOriginal = symbol; entryRow.Symbol = symbol
+    entryRow.Side = isLong ? 'B' : 'SS'
+    entryRow['T/D'] = tD; entryRow['S/D'] = tD
+    entryRow.Qty = String(lot); entryRow.Price = String(entryPrice)
+    entryRow['Exec Time'] = entryClock
+    tradesData.push(entryRow)
+
+    const exitRow = buildSheetRow(account, note)
+    exitRow.SymbolOriginal = symbol; exitRow.Symbol = symbol
+    exitRow.Side = isLong ? 'S' : 'BC'
+    exitRow['T/D'] = tD; exitRow['S/D'] = tD
+    exitRow.Qty = String(lot)
+    exitRow.Price = String(exitPriceHint != null ? exitPriceHint : entryPrice)
+    exitRow['Exec Time'] = exitClock
+    exitRow['Gross Proceeds'] = String(resultAmount)
+    exitRow['Net Proceeds'] = String(resultAmount)
+    tradesData.push(exitRow)
+
+    // createTempExecutions reads this as a global, not as a parameter -- without
+    // setting it here it would silently use whatever this process last left it
+    // at (or 'America/New_York' default), bucketing the row onto the wrong day.
+    timeZoneTrade.value = tz
+    selectedBroker.value = 'manual'
+    uploadMfePrices.value = false
+    for (const k in executions) delete executions[k]
+    for (const k in trades) delete trades[k]
+    for (const k in blotter) delete blotter[k]
+    for (const k in pAndL) delete pAndL[k]
+
+    await useBuildManualTrades()
+
+    // Exactly one day bucket should exist (both rows share T/D), but guard rather
+    // than assume -- an empty trades[dayUnix] would mean the row's own entry/exit
+    // got grouped onto dayjs's own idea of "today" instead, which must not happen
+    // silently.
+    const builtDayUnix = Object.keys(trades)[0]
+    if (!builtDayUnix || !(trades[builtDayUnix] || []).length) {
+        throw new Error('Sheet row did not produce a trade (check date/side/entryPrice)')
+    }
+    for (const t of trades[builtDayUnix]) { t.account = account; t.sheetRowId = sheetRowId }
+    for (const e of (executions[builtDayUnix] || [])) { e.account = account; e.sheetRowId = sheetRowId }
+
+    const parseObject = ParseNode.Object.extend('trades')
+    const scoped = new ParseNode.Query(parseObject)
+    scoped.equalTo('user', { __type: 'Pointer', className: '_User', objectId: currentUser.value.objectId })
+    scoped.equalTo('dateUnix', Number(builtDayUnix))
+    scoped.equalTo('account', account)
+    const legacy = new ParseNode.Query(parseObject)
+    legacy.equalTo('user', { __type: 'Pointer', className: '_User', objectId: currentUser.value.objectId })
+    legacy.equalTo('dateUnix', Number(builtDayUnix))
+    legacy.doesNotExist('account')
+    const existing = (await ParseNode.Query.or(scoped, legacy).find({ useMasterKey: true }))[0]
+
+    // Drop any prior copy of THIS row before merging the fresh one in -- the
+    // de-dup key is sheetRowId, not position in the array.
+    const priorTrades = existing ? (existing.get('trades') || []).filter(t => t.sheetRowId !== sheetRowId) : []
+    const priorExecs = existing ? (existing.get('executions') || []).filter(e => e.sheetRowId !== sheetRowId) : []
+    const mergedTrades = priorTrades.concat(trades[builtDayUnix])
+    const mergedExecs = priorExecs.concat(executions[builtDayUnix] || [])
+
+    trades[builtDayUnix] = mergedTrades
+    executions[builtDayUnix] = mergedExecs
+    await useCreateBlotter()
+    await useCreatePnL()
+
+    const object = existing || new parseObject()
+    if (!existing) {
+        object.set('user', { __type: 'Pointer', className: '_User', objectId: currentUser.value.objectId })
+        object.set('date', new Date(dayStart.format('YYYY-MM-DD')))
+        object.set('dateUnix', Number(builtDayUnix))
+        const ACL = new ParseNode.ACL()
+        ACL.setReadAccess(currentUser.value.objectId, true)
+        ACL.setWriteAccess(currentUser.value.objectId, true)
+        object.setACL(ACL)
+    }
+    object.set('account', account)
+    object.set('executions', mergedExecs)
+    object.set('trades', mergedTrades)
+    object.set('blotter', blotter[builtDayUnix])
+    object.set('pAndL', pAndL[builtDayUnix])
+    object.set('openPositions', mergedTrades.some(t => t.openPosition))
+    await object.save(null, { useMasterKey: true })
+
+    const savedTrade = mergedTrades.find(t => t.sheetRowId === sheetRowId)
+    return { dateUnix: Number(builtDayUnix), tradeId: savedTrade && savedTrade.id }
+}
+
 export async function useUploadTrades(param99, param0) {
 
     console.log("\nUPLOADING TRADES")

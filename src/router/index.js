@@ -170,6 +170,27 @@ const routes = [{
             import('../views/Playbook.vue')
     },
     {
+        // The Setup tab: the trader's collection of trade setups (see utils/setups.js).
+        path: '/setups',
+        name: 'setups',
+        meta: {
+            title: "Setup",
+            layout: DashboardLayout
+        },
+        component: () =>
+            import('../views/Setups.vue')
+    },
+    {
+        path: '/stats',
+        name: 'stats',
+        meta: {
+            title: "Stats",
+            layout: DashboardLayout
+        },
+        component: () =>
+            import('../views/Stats.vue')
+    },
+    {
         path: '/addTrades',
         name: 'addTrades',
         meta: {

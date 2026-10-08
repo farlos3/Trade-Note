@@ -13,7 +13,6 @@ import { numOrNull } from '../utils/planMath'
 import { useJournalUpdates } from '../utils/journalStream'
 import { useScopedMt5Balance, useScopedMt5CashFlows } from '../utils/mt5Accounts'
 import { profileStartUnix, activeStatsProfile } from '../utils/statsProfile'
-import NoData from '../components/NoData.vue';
 
 const dashTabs = [{
     id: "overviewTab",
@@ -400,7 +399,9 @@ if (typeof window !== 'undefined') window.addEventListener('resize', () => equit
             <!-- Ordered so related tiles sit next to each other and stay paired at
                  every breakpoint (6 / 4 / 3 / 2 per row): volume, outcome counts,
                  rates, money per trade, direction, position size. -->
-            <template v-if="hasData">
+            <!-- Always rendered, data or not: an empty period reads as 0 trades / $0.00 /
+                 0% rather than swapping the page for an "add data" prompt -- the
+                 zeros ARE the answer for that period, and the layout stays put. -->
                 <!-- Hero stats: the three numbers a trader scans first -->
                 <div class="row g-2 mb-2 text-center">
                     <div class="col-12 col-md-4">
@@ -469,12 +470,9 @@ if (typeof window !== 'undefined') window.addEventListener('resize', () => equit
                         </div>
                     </div>
                 </div>
-            </template>
 
-            <div v-if="!hasData">
-                <NoData />
-            </div>
-            <div v-else>
+            <!-- Charts and breakdowns only when there is something to draw. -->
+            <div v-if="hasData">
                 <nav>
                     <div class="nav nav-tabs mb-2" id="nav-tab" role="tablist">
                         <button v-for="dashTab in dashTabs" :key="dashTab.id"

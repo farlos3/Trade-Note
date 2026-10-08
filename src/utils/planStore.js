@@ -52,6 +52,10 @@ function blankPlan(id) {
         // contract-size conventions as manual order entry (see addOrder.js).
         symbol: 'XAUUSD',
         lotSize: '',
+        // The reverse direction: a pip distance to size the lot FROM -- "make the
+        // day's target (e.g. 10% of the account) over this many pips". Blank means
+        // "show me the options" rather than "no sizing".
+        targetPips: '',
     }
 }
 

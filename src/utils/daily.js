@@ -553,6 +553,79 @@ export const useFindHighestIdNumberTradeTags = (param) => {
     return highestId;
 }
 
+/**
+ * Server-side: make sure a "Techniques" tag group exists on the user and that it
+ * has a tag named `technique`, creating either as needed. Returns the tag id.
+ *
+ * Standalone rather than reusing useUpdateAvailableTags(), which is written
+ * against client-reactive globals (tradeTags/newTradeTags/pageId) that have no
+ * server-side meaning -- this talks to `_User.tags` directly, in the same group/
+ * tag shape (`{id,name,color,tags:[{id,name}]}`) that client reads already expect.
+ * A dedicated group (not the default "Ungrouped") keeps Sheet-sourced techniques
+ * visibly separate from tags the trader made by hand.
+ */
+export async function useEnsureTechniqueTag(ParseNode, technique) {
+    const name = String(technique || '').trim()
+    if (!name) return null
+
+    const query = new ParseNode.Query(ParseNode.User)
+    query.equalTo('objectId', currentUser.value.objectId)
+    const user = await query.first({ useMasterKey: true })
+    if (!user) return null
+
+    let groups = user.get('tags') || []
+    let group = groups.find(g => g.id === 'group_techniques')
+    if (!group) {
+        group = { id: 'group_techniques', name: 'Techniques', color: '#2f9bff', tags: [] }
+        groups = groups.concat([group])
+    }
+
+    let tag = group.tags.find(t => t.name.toLowerCase() === name.toLowerCase())
+    if (!tag) {
+        const highest = Math.max(0, ...groups.flatMap(g => g.tags.map(t => Number(String(t.id).replace('tag_', '')) || 0)))
+        tag = { id: 'tag_' + (highest + 1), name }
+        group.tags = group.tags.concat([tag])
+    }
+
+    user.set('tags', groups)
+    await user.save(null, { useMasterKey: true })
+    return tag.id
+}
+
+/**
+ * Server-side: assign one tag id to one trade's tags-class row, creating the row
+ * if it doesn't exist yet. Mirrors useUpdateTags' per-trade branch, minus the
+ * client-reactive pageId/tradeTagsId plumbing this call site already knows.
+ */
+export async function useAssignTag(ParseNode, { tradeId, dateUnix, account, tagId }) {
+    if (!tagId) return
+    const parseObject = ParseNode.Object.extend('tags')
+    const query = new ParseNode.Query(parseObject)
+    query.equalTo('user', { __type: 'Pointer', className: '_User', objectId: currentUser.value.objectId })
+    query.equalTo('tradeId', tradeId)
+    const existing = await query.first({ useMasterKey: true })
+
+    if (existing) {
+        const current = existing.get('tags') || []
+        if (!current.includes(tagId)) existing.set('tags', current.concat([tagId]))
+        if (account) existing.set('account', account)
+        await existing.save(null, { useMasterKey: true })
+        return
+    }
+
+    const object = new parseObject()
+    object.set('user', { __type: 'Pointer', className: '_User', objectId: currentUser.value.objectId })
+    object.set('tradeId', tradeId)
+    object.set('dateUnix', dateUnix)
+    object.set('tags', [tagId])
+    if (account) object.set('account', account)
+    const ACL = new ParseNode.ACL()
+    ACL.setReadAccess(currentUser.value.objectId, true)
+    ACL.setWriteAccess(currentUser.value.objectId, true)
+    object.setACL(ACL)
+    await object.save(null, { useMasterKey: true })
+}
+
 export const useUpdateTags = async () => {
     console.log("\nUPDATING OR SAVING TAGS IN PARSE DB")
     return new Promise(async (resolve, reject) => {

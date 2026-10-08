@@ -89,9 +89,19 @@ const pages = [{
     icon: "uil uil-compass"
 },
 {
+    id: "setups",
+    name: "Setup",
+    icon: "uil uil-book-open"
+},
+{
     id: "addPlaybook",
     name: "Add Playbook",
     icon: "uil uil-compass"
+},
+{
+    id: "stats",
+    name: "Stats",
+    icon: "uil uil-chart-line"
 },
 {
     id: "addTrades",
@@ -169,7 +179,7 @@ const currentPage = computed(() =>
 // never competes with this page's own render/data fetches. A reload discards the JS
 // module registry but not the HTTP cache, so the next real navigation to one of these
 // still gets a cache hit instead of a fresh fetch+transform.
-const MAIN_NAV_PATHS = ['/dashboard', '/live', '/daily', '/calendar', '/analysis', '/plan', '/plan-vs-actual', '/weekly-plan', '/mindset', '/diary', '/screenshots', '/playbook']
+const MAIN_NAV_PATHS = ['/dashboard', '/live', '/daily', '/calendar', '/analysis', '/plan', '/plan-vs-actual', '/stats', '/weekly-plan', '/mindset', '/diary', '/setups', '/screenshots', '/playbook']
 
 function prefetchOtherPages() {
     const run = () => {

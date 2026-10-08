@@ -9,7 +9,8 @@ import axios from 'axios'
 import * as Vite from 'vite'
 import { MongoClient } from "mongodb"
 import Proxy from 'http-proxy'
-import { useImportTrades, useGetExistingTradesArray, useUploadTrades } from './src/utils/addTrades.js';
+import { useImportTrades, useGetExistingTradesArray, useUploadTrades, useSaveSheetTrade, useEnsureAccountRegistered } from './src/utils/addTrades.js';
+import { useEnsureTechniqueTag, useAssignTag } from './src/utils/daily.js';
 import { currentUser, uploadMfePrices } from './src/stores/globals.js';
 import { useGetTimeZone } from './src/utils/utils.js';
 import { fetchDayDocs, fetchNotes, fetchTradesFingerprint, fetchDiaries, fetchEntryReviews } from './mcp-server/db.mjs';
@@ -1120,6 +1121,69 @@ const setupApiRoutes = (app) => {
         } catch (error) {
             console.error(error);
             res.status(500).send({ error: 'Error creating executions' });
+        }
+    }));
+
+    /**********************************************
+     * GOOGLE SHEET JOURNAL SYNC (one manual trade per edited row)
+     *
+     * Pushed by an Apps Script onEdit trigger bound to the user's own Sheet --
+     * see mt5-sync/google-apps-script/sheets-webhook.gs. TradeNote never calls out
+     * to Google in either direction; the Sheet calls us. Auth reuses the same
+     * api-key already in Settings -> API Keys (validateApiKey matches any entry
+     * in _User.apis regardless of provider, so no new secret exists for this).
+     *
+     * Runs through the SAME serialiseImport chain as /api/trades: useBuildManualTrades
+     * (inside useSaveSheetTrade) mutates the identical shared globals, and a sheet
+     * edit landing mid-sync must queue behind it rather than race it.
+     **********************************************/
+    app.post('/api/sheets-webhook', validateApiKey, async (req, res) => serialiseImport(async () => {
+        const b = req.body || {}
+        const required = ['date', 'pair', 'side', 'entryPrice', 'resultAmount', 'row']
+        const missing = required.filter((k) => b[k] === undefined || b[k] === null || b[k] === '')
+        if (missing.length) {
+            return res.status(400).send({ error: `Missing field(s): ${missing.join(', ')}` })
+        }
+        try {
+            const tz = currentUser.value.timeZone || process.env.TRADENOTE_TZ || 'UTC'
+            const ts = isoToUnix(b.date, tz)
+            if (ts === undefined) return res.status(400).send({ error: 'Could not parse date' })
+            const dateUnix = dayjs.unix(ts).tz(tz).startOf('day').unix()
+            const sheetRowId = `${b.sheetId || 'sheet'}:${b.row}`
+            const account = currentUser.value.activeAccount || 'Manual'
+
+            await useEnsureAccountRegistered(ParseNode, account)
+            const tagId = await useEnsureTechniqueTag(ParseNode, b.technique)
+
+            const resultAmount = Number(b.resultAmount)
+            // Win -> the TP price is the more plausible exit; loss -> the SL price.
+            // Display only (see useSaveSheetTrade) -- the $ figure above is what
+            // actually drives every stat, not this.
+            const exitPriceHint = resultAmount >= 0
+                ? (b.takeProfitPrice ?? b.stopLossPrice ?? b.entryPrice)
+                : (b.stopLossPrice ?? b.takeProfitPrice ?? b.entryPrice)
+
+            const noteParts = []
+            if (b.technique) noteParts.push(`Technique: ${b.technique}`)
+            if (b.stopLossPrice != null) noteParts.push(`SL: ${b.stopLossPrice}`)
+            if (b.note) noteParts.push(b.note)
+
+            const saved = await useSaveSheetTrade(ParseNode, {
+                account, dateUnix, tz,
+                side: b.side, symbol: b.pair, lot: b.lot || 0.01,
+                entryPrice: b.entryPrice, exitPriceHint, resultAmount,
+                note: noteParts.join(' | '), sheetRowId,
+            })
+
+            if (tagId && saved.tradeId) {
+                await useAssignTag(ParseNode, { tradeId: saved.tradeId, dateUnix: saved.dateUnix, account, tagId })
+            }
+
+            bumpJournal('sheet row synced')
+            res.status(200).send({ ok: true, dateUnix: saved.dateUnix, tradeId: saved.tradeId })
+        } catch (error) {
+            console.error(' -> Sheets webhook error', error)
+            res.status(500).send({ error: error.message })
         }
     }));
 
