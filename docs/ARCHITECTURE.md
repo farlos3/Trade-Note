@@ -102,7 +102,8 @@ terminal, a config and an agent per account — not set up.
 | `src/views/Mindset.vue` | **Mindset** page (Journal section). Principles the trader writes for themselves, pinned-first then newest, filterable by theme. Own `mindsets` class — not date-anchored like `notes`. CRUD in `src/utils/mindset.js`. |
 | `src/views/WeeklyPlan.vue` | **Weekly Plan** page (Journal section). Next week + this week pinned as the two actionable cards, older weeks as history; Monday/Friday reminder banner. Same `notes` week records as the gate popup and Diary's Plan tab. |
 | `src/views/AddScreenshot.vue` / `Screenshots.vue` | Trade screenshots (stored in R2). |
-| `src/views/AddPlaybook.vue` / `Playbook.vue` | Trading playbooks — nav-visible as **"Setup"** (SideMenu.vue/router meta.title relabel only; route, view and the `playbooks` class are unchanged). |
+| `src/views/Setups.vue` | **Setup** page (Journal section, `/setups`). The trader's collection of trade setups, one card each: numbered rules (with lettered sub-points) left, pattern diagram right. Inline add/edit/delete; an empty page offers **load your 7 starter setups** (`utils/starterSetups.js`). Data in the `setups` class (`utils/setups.js`). |
+| `src/views/AddPlaybook.vue` / `Playbook.vue` | Trading playbooks (dated long-form entries, `playbooks` class). Hidden from the menu on request; `/playbook` still works if opened directly. Not the Setup page. |
 | `src/views/AddExcursions.vue` | MAE/MFE excursion entry. |
 | `src/views/Settings.vue` | User settings (timezone, currency, broker, etc.). |
 | `src/views/Login.vue` / `Register.vue` | Auth pages. |
@@ -144,6 +145,8 @@ terminal, a config and an agent per account — not set up.
 | `src/utils/diary.js` | Diary CRUD (upload is fire-and-forget; errors only logged). |
 | `src/utils/screenshots.js` | Screenshot fetch/paginate/scroll. |
 | `src/utils/playbooks.js` | Playbook CRUD. |
+| `src/utils/setups.js` | Setup CRUD on the `setups` class (`name`, `side`, structured `rules` `[{text, sub[]}]`, diagram `imageUrl`/`imageKey` in R2, `order`). `rulesToText`/`textToRules` convert to the editor's one-rule-per-line form (indent or `- ` = sub-point). **Name clash:** upstream TradeNote also had a legacy `setups` class (pattern/mistake pointers, migrated to tags once by `copySetups` in `LoginRegister.vue`); those one-off migrations (`copySetups` / `copyNotes` in `LoginRegister.vue`) are legacy-flag-gated and only read `pattern`/`mistake`/`note`, which these rows don't have, so they write nothing from them. |
+| `src/utils/starterSetups.js` | The seven setups transcribed from the trader's slides (Trump Trump ×3, Follow Trend, MSS + LQ Buy/Sell, MSS + PD-Array Buy) + their cropped diagrams in `src/assets/setups/`. Saved through `useSaveSetup` on demand from the empty Setup page, never on boot. |
 | `src/utils/filters.js` | Filter state helpers. |
 | `src/utils/planMath.js` | Plan projection math: `numOrNull`, `buildProjection`, compounding, `fmt`, `pnlClass`. |
 | `src/utils/planStore.js` | Plan persistence + `activePlan` / `plans` reactive store. |

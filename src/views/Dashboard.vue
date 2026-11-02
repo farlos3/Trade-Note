@@ -11,7 +11,7 @@ import { useThousandCurrencyFormat, useTwoDecCurrencyFormat, useXDecCurrencyForm
 import { activePlan } from '../utils/planStore'
 import { numOrNull } from '../utils/planMath'
 import { useJournalUpdates } from '../utils/journalStream'
-import { useScopedMt5Balance, useScopedMt5CashFlows } from '../utils/mt5Accounts'
+import { useScopedMt5Accounts, useScopedMt5Balance, useScopedMt5CashFlows } from '../utils/mt5Accounts'
 import { profileStartUnix, activeStatsProfile } from '../utils/statsProfile'
 
 const dashTabs = [{
@@ -42,11 +42,11 @@ const dashTabs = [{
 ]
 amountCapital.value = amountCase.value ? amountCase.value.charAt(0).toUpperCase() + amountCase.value.slice(1) : ''
 
-// MT5 account snapshots (broker / login / balance / deposit / withdrawal),
-// pushed by the sync and stored on the user. Refetched on load via useInitParse.
-const mt5Accounts = computed(() =>
-    (currentUser.value && Array.isArray(currentUser.value.mt5Accounts)) ? currentUser.value.mt5Accounts : []
-)
+// MT5 account snapshot (broker / login / balance / deposit / withdrawal), pushed
+// by the sync and stored on the user. Only the account chosen in the top-right
+// switcher -- every other number on this page is that account's, and a card per
+// synced account showed the other account's balance next to them.
+const mt5Accounts = computed(() => useScopedMt5Accounts())
 
 // Headline performance stats derived from the already-computed `totals`
 // (gross/net per the amount toggle). Fills the dashboard with the numbers a
