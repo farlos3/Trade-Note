@@ -10,6 +10,7 @@
  */
 import { ref, reactive, onBeforeMount } from 'vue'
 import { useGetSetups, useSaveSetup, useDeleteSetup, rulesToText, textToRules } from '../utils/setups'
+import { useLoadStarterSetups } from '../utils/starterSetups'
 
 const setups = ref([])
 const loaded = ref(false)
@@ -93,6 +94,21 @@ async function save() {
     }
 }
 
+async function loadStarters() {
+    if (busy.value) return
+    busy.value = true
+    error.value = ''
+    try {
+        await useLoadStarterSetups(setups.value.length)
+    } catch (e) {
+        error.value = 'Could not load the starter setups: ' + (e.message || e)
+    } finally {
+        // Reload even on failure -- some of them may have been saved before it broke.
+        await load()
+        busy.value = false
+    }
+}
+
 async function remove(setup) {
     if (busy.value || !window.confirm(`Delete the setup "${setup.name}"?`)) return
     busy.value = true
@@ -150,7 +166,10 @@ async function remove(setup) {
         </div>
 
         <div v-if="loaded && !setups.length && !editing" class="hintLine">
-            No setups yet — add your first one with <strong>Add setup</strong>.
+            No setups yet — add your first one with <strong>Add setup</strong>, or
+            <button type="button" class="btn btn-link btn-sm p-0 align-baseline" v-on:click="loadStarters" :disabled="busy">
+                {{ busy ? 'Loading…' : 'load your 7 starter setups' }}</button>
+            (Trump Trump ×3, Follow Trend, MSS + LQ / PD-Array).
         </div>
 
         <div v-for="(setup, index) in setups" :key="setup.objectId" class="setupCard mb-3">
