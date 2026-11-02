@@ -13,6 +13,7 @@ import { numOrNull } from '../utils/planMath'
 import { useJournalUpdates } from '../utils/journalStream'
 import { useScopedMt5Accounts, useScopedMt5Balance, useScopedMt5CashFlows } from '../utils/mt5Accounts'
 import { profileStartUnix, activeStatsProfile } from '../utils/statsProfile'
+import { openSeconds } from '../utils/marketHours'
 
 const dashTabs = [{
     id: "overviewTab",
@@ -104,7 +105,9 @@ const tradeStats = computed(() => {
             // Only closed trades have a usable exit; open ones have exitTime 0.
             const entry = Number(t.entryTime), exit = Number(t.exitTime)
             if (isFinite(entry) && isFinite(exit) && exit > entry) {
-                durationSum += exit - entry
+                // Market-open time only: a position held over the weekend or the
+                // daily break was not tradable then, so the closure is not "length".
+                durationSum += openSeconds(entry, exit)
                 durationCount++
             }
 
@@ -428,7 +431,8 @@ if (typeof window !== 'undefined') window.addEventListener('resize', () => equit
                 <!-- Secondary stats -->
                 <div class="row g-2 mb-3 text-center">
                     <div class="col-6 col-lg-4 col-xl-2">
-                        <div class="dailyCard statCard statCardSub">
+                        <div class="dailyCard statCard statCardSub"
+                            title="Average time a position was held, not counting market closures (daily break and weekend)">
                             <h5 class="titleWithDesc">{{ tradeStats.avgLength }}</h5>
                             <span class="dashInfoTitle">Avg. Trade Length</span>
                         </div>
