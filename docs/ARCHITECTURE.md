@@ -132,7 +132,8 @@ terminal, a config and an agent per account — not set up.
 | `src/stores/globals.js` | Global reactive refs (currentUser, filters, selected ranges, mt5Accounts, etc.). Central shared state. |
 | `src/stores/counter.js` | Upstream Pinia example (largely unused). |
 | `src/utils/utils.js` | Core helpers: tab init, Parse init, current-user check, misc. |
-| `src/utils/trades.js` | Fetch/filter trades (`useGetFilteredTrades`, `useGetTrades`, per-day filtering). |
+| `src/utils/trades.js` | Fetch/filter trades (`useGetFilteredTrades`, `useGetTrades`, per-day filtering). The range query is built once in `tradesRangeQuery()` and read through `useCachedFind`; `useWarmTradesCache()` pre-fills that cache at idle (called from Nav). |
+| `src/utils/queryCache.js` | IndexedDB cache for the trades day-doc query every tab shares, so a full-reload navigation skips the big fetch. Validity = fingerprint of the class (count + newest `updatedAt`, two tiny queries), so any writer invalidates it with no hand-placed invalidation. Best-effort: any failure falls back to the plain query. |
 | `src/utils/addTrades.js` | Build/insert trades from imports; dedupe against existing. `useSaveSheetTrade`/`useEnsureAccountRegistered` are the server-side (ParseNode+masterKey) path the Sheets webhook uses — same `useBuildManualTrades` pipeline `addOrder.js` uses client-side, merge-not-replace into the day doc, de-duplicated by `sheetRowId` so re-editing a Sheet row updates in place. |
 | `src/utils/addOrder.js` | Forex pip/contract-size/PnL math for manual orders. |
 | `src/utils/brokers.js` | Per-broker CSV parsers (TradeZero, MetaTrader5, Td Ameritrade, …). |

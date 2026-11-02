@@ -1,6 +1,7 @@
 import { pageId, spinnerLoadingPage, selectedRange, selectedDateRange, filteredTrades, filteredTradesTrades, selectedPositions, selectedAccounts, pAndL, queryLimit, blotter, totals, totalsByDate, groups, profitAnalysis, timeFrame, timeZoneTrade, hasData, satisfactionArray, satisfactionTradeArray, tags, filteredTradesDaily, dailyPagination, dailyQueryLimit, endOfList, excursions, selectedTags, availableTags, selectedItem, imports, daysBack } from "../stores/globals.js"
 import { useMountDashboard, useMountDaily, useMountCalendar, useDateTimeFormat } from "./utils.js";
 import { useCreateBlotter, useCreatePnL } from "./addTrades.js"
+import { useCachedFind } from "./queryCache.js"
 
 /* MODULES */
 import Parse from 'parse/dist/parse.min.js'
@@ -281,6 +282,44 @@ export async function useGetFilteredTrades(param) {
 /***************************************
  * GETTING DATA FROM PARSE DB 
  ***************************************/
+
+/* The query behind every tab's trade data: the user's day documents in the selected
+   range. Shared by useGetTrades and useWarmTradesCache so both build the exact same
+   query -- and the same cache key, which is what lets a warm-up on one tab answer
+   another tab's load. */
+function tradesRangeQuery() {
+    const query = new Parse.Query(Parse.Object.extend("trades"))
+    query.equalTo("user", Parse.User.current());
+    query.exclude("executions", "blotter", "pAndL") // we omit to make it lighter
+    const startD = selectedRange.value.start
+    const endD = selectedRange.value.end
+    // start===0 && end===0 is the "All" period's sentinel for "no date
+    // bound" (see periodRange in useGetPeriods). Passing that straight
+    // into the query as literal bounds asks for dateUnix >= 0 AND < 0,
+    // which no document can ever satisfy -- "All" would silently return
+    // zero trades forever. Skip the date clauses entirely instead.
+    if (!(startD === 0 && endD === 0)) {
+        query.greaterThanOrEqualTo("dateUnix", startD)
+        query.lessThan("dateUnix", endD)
+    }
+    query.ascending("dateUnix");
+    query.limit(queryLimit.value);
+    return { query, keyParts: [startD, endD, queryLimit.value] }
+}
+
+/* Fill the trades cache ahead of need, so the NEXT tab opened -- whichever it is --
+   finds the data already stored. Called from Nav at idle time on every page,
+   including ones that never load trades themselves (Plan, Diary, Setup, ...). A no-op
+   when the cache is already current: it costs the fingerprint queries and one read. */
+export async function useWarmTradesCache() {
+    try {
+        const range = selectedRange.value
+        if (!Parse.User.current() || !range || !Number.isFinite(range.start) || !Number.isFinite(range.end)) return
+        const { query, keyParts } = tradesRangeQuery()
+        await useCachedFind(query, keyParts)
+    } catch { /* warm-up only; the page's own load reports real errors */ }
+}
+
 export async function useGetTrades(param) {
     return new Promise(async (resolve, reject) => {
         console.log("\nGETTING TRADES");
@@ -288,7 +327,8 @@ export async function useGetTrades(param) {
         //spinnerLoadingPageText.value = "Getting trades from ParseDB"
 
         const parseObject = Parse.Object.extend("trades");
-        const query = new Parse.Query(parseObject)
+        let query = new Parse.Query(parseObject)
+        let cacheParts = null   // set only for the range query, the one every tab shares
         query.equalTo("user", Parse.User.current());
         query.exclude("executions", "blotter", "pAndL") // we omit to make it lighter
         /* Deliberately NOT filtered by account here, even though day documents now
@@ -316,28 +356,17 @@ export async function useGetTrades(param) {
             query.ascending("dateUnix");
         }
         else {
-            let startD = selectedRange.value.start
-            let endD = selectedRange.value.end
-            //console.log("start D "+startD)
-            //console.log("end D "+endD)
-            // start===0 && end===0 is the "All" period's sentinel for "no date
-            // bound" (see periodRange in useGetPeriods). Passing that straight
-            // into the query as literal bounds asks for dateUnix >= 0 AND < 0,
-            // which no document can ever satisfy -- "All" would silently return
-            // zero trades forever. Skip the date clauses entirely instead.
-            if (!(startD === 0 && endD === 0)) {
-                query.greaterThanOrEqualTo("dateUnix", startD)
-                query.lessThan("dateUnix", endD)
-            }
-            query.ascending("dateUnix");
-            query.limit(queryLimit.value);
+            ({ query, keyParts: cacheParts } = tradesRangeQuery())
         }
-        const results = await query.find();
+        // Plain JSON rows either way; the range query may come from the cache.
+        const results = cacheParts
+            ? await useCachedFind(query, cacheParts)
+            : JSON.parse(JSON.stringify(await query.find()))
         console.timeEnd("  --> Duration getting trades");
         //console.log("results "+JSON.stringify(results))
         if (results.length > 0) { //here results is an array so we use lenght. Sometimees results is not array then we use if results simply
             trades = []
-            trades = JSON.parse(JSON.stringify(results))
+            trades = results
             imports.length = 0
             imports.value = JSON.parse(JSON.stringify(results))
         }

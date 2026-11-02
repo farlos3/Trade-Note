@@ -4,6 +4,7 @@ import { useToggleMobileMenu } from '../utils/utils.js'
 import { useInitShepherd, useInitTooltip } from "../utils/utils.js";
 import { usePipSize, useDefaultContractSize } from '../utils/addOrder.js'
 import { routeComponentLoaders } from '../router/index.js'
+import { useWarmTradesCache } from '../utils/trades.js'
 import { statsProfiles, activeStatsProfile, setActiveStatsProfile, addStatsProfile, removeStatsProfile } from '../utils/statsProfile'
 import { pageId, currentUser, renderProfile, screenType, latestVersion } from "../stores/globals"
 import { version } from '../../package.json';
@@ -179,6 +180,8 @@ const currentPage = computed(() =>
 // never competes with this page's own render/data fetches. A reload discards the JS
 // module registry but not the HTTP cache, so the next real navigation to one of these
 // still gets a cache hit instead of a fresh fetch+transform.
+// The chunks are only half of a tab's load -- the other half is the trades query,
+// shared by every tab, so the same idle pass also stores it (see utils/queryCache.js).
 const MAIN_NAV_PATHS = ['/dashboard', '/live', '/daily', '/calendar', '/analysis', '/plan', '/plan-vs-actual', '/stats', '/weekly-plan', '/mindset', '/diary', '/setups', '/screenshots', '/playbook']
 
 function prefetchOtherPages() {
@@ -189,6 +192,7 @@ function prefetchOtherPages() {
             const loadComponent = routeComponentLoaders[path]
             if (loadComponent) loadComponent().catch(() => { /* best-effort warmup */ })
         }
+        useWarmTradesCache()
     }
     if (typeof window.requestIdleCallback === 'function') {
         window.requestIdleCallback(run, { timeout: 3000 })
