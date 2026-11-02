@@ -10,13 +10,13 @@
  * Rules use the editor's own text form -- see textToRules in setups.js.
  */
 import { useSaveSetup, textToRules } from './setups.js'
-import trumpTrumpImg from '../assets/setups/trump-trump.png'
-import trumpTrumpLqImg from '../assets/setups/trump-trump-lq.png'
-import trumpTrumpUpDownLqImg from '../assets/setups/trump-trump-up-down-lq.png'
-import followTrendImg from '../assets/setups/follow-trend.png'
-import mssLqBuyImg from '../assets/setups/mss-lq-buy.png'
-import mssPdArrayBuyImg from '../assets/setups/mss-pd-array-buy.png'
-import mssLqSellImg from '../assets/setups/mss-lq-sell.png'
+import trumpTrumpImg from '../assets/setups/trump-trump.jpg'
+import trumpTrumpLqImg from '../assets/setups/trump-trump-lq.jpg'
+import trumpTrumpUpDownLqImg from '../assets/setups/trump-trump-up-down-lq.jpg'
+import followTrendImg from '../assets/setups/follow-trend.jpg'
+import mssLqBuyImg from '../assets/setups/mss-lq-buy.jpg'
+import mssPdArrayBuyImg from '../assets/setups/mss-pd-array-buy.jpg'
+import mssLqSellImg from '../assets/setups/mss-lq-sell.jpg'
 
 // The three Trump Trump slides share one checklist and differ only in the
 // diagram (and the title) -- the variant being drawn.
