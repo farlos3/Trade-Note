@@ -174,14 +174,38 @@ const aiLoading = ref(false)
 const aiError = ref('')
 const aiDisabled = ref(false)
 const aiProvider = ref('')   // 'anthropic' | 'gemini', reported by the server
+// The section headings the server asked the model to use, so they can be styled.
+// English is only the fallback for summaries cached before the server sent them.
+const DEFAULT_AI_HEADINGS = ['Verdict', 'Strengths', 'Watch-outs', 'Recommendations']
+const aiHeadings = ref(DEFAULT_AI_HEADINGS)
 const AI_CACHE_KEY = 'aiLlmSummaryCache_v1'
+
+/* Language the AI writes in. Remembered across visits; anything unrecognised in
+   storage falls back to English rather than sending the server a value it ignores. */
+const AI_LANGS = [
+    { id: 'en', label: 'EN', title: 'Write the analysis in English' },
+    { id: 'th', label: 'ไทย', title: 'เขียนผลวิเคราะห์เป็นภาษาไทย' },
+]
+const readAiLang = () => {
+    try {
+        const v = localStorage.getItem('aiAnalysisLang')
+        return AI_LANGS.some((l) => l.id === v) ? v : 'en'
+    } catch { return 'en' }
+}
+const aiLang = ref(readAiLang())
+
+/* Each language is a separate analysis, so each has its own cached copy. English
+   keeps the original key, which means summaries cached before this existed are
+   still found and still valid -- they were English. */
+const aiCacheKeyFor = (p) => (aiLang.value === 'en' ? cacheKeyFor(p) : `${cacheKeyFor(p)}:${aiLang.value}`)
 const loadAiCache = () => { try { return JSON.parse(localStorage.getItem(AI_CACHE_KEY) || '{}') } catch { return {} } }
 const saveAiCache = (o) => { try { localStorage.setItem(AI_CACHE_KEY, JSON.stringify(o)) } catch { /* quota */ } }
 
 function showCachedAiFor(p) {
-    const c = loadAiCache()[cacheKeyFor(p)]
+    const c = loadAiCache()[aiCacheKeyFor(p)]
     aiSummary.value = c && c.summary ? c.summary : ''
     aiProvider.value = (c && c.provider) || ''
+    aiHeadings.value = (c && c.headings) || DEFAULT_AI_HEADINGS
     aiError.value = ''
     aiDisabled.value = false
 }
@@ -221,7 +245,7 @@ async function runAI(force = false) {
     if (!data.value) return
     const fp = (data.value.meta && data.value.meta.fingerprint) || ''
     const cache = loadAiCache()
-    const key = cacheKeyFor(period.value)
+    const key = aiCacheKeyFor(period.value)
     aiError.value = ''
     aiDisabled.value = false
     if (!force && cache[key] && cache[key].fingerprint === fp && cache[key].summary) {
@@ -229,12 +253,13 @@ async function runAI(force = false) {
         // Restore the provider too, or the badge would claim whichever provider
         // happened to answer last instead of the one that wrote this summary.
         aiProvider.value = cache[key].provider || ''
+        aiHeadings.value = cache[key].headings || DEFAULT_AI_HEADINGS
         return
     }
     aiLoading.value = true
     try {
         const { from, to } = rangeFor(period.value)
-        const params = { tz: timeZoneTrade.value || 'UTC', account: activeAccount.value }
+        const params = { tz: timeZoneTrade.value || 'UTC', account: activeAccount.value, lang: aiLang.value }
         if (clampFromDate(from, isoFromUnix)) params.from = clampFromDate(from, isoFromUnix)
         if (to) params.to = to
         const res = await axios.get('/api/analysis/ai-summary', { params, timeout: 120000, headers: useAuthHeaders() })
@@ -242,7 +267,8 @@ async function runAI(force = false) {
         if (res.data && res.data.refused) { aiError.value = 'The model declined this request.'; return }
         aiSummary.value = (res.data && res.data.summary) || ''
         aiProvider.value = (res.data && res.data.provider) || ''
-        cache[key] = { fingerprint: (res.data && res.data.fingerprint) || fp, summary: aiSummary.value, provider: aiProvider.value }
+        aiHeadings.value = (res.data && res.data.headings) || DEFAULT_AI_HEADINGS
+        cache[key] = { fingerprint: (res.data && res.data.fingerprint) || fp, summary: aiSummary.value, provider: aiProvider.value, headings: aiHeadings.value }
         saveAiCache(cache)
     } catch (e) {
         aiError.value = e?.response?.data?.error || e.message
@@ -257,16 +283,20 @@ async function runAI(force = false) {
 const copied = ref(false)
 // The model is told to emit exactly these, each alone on a line, so they can be
 // styled as headings without parsing Markdown.
-const AI_HEADINGS = ['Verdict', 'Strengths', 'Watch-outs', 'Recommendations']
 const PROVIDER_LABELS = { anthropic: 'Claude', gemini: 'Gemini' }
 const aiProviderLabel = computed(() => PROVIDER_LABELS[aiProvider.value] || 'AI')
 
 const CLAUDE_INSTRUCTION = 'You are a trading-performance coach. Analyze the trader\'s behavior from the computed statistics and behavioral flags below. Be concise, specific and actionable, in plain English. Ground every claim in the numbers — never invent data. Structure the reply as: a one-line verdict; Strengths; Watch-outs (revenge trading, overtrading, position-size tilt, holding-time bias, weak entry hours where relevant); and Recommendations. Use short bullet points.'
 
+// The export's own instruction is written for English; in Thai mode ask for Thai.
+const claudeInstruction = () => (aiLang.value === 'th'
+    ? CLAUDE_INSTRUCTION.replace('in plain English', 'in Thai (ภาษาไทย), keeping numbers, tickers and names unchanged')
+    : CLAUDE_INSTRUCTION)
+
 function claudePayload() {
     const d = data.value || {}
     return {
-        instruction: CLAUDE_INSTRUCTION,
+        instruction: claudeInstruction(),
         range: d.range || null,
         timezone: d.timezone || null,
         data: { stats: d.stats || null, patterns: d.patterns || null, notes: d.notes || [] },
@@ -305,6 +335,13 @@ onMounted(() => {
     showCachedFor(period.value)   // instant paint from cache
     showCachedAiFor(period.value) // and any cached AI analysis for this period
     run(false)                    // then validate / refresh if orders changed
+})
+
+// Switching language swaps to that language's own cached analysis (or none), and
+// never re-runs the model on its own -- that is a paid call and stays a click.
+watch(aiLang, (l) => {
+    try { localStorage.setItem('aiAnalysisLang', l) } catch { /* private mode */ }
+    showCachedAiFor(period.value)
 })
 
 watch(period, (p) => {
@@ -517,6 +554,12 @@ const narrative = computed(() => {
                     :disabled="loading" title="Refresh data (rule-based)">
                     <i class="uil uil-sync"></i>
                 </button>
+                <div class="btn-group btn-group-sm aiLangToggle" role="group" aria-label="Analysis language">
+                    <button v-for="l in AI_LANGS" :key="l.id" type="button" :title="l.title"
+                        :aria-pressed="aiLang === l.id" :disabled="aiLoading"
+                        v-bind:class="['btn', 'btn-sm', aiLang === l.id ? 'btn-primary' : 'btn-outline-secondary']"
+                        v-on:click="aiLang = l.id">{{ l.label }}</button>
+                </div>
                 <button type="button" class="btn btn-success btn-sm" v-on:click="runAI(false)"
                     :disabled="aiLoading || loading" title="Ask the model to write the analysis (billed per token)">
                     <span v-if="aiLoading" class="spinner-border spinner-border-sm me-2" role="status"></span>
@@ -644,7 +687,7 @@ const narrative = computed(() => {
                 </div>
                 <div v-else-if="aiSummary" class="bsAi mb-3">
                     <template v-for="(line, i) in aiSummary.split('\n')" :key="i">
-                        <div v-if="AI_HEADINGS.includes(line.trim())" class="bsAiHead">{{ line }}</div>
+                        <div v-if="aiHeadings.includes(line.trim())" class="bsAiHead">{{ line }}</div>
                         <div v-else>{{ line }}</div>
                     </template>
                 </div>
