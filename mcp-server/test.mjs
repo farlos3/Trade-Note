@@ -4,6 +4,7 @@
  * Run: node test.mjs
  */
 import { flattenTrades, computeStats, findBehaviorPatterns, computeDailyBreakdown } from './analysis.mjs'
+import { normalizeLang, headingsFor, buildSystemPrompt, deriveMetrics, HEADINGS } from './skills/behavior-coach.mjs'
 
 let failures = 0
 const approx = (a, b, eps = 0.02) => Math.abs(a - b) <= eps
@@ -86,6 +87,63 @@ check('daily: empty input -> []', computeDailyBreakdown([]).length === 0)
 // --- Empty input is safe ---
 const empty = computeStats(flattenTrades([]), 'UTC')
 check('empty -> 0 trades, winRate 0', empty.trades === 0 && empty.winRate === 0)
+
+
+// --- Behaviour-coach skill: language + derived figures ---
+check('lang: th and en are accepted', normalizeLang('th') === 'th' && normalizeLang('EN') === 'en')
+check('lang: unknown or missing falls back to en',
+  normalizeLang('fr') === 'en' && normalizeLang(undefined) === 'en' && normalizeLang('') === 'en')
+check('headings: four per language, same count',
+  HEADINGS.en.length === 4 && HEADINGS.th.length === 4)
+check('headings: no heading is empty or shared between languages',
+  HEADINGS.th.every((h, i) => h && h !== HEADINGS.en[i]))
+
+const enPrompt = buildSystemPrompt({ lang: 'en' })
+const thPrompt = buildSystemPrompt({ lang: 'th' })
+check('prompt(en): asks for English and lists the English headings',
+  enPrompt.includes('write the whole reply in English') && headingsFor('en').every((h) => enPrompt.includes(h)))
+check('prompt(th): asks for Thai and lists the Thai headings',
+  thPrompt.includes('Thai (ภาษาไทย)') && headingsFor('th').every((h) => thPrompt.includes(h)))
+check('prompt(th): does not also demand English output',
+  !thPrompt.includes('write the whole reply in English'))
+check('prompt(en): English headings only, none of the Thai ones leak in',
+  headingsFor('th').every((h) => !enPrompt.includes(h)))
+check('prompt: default language is English', buildSystemPrompt() === enPrompt)
+check('prompt: forbids Markdown in both languages',
+  enPrompt.includes('plain text only') && thPrompt.includes('plain text only'))
+check('prompt: tells the model not to call a net-positive flag a leak',
+  enPrompt.includes('net POSITIVE') && thPrompt.includes('net POSITIVE'))
+
+// Worked example from a real window: avg win 14.50, avg loss 9.84, win rate 43.4%.
+const dm = deriveMetrics(
+  { avgWin: 14.5, avgLoss: 9.84, winRate: 0.434, netPnL: 55.33 },
+  { overtrading: { netOnFlaggedDays: -29.69 } })
+check('derive: break-even win rate = loss / (win + loss) = 0.404', dm.breakEvenWinRate === 0.404)
+check('derive: payoff ratio = 1.47', dm.payoffRatio === 1.47)
+check('derive: edge margin is +3.0 points above break-even', dm.edgeMargin === 3)
+check('derive: net without flagged days = 55.33 - (-29.69) = 85.02', dm.netWithoutFlaggedDays === 85.02)
+const below = deriveMetrics({ avgWin: 17.08, avgLoss: 19.76, winRate: 0.521, netPnL: -448.93 }, null)
+check('derive: a payoff under 1 puts break-even above 50% and the margin negative',
+  below.breakEvenWinRate > 0.5 && below.edgeMargin < 0)
+check('derive: a missing average gives nulls, never a guess',
+  deriveMetrics({ avgWin: 0, avgLoss: 5, winRate: 0.5, netPnL: 1 }, null).breakEvenWinRate === null)
+check('derive: no stats gives null figures and empty thin-bucket lists',
+  deriveMetrics(null, null).breakEvenWinRate === null &&
+  deriveMetrics(null, null).thinBuckets.byEntryHour.length === 0)
+const thin = deriveMetrics({
+  avgWin: 1, avgLoss: 1, winRate: 0.5, netPnL: 0,
+  byEntryHour: { '12:00': { count: 4 }, '19:00': { count: 10 }, '13:00': { count: 6 } },
+  byWeekday: { Fri: { count: 12 }, Sat: { count: 4 } },
+  bySymbol: { XAUUSD: { count: 78 } },
+}, null).thinBuckets
+check('derive: under 10 trades is thin; exactly 10 is not',
+  thin.byEntryHour.join() === '12:00,13:00' && thin.byWeekday.join() === 'Sat' && thin.bySymbol.length === 0)
+check('prompt: points the model at the thin-bucket list',
+  enPrompt.includes('derived.thinBuckets') && thPrompt.includes('derived.thinBuckets'))
+check('prompt: keeps the per-trade lot cap and the daily volume flag apart',
+  enPrompt.includes('lotCap is a ceiling on ONE trade') && enPrompt.includes('does not belong under the watch-outs'))
+check('prompt: forbids quoting JSON field names',
+  enPrompt.includes('never by') && enPrompt.includes('JSON field names'))
 
 console.log(`\n${failures === 0 ? 'ALL PASSED' : failures + ' FAILED'}`)
 process.exit(failures === 0 ? 0 : 1)

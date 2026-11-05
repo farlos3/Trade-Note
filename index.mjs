@@ -20,6 +20,7 @@ import dayjsUtc from 'dayjs/plugin/utc.js';
 import dayjsTimezone from 'dayjs/plugin/timezone.js';
 dayjs.extend(dayjsUtc); dayjs.extend(dayjsTimezone);
 import { flattenTrades, computeStats, findBehaviorPatterns, computeDailyBreakdown } from './mcp-server/analysis.mjs';
+import { buildSystemPrompt, headingsFor, normalizeLang, deriveMetrics } from './mcp-server/skills/behavior-coach.mjs';
 import Stripe from 'stripe';
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { randomUUID } from 'crypto';
@@ -636,68 +637,19 @@ const setupApiRoutes = (app) => {
                 entryReviews = shapeEntryReviews(await fetchEntryReviews({ fromUnix, toUnix, userId: req.tradenoteUserId }), tz)
             } catch (e) { /* optional, same */ }
 
-            const payload = { range: { from: req.query.from || null, to: req.query.to || null }, timezone: tz, stats, patterns, notes, weeklyReviews, diaries, entryReviews }
-            // Plain text, not Markdown: the card renders this with white-space
-            // pre-wrap and no Markdown parser, so asterisks would show literally
-            // (they did). Notes are called out explicitly -- they were already in
-            // the payload but nothing told the model to use them.
-            const system = [
-                'You are a trading-performance coach. Analyse the trader\'s behaviour from the JSON provided:',
-                'computed statistics, behavioural flags, the trader\'s own journal notes, and their weekly reviews.',
-                '',
-                'Ground every claim in the numbers or the notes given. Never invent data. Be concise, specific and actionable.',
-                'Where the notes describe how a day felt, connect that to what the numbers actually did -- agreement and',
-                'contradiction are both worth saying out loud.',
-                '',
-                'weeklyReviews carries, per week: `summary` (what the trader recorded about that week) and `reflection`',
-                '(what they concluded afterwards). Treat these as the trader\'s own stated intentions, and check them against',
-                'the following weeks\' numbers: a lesson written down but not reflected in later behaviour is the single most',
-                'useful thing you can point out. Say plainly which resolutions were kept and which were not.',
-                'reflectionWritten=false means a week was never reviewed at all -- worth naming if it is a pattern.',
-                'notes carries `scope`: "day" is a whole-day entry, "trade" is about one position.',
-                '',
-                'diaries are the trader\'s long-form write-ups for a day, in their own words and often not in English.',
-                'Read them for intent and state of mind, and answer in English regardless of what language they are in.',
-                '',
-                'entryReviews is the strongest evidence here, because unlike everything else it was recorded AT THE',
-                'MOMENT OF ENTRY rather than afterwards, so it is not coloured by knowing how the trade turned out.',
-                'Per entry: whether a stop and target were set, whether the trader judged the stops acceptable, whether',
-                'they called the position good or bad, whether they judged it oversized, whether the logic still held,',
-                'the emotion felt, revengeUrge from 1 (no urge) to 10 (desperate to win it back), and their reasoning.',
-                'Use it to separate bad luck from bad process: an entry the trader themselves marked "bad position" or',
-                'oversized, or took at a high revengeUrge, is a decision problem no matter what the P&L did. Losses on',
-                'entries they judged good are a different problem entirely, and should not be lumped in with them.',
-                'Where their own self-assessment disagrees with the outcome in either direction, say so.',
-                '',
-                'FORMAT: plain text only. No Markdown. Do not use asterisks, underscores, backticks or hash marks anywhere.',
-                'Reply using EXACTLY this skeleton, keeping all four headings, each alone on its line, spelled exactly:',
-                '',
-                'Verdict',
-                '<one sentence>',
-                '',
-                'Strengths',
-                '- <point>',
-                '- <point>',
-                '',
-                'Watch-outs',
-                '- <point>',
-                '- <point>',
-                '',
-                'Recommendations',
-                '- <point>',
-                '- <point>',
-                '',
-                'Every bullet must sit under one of those headings. Do not merge the sections into a single list.',
-                'Cover revenge trading, overtrading, position-size tilt, holding-time bias and weak entry hours where the data supports it.',
-                'Do not restate the raw JSON.',
-                ].join('\n')
+            const payload = { range: { from: req.query.from || null, to: req.query.to || null }, timezone: tz, stats, patterns, derived: deriveMetrics(stats, patterns), notes, weeklyReviews, diaries, entryReviews }
+            // The instructions live in mcp-server/skills/behavior-coach.mjs, where they
+            // can be tested and where the output language is a parameter. Plain text,
+            // not Markdown, is still the contract: the card has no Markdown parser.
+            const lang = normalizeLang(req.query.lang)
+            const system = buildSystemPrompt({ lang })
 
             const userText = `Here is my trading data. Write the behavior analysis.\n\n${JSON.stringify(payload, null, 2)}`
             const out = await runAnalysisModel(system, userText)
             if (out.refused) {
                 return res.status(200).json({ summary: null, refused: true, fingerprint })
             }
-            res.status(200).json({ summary: out.summary, fingerprint, model: out.model, provider: AI_PROVIDER })
+            res.status(200).json({ summary: out.summary, fingerprint, model: out.model, provider: AI_PROVIDER, lang, headings: headingsFor(lang) })
         } catch (error) {
             // Providers put the useful part in the response body; the bare axios
             // message ("Request failed with status code 400") says nothing about
