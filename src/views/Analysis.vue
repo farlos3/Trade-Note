@@ -554,12 +554,6 @@ const narrative = computed(() => {
                     :disabled="loading" title="Refresh data (rule-based)">
                     <i class="uil uil-sync"></i>
                 </button>
-                <div class="btn-group btn-group-sm aiLangToggle" role="group" aria-label="Analysis language">
-                    <button v-for="l in AI_LANGS" :key="l.id" type="button" :title="l.title"
-                        :aria-pressed="aiLang === l.id" :disabled="aiLoading"
-                        v-bind:class="['btn', 'btn-sm', aiLang === l.id ? 'btn-primary' : 'btn-outline-secondary']"
-                        v-on:click="aiLang = l.id">{{ l.label }}</button>
-                </div>
                 <button type="button" class="btn btn-success btn-sm" v-on:click="runAI(false)"
                     :disabled="aiLoading || loading" title="Ask the model to write the analysis (billed per token)">
                     <span v-if="aiLoading" class="spinner-border spinner-border-sm me-2" role="status"></span>
@@ -675,10 +669,19 @@ const narrative = computed(() => {
                  entries. Rule-based read-out always; Claude's LLM analysis on top once
                  "Analyze behavior" is clicked. -->
             <div v-if="narrative" class="behaviorSummary mt-3">
-                <div class="d-flex align-items-center mb-2">
+                <div class="d-flex flex-wrap align-items-center mb-2" style="row-gap:.5rem;">
                     <i class="uil uil-robot me-2" style="font-size:1.15rem;"></i>
                     <span class="bsTitle">Behavior summary</span>
                     <span class="bsBadge ms-2">{{ aiSummary ? 'AI · ' + aiProviderLabel : 'rule-based' }}</span>
+                    <!-- Language of the AI write-up, beside the title because it is a property
+                         of the summary below rather than of the toolbar's range/refresh
+                         actions. flex-wrap drops it to its own line on a narrow screen. -->
+                    <div class="btn-group btn-group-sm aiLangToggle ms-3" role="group" aria-label="Analysis language">
+                        <button v-for="l in AI_LANGS" :key="l.id" type="button" :title="l.title"
+                            :aria-pressed="aiLang === l.id" :disabled="aiLoading"
+                            v-bind:class="['btn', 'btn-sm', aiLang === l.id ? 'btn-primary' : 'btn-outline-secondary']"
+                            v-on:click="aiLang = l.id">{{ l.label }}</button>
+                    </div>
                 </div>
 
                 <!-- Claude (LLM) analysis -->
