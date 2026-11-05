@@ -1209,6 +1209,14 @@ const setupApiRoutes = (app) => {
      **********************************************/
     let liveSnapshot = null            // newest payload from the host agent
     const liveClients = new Set()      // connected SSE responses
+    /* When the agent last checked in, and why it has nothing to send. The agent
+       posts this every tick it cannot read MT5, so "no agent" and "agent running,
+       terminal silent" stop looking identical from here -- they did before, and the
+       page blamed the agent for both. */
+    let liveAgentSeenAt = 0
+    let liveAgentReason = null
+    // Three missed heartbeats, so one slow tick does not read as a dead agent.
+    const liveAgentIsUp = () => (Date.now() - liveAgentSeenAt) < 5000
 
     const liveIsStale = () => !liveSnapshot || (Date.now() - liveSnapshot.receivedAt) > 15000
 
@@ -1338,7 +1346,17 @@ const setupApiRoutes = (app) => {
     }
 
     app.post('/api/live', validateApiKey, (req, res) => {
-        applyLiveSnapshot(req.body || {})
+        const body = req.body || {}
+        liveAgentSeenAt = Date.now()
+        /* A heartbeat says the agent is alive but has nothing to report, so it must
+           NOT overwrite the snapshot: the last real frame stays on screen, ageing
+           visibly, instead of the page emptying the moment the EA goes quiet. */
+        if (body.agentHeartbeat) {
+            liveAgentReason = typeof body.reason === 'string' ? body.reason.slice(0, 300) : null
+            return res.send({ ok: true, heartbeat: true, clients: liveClients.size })
+        }
+        liveAgentReason = null
+        applyLiveSnapshot(body)
         res.send({ ok: true, clients: liveClients.size })
     })
 
@@ -1346,7 +1364,11 @@ const setupApiRoutes = (app) => {
     // (and as a fallback anywhere EventSource is unavailable).
     app.get('/api/live', requireAuth, (req, res) => {
         res.setHeader('Cache-Control', 'no-store')
-        res.send({ stale: liveIsStale(), snapshot: liveSnapshot })
+        res.send({
+            stale: liveIsStale(),
+            snapshot: liveSnapshot,
+            agent: { up: liveAgentIsUp(), reason: liveAgentReason },
+        })
     })
 
     app.get('/api/live/stream', requireAuth, (req, res) => {

@@ -155,6 +155,20 @@ def main():
                             "If MT5 IS open, the TradeNoteExport EA may predate the "
                             "'positions' key: recompile it (F7) and re-attach.")
                         last_err = "no-terminal"
+                    # Still check in, with the reason. Staying silent here is what
+                    # made the app blame the agent: no traffic at all looks exactly
+                    # like a dead agent, so the page told the user to start one that
+                    # was already running and logging the real cause to a file they
+                    # had no reason to open. A heartbeat costs one request a second
+                    # on a connection that is already open.
+                    reason = getattr(backend, "last_reason", None) or \
+                        "MetaTrader 5 is not reachable."
+                    try:
+                        session.post(url, headers=headers,
+                                     json={"agentHeartbeat": True, "reason": reason},
+                                     timeout=5)
+                    except requests.RequestException:
+                        pass   # the snapshot path below reports connectivity already
                 else:
                     r = session.post(url, headers=headers, json=snap, timeout=5)
                     if r.status_code != 200:

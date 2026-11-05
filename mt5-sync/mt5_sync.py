@@ -305,11 +305,22 @@ class NativeBackend:
     def shutdown(self):
         mt5.shutdown()
 
+    # Why the last terminal_running() said no, for the live agent to report to the
+    # app. The reason used to exist only as a log line on this machine, so the
+    # browser could not tell "no agent" from "agent fine, terminal silent" and told
+    # the user to start an agent that was already running.
+    last_reason = None
+
     def terminal_running(self):
-        return mt5_terminal_running()
+        running = mt5_terminal_running()
+        self.last_reason = None if running else "MetaTrader 5 is not running."
+        return running
 
 
 class BridgeBackend:
+    # See NativeBackend.last_reason.
+    last_reason = None
+
     """Reads the EA's JSON export. Everything is served from the one file, so it
     is loaded once per run and then answered from memory."""
 
@@ -572,12 +583,22 @@ class BridgeBackend:
         if not self._path:
             self._path = self.discover()
         if not self._path or not os.path.exists(self._path):
+            self.last_reason = ("No bridge file found -- the TradeNoteExport EA has "
+                                "not run in this terminal yet.")
             return False
         age = time.time() - os.path.getmtime(self._path)
         if age > BRIDGE_STALE_SECONDS:
             log(f"Bridge file is {int(age)}s old (limit {BRIDGE_STALE_SECONDS}s) "
                 "-- MT5 or the TradeNoteExport EA is not running.")
+            # Both causes are named because this side cannot tell them apart: the
+            # file going stale looks identical whether the terminal closed or the
+            # EA came off its chart.
+            self.last_reason = (
+                f"The MT5 bridge file has not been updated for {int(age)}s. "
+                "Either MetaTrader 5 is closed, or the TradeNoteExport EA is not "
+                "attached to a chart with Algo Trading on.")
             return False
+        self.last_reason = None
         return True
 
 

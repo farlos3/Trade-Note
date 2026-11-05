@@ -39,6 +39,27 @@ const secondsSinceFrame = computed(() =>
 const isStale = computed(() =>
     !lastFrameAt.value || (now.value - lastFrameAt.value) > STALE_AFTER_MS)
 
+/* Why there are no frames. Without this the bar could only guess, and it guessed
+   the agent was down -- which sent the user to restart an agent that was running
+   fine and already logging the real cause (an EA off its chart) to a file. The
+   agent reports its own reason now; this is just where it surfaces. */
+const agentUp = ref(false)
+const agentReason = ref(null)
+
+/* Polled only while stale, and only every 5s. While frames are arriving the
+   stream is the source and this never runs; once they stop there is nothing left
+   to carry a status, so something has to ask. */
+const AGENT_POLL_MS = 5000
+let lastAgentPollAt = 0
+async function refreshAgentStatus() {
+    try {
+        const res = await fetch('/api/live', { headers: useAuthHeaders() })
+        const j = await res.json()
+        agentUp.value = !!(j && j.agent && j.agent.up)
+        agentReason.value = (j && j.agent && j.agent.reason) || null
+    } catch { /* leave the last known status rather than flapping to "down" */ }
+}
+
 const positions = computed(() => (snapshot.value && snapshot.value.positions) || [])
 const floating = computed(() => (snapshot.value ? snapshot.value.profit : 0))
 
@@ -130,8 +151,15 @@ onMounted(async () => {
         const j = await res.json()
         if (j && j.snapshot && !j.stale) applySnapshot(j.snapshot)
     } catch { /* the stream below is the real source */ }
+    await refreshAgentStatus()
     stopLive = useLiveSnapshots(applySnapshot)
-    clockTimer = setInterval(() => { now.value = Date.now() }, 1000)
+    clockTimer = setInterval(() => {
+        now.value = Date.now()
+        if (isStale.value && (now.value - lastAgentPollAt) >= AGENT_POLL_MS) {
+            lastAgentPollAt = now.value
+            refreshAgentStatus()
+        }
+    }, 1000)
 })
 
 onUnmounted(() => {
@@ -153,8 +181,15 @@ onUnmounted(() => {
             <div class="liveBar mb-3">
                 <span class="liveDot" v-bind:class="{ on: !isStale }"></span>
                 <span v-if="!isStale" class="liveLabel">Live</span>
+                <!-- Three different problems, three different messages. They used
+                     to share two, and the one shown most often named the wrong
+                     component. -->
+                <span v-else-if="agentUp && agentReason" class="liveLabelStale">
+                    {{ agentReason }}
+                    <span v-if="snapshot"> Showing the last reading, {{ secondsSinceFrame }}s old.</span>
+                </span>
                 <span v-else-if="snapshot" class="liveLabelStale">
-                    Stale — no update for {{ secondsSinceFrame }}s. Is the live agent running?
+                    Stale — no update for {{ secondsSinceFrame }}s.
                 </span>
                 <span v-else class="liveLabelStale">
                     Waiting for the live agent (mt5-sync/mt5_live.py) — start it, or run ./tradenote.sh start
