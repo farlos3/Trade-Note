@@ -87,6 +87,23 @@ Restart Claude Desktop. A 🔌/tools icon appears; ask away.
 claude mcp add tradenote -- node ABSOLUTE/PATH/TO/TradeNote/mcp-server/server.mjs
 ```
 
+The repo's `.mcp.json` already declares the server with `node` and a path relative to
+the project root, so it works unchanged on macOS and Windows; Claude Code asks you to
+approve it the first time. Run `claude` from the repo root.
+
+**Check which account the server reads as.** `TRADENOTE_USER` is read from `.env` when
+the launching process does not set it, and that value is the login seeded on first boot,
+which is not necessarily the account that owns your trades. If it names a different user,
+every tool returns zeros without any error. Override it for the server only (nothing is
+committed) with a local-scope registration:
+
+```bash
+claude mcp add --scope local tradenote \
+  -e TRADENOTE_TZ=Asia/Bangkok -e MCP_MONGO_URI=mongodb://localhost:27017/tradenote \
+  -e TRADENOTE_USER=you@example.com \
+  -- node "$PWD/mcp-server/server.mjs"
+```
+
 ## Configuration (env, all optional)
 
 | Var | Default | Purpose |
