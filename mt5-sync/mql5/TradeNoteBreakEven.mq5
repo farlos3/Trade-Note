@@ -10,12 +10,18 @@
 //|  be for me to walk away flat? Doing that arithmetic by hand, in a  |
 //|  drawdown, is exactly when it gets done wrong.                     |
 //|                                                                   |
+//|  It also draws the account's DEAD POINT: the price at which the    |
+//|  broker's stop-out fires and closes positions for you. A basket    |
+//|  that has been averaged or hedged out of a loss is exactly the one |
+//|  that drifts toward it, and the break-even line alone says nothing |
+//|  about how much room is left before that happens.                  |
+//|                                                                   |
 //|  Read-only: reads positions, symbol properties and deal history,   |
 //|  and draws. It cannot place, modify or close an order -- being an  |
 //|  indicator rather than an EA is the point, not an accident.        |
 //+------------------------------------------------------------------+
 #property copyright "TradeNote"
-#property version   "1.00"
+#property version   "1.01"
 #property strict
 #property indicator_chart_window
 #property indicator_buffers 0
@@ -30,9 +36,13 @@ input bool   ShowPanel          = true;      // numbers in the chart corner
 input int    PanelCorner        = 0;         // 0 upper-left 1 upper-right 2 lower-left 3 lower-right
 input int    PanelXDistance     = 12;        // panel offset from that corner, px
 input int    PanelYDistance     = 18;
+input bool   ShowDeadPoint      = true;      // also draw the stop-out ("dead") price
+input color  DeadColor          = clrTomato; // dead-point line
+input int    DeadLineWidth      = 1;         // dead-point line width
 
 #define PREFIX "TN_BE_"
 #define LINE_NAME PREFIX "line"
+#define DEAD_NAME PREFIX "dead"
 
 // Entry commission is charged on the position's DEALS, not on the position, so it
 // costs a history lookup to read. It also cannot change once the position is open,
@@ -117,6 +127,8 @@ struct BasketState
    double floating;       // P&L right now, terminal's own numbers + costs
    double breakEven;      // bid price where floating becomes 0
    bool   hasBreakEven;   // false when the basket is flat-hedged
+   double valuePerPrice;  // account currency per lot per whole unit of price
+   double bid;            // the bid this snapshot was taken at
 };
 
 bool ReadBasket(const string sym, BasketState &out)
@@ -135,6 +147,7 @@ bool ReadBasket(const string sym, BasketState &out)
    out.count = 0; out.netLots = 0.0; out.grossLots = 0.0;
    out.costs = 0.0; out.floating = 0.0;
    out.breakEven = 0.0; out.hasBreakEven = false;
+   out.valuePerPrice = valuePerPrice; out.bid = bid;
 
    double k = 0.0;    // the constant term of the basket's P&L line
 
@@ -190,6 +203,71 @@ bool ReadBasket(const string sym, BasketState &out)
 }
 
 //+------------------------------------------------------------------+
+//| The DEAD POINT: where the broker's stop-out fires.                |
+//|                                                                   |
+//| Equity moves in a straight line with this symbol's price, and its  |
+//| slope is the net exposure -- longs gain and shorts lose the same   |
+//| amount per unit, so a hedge cancels exactly as much slope as it    |
+//| has lots:                                                          |
+//|                                                                   |
+//|   equity(P) = equity_now + valuePerPrice * net * (P - bid_now)     |
+//|                                                                   |
+//| Anchored on the account's own ACCOUNT_EQUITY rather than re-summed |
+//| from positions, so other symbols, credit and swap are already in   |
+//| it. Stop-out fires when equity falls to                            |
+//|                                                                   |
+//|   percent mode:  margin * stop_out_level / 100                     |
+//|   money mode:    margin + stop_out_level   (free margin reaches    |
+//|                  the level -- the rarer mode, and the one this     |
+//|                  code is least sure of; check it with the broker)  |
+//|                                                                   |
+//| so  dead = bid - (equity - stop_out_equity) / (valuePerPrice*net)  |
+//| A net long gives a price BELOW the market, a net short ABOVE it.   |
+//|                                                                   |
+//| Two simplifications, both stated rather than hidden:               |
+//|  * margin is held at today's value. It really moves a little with  |
+//|    price, so far from the market the line is approximate.          |
+//|  * other symbols are held at their current prices.                 |
+//+------------------------------------------------------------------+
+struct DeadPoint
+{
+   int    state;          // 0 price found, 1 no margin in use, 2 hedged flat, 3 already at stop-out
+   double price;          // bid at which stop-out fires (state 0 only)
+   double equity;
+   double margin;
+   double marginLevel;    // percent; 0 when no margin is in use
+   double soLevel;        // the broker's stop-out level, percent or money
+   bool   percentMode;
+   double stopOutEquity;  // equity at which it fires
+   double room;           // equity - stopOutEquity: what can still be lost
+};
+
+void ComputeDeadPoint(const BasketState &b, DeadPoint &d)
+{
+   d.state       = 0;
+   d.price       = 0.0;
+   d.equity      = AccountInfoDouble(ACCOUNT_EQUITY);
+   d.margin      = AccountInfoDouble(ACCOUNT_MARGIN);
+   d.soLevel     = AccountInfoDouble(ACCOUNT_MARGIN_SO_SO);
+   d.percentMode = (AccountInfoInteger(ACCOUNT_MARGIN_SO_MODE) == ACCOUNT_STOPOUT_MODE_PERCENT);
+   d.marginLevel = (d.margin > 0.0) ? d.equity / d.margin * 100.0 : 0.0;
+   d.stopOutEquity = d.percentMode ? d.margin * d.soLevel / 100.0
+                                   : d.margin + d.soLevel;
+   d.room        = d.equity - d.stopOutEquity;
+
+   if(d.margin <= 0.0) { d.state = 1; return; }
+   if(d.room <= 0.0)   { d.state = 3; return; }
+
+   // Same smallest-lot test as the break-even: a hedge that nets to zero leaves
+   // equity unmoved by price, so there is no price at which it dies.
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0.0) step = 0.01;
+   if(MathAbs(b.netLots) < step / 2.0) { d.state = 2; return; }
+
+   d.price = b.bid - d.room / (b.valuePerPrice * b.netLots);
+}
+
+//+------------------------------------------------------------------+
 //| Drawing                                                          |
 //+------------------------------------------------------------------+
 void DrawLine(const double price)
@@ -205,6 +283,21 @@ void DrawLine(const double price)
    ObjectSetDouble(0, LINE_NAME, OBJPROP_PRICE, price);
    ObjectSetInteger(0, LINE_NAME, OBJPROP_COLOR, LineColor);
    ObjectSetInteger(0, LINE_NAME, OBJPROP_WIDTH, LineWidth);
+}
+
+void DrawDeadLine(const double price)
+{
+   if(ObjectFind(0, DEAD_NAME) < 0)
+   {
+      ObjectCreate(0, DEAD_NAME, OBJ_HLINE, 0, 0, price);
+      ObjectSetInteger(0, DEAD_NAME, OBJPROP_STYLE, STYLE_DASHDOT);
+      ObjectSetInteger(0, DEAD_NAME, OBJPROP_BACK, true);
+      ObjectSetInteger(0, DEAD_NAME, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, DEAD_NAME, OBJPROP_HIDDEN, true);
+   }
+   ObjectSetDouble(0, DEAD_NAME, OBJPROP_PRICE, price);
+   ObjectSetInteger(0, DEAD_NAME, OBJPROP_COLOR, DeadColor);
+   ObjectSetInteger(0, DEAD_NAME, OBJPROP_WIDTH, DeadLineWidth);
 }
 
 void SetLabel(const int row, const string text, const color clr)
@@ -232,6 +325,54 @@ void ClearPanel(const int fromRow)
 }
 
 //+------------------------------------------------------------------+
+//| Compute, draw and describe the dead point. Returns the first panel |
+//| row still free. The line is drawn whether or not the panel is on.  |
+//+------------------------------------------------------------------+
+int UpdateDeadPoint(const BasketState &b, const int firstRow, const int digits,
+                    const double pip, const string account)
+{
+   if(!ShowDeadPoint)
+   {
+      ObjectDelete(0, DEAD_NAME);
+      return firstRow;
+   }
+
+   DeadPoint d;
+   ComputeDeadPoint(b, d);
+
+   if(d.state == 0) DrawDeadLine(d.price);
+   else             ObjectDelete(0, DEAD_NAME);
+
+   if(!ShowPanel) return firstRow;
+
+   int row = firstRow;
+   switch(d.state)
+   {
+      case 0:
+         SetLabel(row++, "Dead point " + DoubleToString(d.price, digits) +
+                         StringFormat("   %+.1f pips away", (d.price - b.bid) / pip), DeadColor);
+         break;
+      case 1:
+         SetLabel(row++, "Dead point  n/a (no margin in use)", clrSilver);
+         return row;
+      case 2:
+         SetLabel(row++, "Dead point  none - hedged flat, price does not move equity", clrSilver);
+         break;
+      default:
+         SetLabel(row++, "Dead point  REACHED - equity is at or below the stop-out level", DeadColor);
+         return row;
+   }
+
+   if(d.percentMode)
+      SetLabel(row++, StringFormat("Margin lvl  %.0f%%  (stop-out %.0f%%)  room %.2f %s",
+                                   d.marginLevel, d.soLevel, d.room, account), clrSilver);
+   else
+      SetLabel(row++, StringFormat("Room        %.2f %s before stop-out (money mode)",
+                                   d.room, account), clrSilver);
+   return row;
+}
+
+//+------------------------------------------------------------------+
 //| Recalculate and redraw. Called on every tick AND on a one-second  |
 //| timer: opening or closing a position does not itself produce a    |
 //| tick, and a break-even line that only moves when the market does  |
@@ -245,6 +386,7 @@ void Refresh()
    if(!ReadBasket(sym, b))
    {
       ObjectDelete(0, LINE_NAME);
+      ObjectDelete(0, DEAD_NAME);
       if(ShowPanel) SetLabel(0, "Break-even: symbol data unavailable", clrSilver);
       ClearPanel(1);
       ChartRedraw();
@@ -258,6 +400,7 @@ void Refresh()
    if(b.count == 0)
    {
       ObjectDelete(0, LINE_NAME);
+      ObjectDelete(0, DEAD_NAME);
       if(ShowPanel)
       {
          SetLabel(0, "No open " + sym + " positions", clrSilver);
@@ -280,9 +423,13 @@ void Refresh()
          SetLabel(1, StringFormat("P&L locked at %.2f %s -- no break-even price",
                                   b.floating, account),
                   b.floating >= 0 ? clrLimeGreen : clrTomato);
-         ClearPanel(2);
+         ClearPanel(UpdateDeadPoint(b, 2, digits, pip, account));
       }
-      else ClearPanel(0);
+      else
+      {
+         UpdateDeadPoint(b, 2, digits, pip, account);
+         ClearPanel(0);
+      }
       ChartRedraw();
       return;
    }
@@ -301,9 +448,13 @@ void Refresh()
                b.floating >= 0 ? clrLimeGreen : clrTomato);
       SetLabel(3, StringFormat("Costs      %+.2f %s (swap + commission)",
                                b.costs, account), clrSilver);
-      ClearPanel(4);
+      ClearPanel(UpdateDeadPoint(b, 4, digits, pip, account));
    }
-   else ClearPanel(0);
+   else
+   {
+      UpdateDeadPoint(b, 4, digits, pip, account);
+      ClearPanel(0);
+   }
 
    ChartRedraw();
 }
@@ -311,7 +462,7 @@ void Refresh()
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   IndicatorSetString(INDICATOR_SHORTNAME, "TradeNote Break-Even");
+   IndicatorSetString(INDICATOR_SHORTNAME, "TradeNote Break-Even + Dead point");
    ArrayResize(g_commTickets, 0);
    ArrayResize(g_commValues, 0);
    EventSetTimer(1);
