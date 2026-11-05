@@ -59,3 +59,6 @@ chrome.log
 # Compiled MT5 binaries (third-party/account-bound licensed indicators, e.g.
 # notebook/MT5_<login>_*.ex5). Our own sources (*.mq5) stay tracked.
 *.ex5
+
+# Output of the Claude subscription bridge (started by ./tradenote.sh start)
+scripts/claude-bridge.log*

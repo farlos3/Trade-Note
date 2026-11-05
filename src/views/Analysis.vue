@@ -283,7 +283,7 @@ async function runAI(force = false) {
 const copied = ref(false)
 // The model is told to emit exactly these, each alone on a line, so they can be
 // styled as headings without parsing Markdown.
-const PROVIDER_LABELS = { anthropic: 'Claude', gemini: 'Gemini' }
+const PROVIDER_LABELS = { anthropic: 'Claude', gemini: 'Gemini', 'claude-cli': 'Claude (subscription)' }
 const aiProviderLabel = computed(() => PROVIDER_LABELS[aiProvider.value] || 'AI')
 
 const CLAUDE_INSTRUCTION = 'You are a trading-performance coach. Analyze the trader\'s behavior from the computed statistics and behavioral flags below. Be concise, specific and actionable, in plain English. Ground every claim in the numbers — never invent data. Structure the reply as: a one-line verdict; Strengths; Watch-outs (revenge trading, overtrading, position-size tilt, holding-time bias, weak entry hours where relevant); and Recommendations. Use short bullet points.'
@@ -517,7 +517,7 @@ const narrative = computed(() => {
                             <span class="cfmVal">{{ confirmTradeCount }}</span>
                         </div>
                         <p class="cfmNote mb-0">
-                            This sends your computed stats and journal notes to the model. Billed per token.
+                            This sends your computed stats and journal notes to the model. An API key is billed per token; the Claude subscription option uses your plan's usage limits instead.
                         </p>
                     </div>
                     <div class="cfmFoot">
@@ -692,8 +692,8 @@ const narrative = computed(() => {
                     </template>
                 </div>
                 <div v-if="aiDisabled" class="bsHint mb-3">
-                    AI analysis needs <code>ANTHROPIC_API_KEY</code> or <code>GEMINI_API_KEY</code> set on the server
-                    (billed per token, separate from any Claude or Gemini subscription). The rule-based summary below
+                    AI analysis needs <code>ANTHROPIC_API_KEY</code>, <code>GEMINI_API_KEY</code> or <code>AI_PROVIDER=claude-cli</code> (your Claude subscription) set on the server
+                    (keys are billed per token, separate from any Claude or Gemini subscription). The rule-based summary below
                     always works for free.
                 </div>
                 <div v-if="aiError" class="bsHint bsHintErr mb-3">{{ aiError }}</div>
