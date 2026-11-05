@@ -184,7 +184,7 @@ const AI_CACHE_KEY = 'aiLlmSummaryCache_v1'
    storage falls back to English rather than sending the server a value it ignores. */
 const AI_LANGS = [
     { id: 'en', label: 'EN', title: 'Write the analysis in English' },
-    { id: 'th', label: 'ไทย', title: 'เขียนผลวิเคราะห์เป็นภาษาไทย' },
+    { id: 'th', label: 'TH', title: 'เขียนผลวิเคราะห์เป็นภาษาไทย' },
 ]
 const readAiLang = () => {
     try {
@@ -675,11 +675,13 @@ const narrative = computed(() => {
                     <span class="bsBadge ms-2">{{ aiSummary ? 'AI · ' + aiProviderLabel : 'rule-based' }}</span>
                     <!-- Language of the AI write-up, beside the title because it is a property
                          of the summary below rather than of the toolbar's range/refresh
-                         actions. flex-wrap drops it to its own line on a narrow screen. -->
-                    <div class="btn-group btn-group-sm aiLangToggle ms-3" role="group" aria-label="Analysis language">
+                         actions. Styled like the "Copy prompt + data" / "Download JSON" pair
+                         below it: separate outlined buttons, blue for the selected one and
+                         grey for the other. flex-wrap drops it to its own line on a phone. -->
+                    <div class="d-inline-flex gap-2 aiLangToggle ms-3" role="group" aria-label="Analysis language">
                         <button v-for="l in AI_LANGS" :key="l.id" type="button" :title="l.title"
                             :aria-pressed="aiLang === l.id" :disabled="aiLoading"
-                            v-bind:class="['btn', 'btn-sm', aiLang === l.id ? 'btn-primary' : 'btn-outline-secondary']"
+                            v-bind:class="['btn', 'btn-sm', aiLang === l.id ? 'btn-outline-primary' : 'btn-outline-secondary']"
                             v-on:click="aiLang = l.id">{{ l.label }}</button>
                     </div>
                 </div>
