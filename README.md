@@ -157,7 +157,26 @@ Requires `pip install pymongo pyarrow boto3` and `R2_ACCOUNT_ID` + `R2_BUCKET`
 | `TRADENOTE_PORT` | Web port (default `8080`). |
 | `TRADENOTE_USER`, `TRADENOTE_PASSWORD` | The login seeded on first boot, and the account the MCP server reads as. |
 | `MT5_TERMINAL_PATH` | Optional path to `terminal64.exe` for the start script. |
+| `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` | Optional. Enable the written analysis on the AI Analysis page (billed per token). |
+| `AI_PROVIDER` | `gemini`, `anthropic`, or `claude-cli` to use your **Claude subscription** instead of an API key (see below). |
+| `CLAUDE_BRIDGE_SECRET` | Required for `claude-cli`: any random string, shared by the app and the bridge. |
 | `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | R2 for images **and** Parquet backups. |
+
+### AI Analysis on your Claude subscription
+
+Set `AI_PROVIDER=claude-cli` and a random `CLAUDE_BRIDGE_SECRET` in `.env`
+(`openssl rand -hex 24`), then `./tradenote.sh start`. The app runs in Docker and cannot
+see the `claude` CLI on your machine, so `scripts/claude-bridge.mjs` runs on the host and
+the app calls it. It starts the official `claude` CLI exactly as a terminal would — it
+never reads or copies your login — with no tools, no MCP servers, no skills, no saved
+session and a scratch directory, so the model sees only the analysis text it is sent.
+
+- Needs [Claude Code](https://claude.com/claude-code) installed and logged in (run `claude` once).
+- Uses your plan's usage limits rather than per-token billing, and works only while this
+  machine is on. Check your plan's terms for automated use.
+- Works on macOS, Linux and Windows (Git Bash). The Windows launch path is not covered by
+  the automated tests.
+- `./tradenote.sh stop` stops the bridge. Logs: `scripts/claude-bridge.log`.
 
 ## macOS
 

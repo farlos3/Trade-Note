@@ -583,6 +583,68 @@ start_live_feed() {
   return 0
 }
 
+# --- Claude bridge: your Claude SUBSCRIPTION for the AI Analysis page ----------
+# Only when AI_PROVIDER=claude-cli. The backend runs in a container that cannot see
+# the host's `claude` CLI or its login, so scripts/claude-bridge.mjs runs on the host
+# and the backend calls it. "Is it up" is answered by asking the bridge itself
+# (GET /health), not by a pid file: a port that answers is the only fact that matters,
+# and it works the same on macOS, Linux and Git Bash without any process lookup.
+# Detached the same way as the live feed, for the same reason -- on Windows a plain
+# background job dies with the console that started it.
+start_claude_bridge() {
+  [[ "$(read_env AI_PROVIDER)" == "claude-cli" ]] || return 0
+  section "Starting Claude bridge"
+  local secret port node_bin bridge_log win_root win_node
+  secret="$(read_env CLAUDE_BRIDGE_SECRET)"
+  port="$(read_env CLAUDE_BRIDGE_PORT)"; [[ -n "$port" ]] || port="8788"
+  if [[ -z "$secret" ]]; then
+    warn "AI_PROVIDER=claude-cli but CLAUDE_BRIDGE_SECRET is not set in .env; the AI Analysis page will report it as unavailable."
+    return 0
+  fi
+  node_bin="$(command -v node 2>/dev/null)"
+  if [[ -z "$node_bin" ]]; then
+    warn "node not found; cannot start the Claude bridge."
+    return 0
+  fi
+  command -v claude >/dev/null 2>&1 \
+    || warn "The 'claude' command is not on PATH. Install Claude Code and run 'claude' once to log in, or the bridge will answer with an error."
+
+  if curl -fsS -m 2 "http://127.0.0.1:$port/health" >/dev/null 2>&1; then
+    printf '\033[32mClaude bridge already running (port %s).\033[0m\n' "$port"
+    return 0
+  fi
+
+  bridge_log="$ROOT_DIR/scripts/claude-bridge.log"
+  if command -v powershell >/dev/null 2>&1; then
+    win_root="$(cygpath -w "$ROOT_DIR" 2>/dev/null || printf '%s' "$ROOT_DIR")"
+    win_node="$(cygpath -w "$node_bin" 2>/dev/null || printf '%s' "$node_bin")"
+    powershell -NoProfile -Command \
+      "Start-Process -FilePath '$win_node' \
+         -ArgumentList '$win_root\\scripts\\claude-bridge.mjs' \
+         -WorkingDirectory '$win_root' \
+         -RedirectStandardOutput '$win_root\\scripts\\claude-bridge.log' \
+         -RedirectStandardError  '$win_root\\scripts\\claude-bridge.log.err' \
+         -WindowStyle Hidden" >/dev/null 2>&1
+  else
+    nohup "$node_bin" "$ROOT_DIR/scripts/claude-bridge.mjs" >"$bridge_log" 2>&1 &
+    disown 2>/dev/null || true
+  fi
+
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    if curl -fsS -m 2 "http://127.0.0.1:$port/health" >/dev/null 2>&1; then
+      printf '\033[32mClaude bridge running on port %s (log: %s)\033[0m\n' "$port" "${bridge_log#$ROOT_DIR/}"
+      return 0
+    fi
+    sleep 0.5
+  done
+  warn "Claude bridge did not come up. See ${bridge_log#$ROOT_DIR/}"
+  [[ -s "$bridge_log" ]] && tail -n 3 "$bridge_log" | sed 's/^/  /' >&2
+  return 0
+}
+
+start_claude_bridge
+
 # 4a. Baseline: whatever is in the R2 backup.
 if [[ "$SKIP_RESTORE" -eq 0 ]]; then
   restore_from_r2
@@ -694,6 +756,25 @@ if [[ "$KEEP_RUNNING" -eq 1 ]]; then
   printf '\n\033[32mBackup done; app left running.\033[0m\n'
   exit 0
 fi
+
+
+# --- Claude bridge: stop it with the stack -------------------------------------
+# Asked to shut itself down over HTTP (with the shared secret) rather than killed by
+# pid: no pid file to go stale, and the same call works on every platform. Quiet when
+# it was never running.
+stop_claude_bridge() {
+  local secret port
+  secret="$(grep -E '^CLAUDE_BRIDGE_SECRET=' "$ROOT_DIR/.env" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '\r"'"'")"
+  port="$(grep -E '^CLAUDE_BRIDGE_PORT=' "$ROOT_DIR/.env" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '\r"'"'")"
+  [[ -n "$port" ]] || port="8788"
+  [[ -n "$secret" ]] || return 0
+  curl -fsS -m 2 "http://127.0.0.1:$port/health" >/dev/null 2>&1 || return 0
+  curl -fsS -m 3 -X POST -H "x-bridge-secret: $secret" "http://127.0.0.1:$port/shutdown" >/dev/null 2>&1 \
+    && printf '\033[32mClaude bridge stopped.\033[0m\n'
+  return 0
+}
+
+stop_claude_bridge
 
 section "Stopping TradeNote"
 if docker compose -f "$COMPOSE_FILE" down; then

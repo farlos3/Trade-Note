@@ -338,8 +338,18 @@ const setupApiRoutes = (app) => {
     const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic() : null
     const geminiKey = process.env.GEMINI_API_KEY || null
 
+    /* "claude-cli": use the user's Claude SUBSCRIPTION through scripts/claude-bridge.mjs,
+     * a small process on the host that runs the official `claude` CLI. It has to be
+     * the host: this backend lives in a container that cannot see the CLI or its
+     * login. Opt-in only (AI_PROVIDER=claude-cli) -- it is never picked
+     * automatically, because it is not a key you can see being configured and it
+     * spends plan usage rather than being billed per token. */
+    const bridgeSecret = process.env.CLAUDE_BRIDGE_SECRET || null
+    const bridgeUrl = (process.env.CLAUDE_BRIDGE_URL || 'http://host.docker.internal:8788').replace(/\/+$/, '')
+
     const AI_PROVIDER = (() => {
         const want = (process.env.AI_PROVIDER || '').toLowerCase()
+        if (want === 'claude-cli') return bridgeSecret ? 'claude-cli' : null
         if (want === 'anthropic') return anthropic ? 'anthropic' : null
         if (want === 'gemini') return geminiKey ? 'gemini' : null
         if (anthropic) return 'anthropic'
@@ -352,11 +362,14 @@ const setupApiRoutes = (app) => {
     // "-latest" alias rather than a pinned version: Google retires pinned models
     // for new keys ("no longer available to new users"), which is exactly how a
     // hard-coded gemini-2.5-flash broke here. The alias tracks the current model.
+    // For claude-cli an empty model means "let the bridge choose" (its default is sonnet).
     const ANALYSIS_MODEL = process.env.ANALYSIS_MODEL
-        || (AI_PROVIDER === 'gemini' ? 'gemini-flash-lite-latest' : 'claude-opus-5')
+        || (AI_PROVIDER === 'gemini' ? 'gemini-flash-lite-latest'
+            : AI_PROVIDER === 'claude-cli' ? ''
+            : 'claude-opus-5')
 
     if (AI_PROVIDER) {
-        console.log(`\nAI ANALYSIS enabled -> ${AI_PROVIDER} (${ANALYSIS_MODEL})`)
+        console.log(`\nAI ANALYSIS enabled -> ${AI_PROVIDER} (${ANALYSIS_MODEL || 'bridge default'})` + (AI_PROVIDER === 'claude-cli' ? ` via ${bridgeUrl}` : ''))
     } else {
         console.log("\nAI ANALYSIS not configured -> set ANTHROPIC_API_KEY or GEMINI_API_KEY (rule-based summary still works)")
     }
@@ -366,6 +379,30 @@ const setupApiRoutes = (app) => {
      * { summary, model, refused } so the route stays provider-agnostic.
      */
     const runAnalysisModel = async (system, userText) => {
+        if (AI_PROVIDER === 'claude-cli') {
+            try {
+                const { data } = await axios.post(`${bridgeUrl}/run`, {
+                    system, prompt: userText, ...(ANALYSIS_MODEL ? { model: ANALYSIS_MODEL } : {}),
+                }, {
+                    headers: { 'x-bridge-secret': bridgeSecret, 'Content-Type': 'application/json' },
+                    // A little over the bridge's own 150s limit, so its explanation
+                    // arrives instead of this side giving up first.
+                    timeout: 170000,
+                })
+                return { summary: data.summary, model: data.model }
+            } catch (e) {
+                // Re-thrown WITHOUT the axios response attached: the route's catch block
+                // appends "check the API key" to 400/401/403 errors, which is wrong advice
+                // here -- the bridge's own message says what to do.
+                const reason = e?.response?.data?.error
+                const unreachable = ['ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH', 'ECONNRESET'].includes(e?.code)
+                throw new Error(unreachable
+                    ? `The Claude bridge is not reachable at ${bridgeUrl}. Start it with ./tradenote.sh start, or run: node scripts/claude-bridge.mjs`
+                    : e?.response?.status === 401
+                        ? 'The Claude bridge rejected the secret. CLAUDE_BRIDGE_SECRET differs between .env and the running bridge; restart the bridge.'
+                        : `Claude bridge: ${reason || e.message}`)
+            }
+        }
         if (AI_PROVIDER === 'anthropic') {
             const msg = await anthropic.messages.create({
                 model: ANALYSIS_MODEL,
@@ -593,8 +630,8 @@ const setupApiRoutes = (app) => {
                 // where a key IS present reads as though none were.
                 const want = (process.env.AI_PROVIDER || '').toLowerCase()
                 const reason = want
-                    ? `AI_PROVIDER=${want} but its key is not set on the server`
-                    : 'No AI key on the server — set ANTHROPIC_API_KEY or GEMINI_API_KEY'
+                    ? `AI_PROVIDER=${want} but its ${want === 'claude-cli' ? 'CLAUDE_BRIDGE_SECRET' : 'key'} is not set on the server`
+                    : 'No AI provider on the server — set ANTHROPIC_API_KEY or GEMINI_API_KEY, or AI_PROVIDER=claude-cli with CLAUDE_BRIDGE_SECRET'
                 return res.status(200).json({ disabled: true, reason })
             }
             const tz = req.query.tz || process.env.TRADENOTE_TZ || 'UTC'
