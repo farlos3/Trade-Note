@@ -13,7 +13,7 @@
 //|  Read-only: queries history and account state, never trades.       |
 //+------------------------------------------------------------------+
 #property copyright "TradeNote"
-#property version   "1.02"
+#property version   "1.03"
 #property strict
 
 // Also the refresh rate of the Live page on macOS, where this file is the only
@@ -252,13 +252,21 @@ string BuildJson()
    //
    // The terminal is the only thing that knows the offset -- it changes with the
    // broker's own DST, not the host's -- so it is exported rather than configured,
-   // and the Python side subtracts it. Rounded to the minute because TimeGMT() and
-   // TimeCurrent() are sampled a moment apart.
-   long gmtOffset = (long)TimeCurrent() - (long)TimeGMT();
-   gmtOffset = (long)MathRound((double)gmtOffset / 60.0) * 60;
+   // and the Python side subtracts it.
+   //
+   // Measured with TimeTradeServer(), NOT TimeCurrent(). TimeCurrent() is the time of
+   // the last tick, so it stops whenever quotes do -- and right after the terminal
+   // starts it still holds the tick from before it was closed. Exporting in that
+   // window once produced an offset 12h52m wrong and shifted a whole sync's trades.
+   // TimeTradeServer() is the terminal's running estimate of the server clock and
+   // keeps advancing without ticks. Rounded to the quarter hour, since every real
+   // offset is one and the two clocks are sampled a moment apart; mt5_sync.py also
+   // rejects anything that is not.
+   long gmtOffset = (long)TimeTradeServer() - (long)TimeGMT();
+   gmtOffset = (long)MathRound((double)gmtOffset / 900.0) * 900;
    json += "  \"gmt_offset\": " + IntegerToString(gmtOffset) + ",\n";
 
-   json += "  \"exported_at\": " + IntegerToString((long)TimeCurrent()) + "\n";
+   json += "  \"exported_at\": " + IntegerToString((long)TimeTradeServer()) + "\n";
    json += "}\n";
    return json;
 }

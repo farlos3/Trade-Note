@@ -13,6 +13,8 @@ logs
 # MT5 sync local secrets/state
 mt5-sync/config.ini
 mt5-sync/state.json
+# Last trusted broker clock offset per server (see trusted_offset in mt5_sync.py)
+mt5-sync/.broker-offset.json
 __pycache__/
 
 # Caveman agent skills (installed per-machine via the upstream install.sh).
