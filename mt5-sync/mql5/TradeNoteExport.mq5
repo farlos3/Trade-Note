@@ -13,7 +13,7 @@
 //|  Read-only: queries history and account state, never trades.       |
 //+------------------------------------------------------------------+
 #property copyright "TradeNote"
-#property version   "1.03"
+#property version   "1.04"
 #property strict
 
 // Also the refresh rate of the Live page on macOS, where this file is the only
@@ -122,8 +122,11 @@ string BalanceOpsJson()
 //+------------------------------------------------------------------+
 string BuildJson()
 {
-   datetime to   = TimeCurrent() + 2 * 24 * 60 * 60;   // pad ahead: broker time can lead the host clock
-   datetime from = TimeCurrent() - (datetime)LookbackDays * 24 * 60 * 60;
+   // TimeTradeServer(), not TimeCurrent(), for the same reason as gmt_offset below:
+   // right after the terminal starts, TimeCurrent() still holds the last tick from
+   // before it was closed, and the window would be anchored hours in the past.
+   datetime to   = TimeTradeServer() + 2 * 24 * 60 * 60;   // pad ahead: broker time can lead the host clock
+   datetime from = TimeTradeServer() - (datetime)LookbackDays * 24 * 60 * 60;
 
    if(!HistorySelect(from, to))
       return "";
@@ -231,6 +234,14 @@ string BuildJson()
       json += ", \"swap\": "      + Num(HistoryDealGetDouble(ticket, DEAL_SWAP), 2);
       json += ", \"profit\": "    + Num(HistoryDealGetDouble(ticket, DEAL_PROFIT), 2);
       json += ", \"comment\": \"" + JsonEscape(HistoryDealGetString(ticket, DEAL_COMMENT)) + "\"";
+      // Stops as the terminal recorded them ON THE DEAL: an entry deal carries the
+      // SL/TP of the order that opened it, an exit deal the position's SL/TP at the
+      // moment it closed -- i.e. the levels actually in force, after any moves.
+      // `reason` says why it closed (4 = stop loss, 5 = take profit, 0 = by hand
+      // from the desktop terminal, ...: ENUM_DEAL_REASON). 0.0 means "none set".
+      json += ", \"sl\": "        + Num(HistoryDealGetDouble(ticket, DEAL_SL));
+      json += ", \"tp\": "        + Num(HistoryDealGetDouble(ticket, DEAL_TP));
+      json += ", \"reason\": "    + IntegerToString(HistoryDealGetInteger(ticket, DEAL_REASON));
       json += "}";
       first = false;
    }
