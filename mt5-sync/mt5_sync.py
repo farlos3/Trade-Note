@@ -112,6 +112,79 @@ def broker_time_to_utc(ts, offset_seconds):
         return ts
 
 
+# --- Trusting the offset ----------------------------------------------------------
+# Every timestamp that enters TradeNote passes through the offset above, so a wrong
+# offset is not a cosmetic error: it moves every trade in the push to the wrong time
+# and, past midnight, to the wrong DAY -- where the importer, which upserts by day,
+# then keeps it alongside the correct copy forever.
+#
+# That happened. Both ways of measuring the offset read the time of the LAST TICK
+# (MQL5's TimeCurrent(), the native package's tick.time), and the last tick is not
+# "now" whenever quotes have stopped: MT5 closed overnight and reopened at 15:58 had
+# the EA export at 15:59:06, before the first new tick, with TimeCurrent() still at
+# 03:07. The offset came out 12h52m wrong and one sync filed 23 trades 46,320 s late.
+#
+# Real offsets are whole quarter hours within +/-14h, and for one broker they only
+# ever change by exactly an hour (DST). A reading that breaks either rule is
+# rejected in favour of the last trusted value for that server, kept on disk because
+# the sync is a fresh process every minute. With nothing trusted yet, the caller is
+# told None and must not import -- skipping one run is cheap, a shifted day is not.
+OFFSET_CACHE_PATH = os.path.join(HERE, ".broker-offset.json")
+MAX_ABS_OFFSET = 14 * 3600
+_offset_rejections = set()
+
+
+def _read_offset_cache():
+    try:
+        with open(OFFSET_CACHE_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_offset_cache(cache):
+    try:
+        with open(OFFSET_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=2, sort_keys=True)
+    except OSError as e:
+        log(f"Could not save the trusted broker offset ({e}); it will be re-checked next run.")
+
+
+def plausible_offset(seconds):
+    """A whole quarter hour within +/-14h -- the shape every real UTC offset has."""
+    return (isinstance(seconds, int) and not isinstance(seconds, bool)
+            and seconds % 900 == 0 and abs(seconds) <= MAX_ABS_OFFSET)
+
+
+def trusted_offset(server, measured, source):
+    """The offset to use for this broker server, or None if none can be trusted.
+
+    Accepts `measured` when it is plausible and either nothing is known yet or it
+    equals / differs by exactly one hour (a DST switch) from the last trusted value.
+    Anything else falls back to that last trusted value."""
+    key = server or "default"
+    cache = _read_offset_cache()
+    last = cache.get(key)
+    if plausible_offset(measured) and (last is None or measured == last or abs(measured - last) == 3600):
+        if measured != last:
+            if last is not None:
+                log(f"Broker clock offset for {key} changed {last:+d}s -> {measured:+d}s "
+                    "(a DST switch); using the new value.")
+            cache[key] = measured
+            _write_offset_cache(cache)
+        return measured
+    # Log each distinct rejection once per process; this runs on every read.
+    if (key, measured) not in _offset_rejections:
+        _offset_rejections.add((key, measured))
+        fallback = f"keeping the last trusted {last:+d}s" if last is not None else \
+            "no earlier trusted value, so nothing is imported until a good reading arrives"
+        log(f"Ignoring broker clock offset {measured!r}s from {source} for {key}: not a "
+            f"plausible offset or an impossible jump. Usually the terminal has just "
+            f"started and has not received a tick yet. {fallback}.")
+    return last
+
+
 class NativeBackend:
     name = "MetaTrader5 package"
 
@@ -135,17 +208,28 @@ class NativeBackend:
         """
         if getattr(self, "_offset", None) is not None:
             return self._offset
-        self._offset = 0
+        measured = None
         try:
-            symbols = mt5.symbols_get() or []
-            for sym in symbols[:20]:
+            # The FRESHEST tick, not the first symbol that has one: the old loop took
+            # whichever of the first 20 symbols answered, and a symbol that has not
+            # traded for hours hands back a stale time that still rounds to a
+            # perfectly ordinary-looking quarter hour.
+            symbols = [s for s in (mt5.symbols_get() or []) if getattr(s, "select", False)] \
+                or (mt5.symbols_get() or [])
+            newest = 0
+            for sym in symbols:
                 tick = mt5.symbol_info_tick(sym.name)
-                if tick and tick.time:
-                    self._offset = int(round((tick.time - time.time()) / 900.0) * 900)
-                    break
+                if tick and tick.time and tick.time > newest:
+                    newest = tick.time
+            if newest:
+                measured = int(round((newest - time.time()) / 900.0) * 900)
         except Exception as e:  # noqa: BLE001 - never let clock detection kill a sync
-            log(f"Could not determine the broker clock offset ({e}); assuming UTC.")
-        return self._offset
+            log(f"Could not measure the broker clock offset ({e}).")
+        ai = mt5.account_info()
+        offset = trusted_offset(getattr(ai, "server", ""), measured, "the freshest tick")
+        if offset is not None:
+            self._offset = offset       # cached only once it is trusted
+        return offset
 
     def history_deals_get(self, frm, to):
         """Deals in the window, with their times converted to true UTC.
@@ -154,6 +238,8 @@ class NativeBackend:
         terminal filters on. Only the times coming back are corrected, so that
         everything downstream of this backend is UTC."""
         offset = self.broker_offset()
+        if offset is None:
+            return None
         out = []
         for d in (mt5.history_deals_get(frm, to) or []):
             fields = {k: getattr(d, k) for k in dir(d)
@@ -182,6 +268,8 @@ class NativeBackend:
             return None
 
         offset = self.broker_offset()
+        if offset is None:
+            return None
         positions = []
         symbols = set()
         for p in (mt5.positions_get() or []):
@@ -403,20 +491,29 @@ class BridgeBackend:
         latency into an exact answer. Inference is a fallback, not the design: it
         assumes the host clock is right, which is why the EA reports it directly."""
         data = self._data or {}
+        server = ((data.get("account") or {}).get("server")) or ""
         if data.get("gmt_offset") is not None:
-            return int(data["gmt_offset"])
-        exported = data.get("exported_at")
-        if not exported:
-            return 0
-        drift = float(exported) - time.time()
-        guessed = int(round(drift / 900.0) * 900)
-        if guessed and not getattr(self, "_warned_offset", False):
-            log(f"Bridge file has no 'gmt_offset' -- inferring the broker clock is "
-                f"UTC{guessed / 3600:+.2f}h from the file's own timestamp. Recompile "
-                f"TradeNoteExport.mq5 (F7) and re-attach it to have the terminal "
-                f"report this exactly.")
-            self._warned_offset = True
-        return guessed
+            try:
+                measured = int(data["gmt_offset"])
+            except (TypeError, ValueError):
+                measured = None
+            offset = trusted_offset(server, measured, "the EA's gmt_offset")
+        else:
+            exported = data.get("exported_at")
+            guessed = int(round((float(exported) - time.time()) / 900.0) * 900) if exported else None
+            if guessed is not None and not getattr(self, "_warned_offset", False):
+                log(f"Bridge file has no 'gmt_offset' -- inferring the broker clock is "
+                    f"UTC{guessed / 3600:+.2f}h from the file's own timestamp. Recompile "
+                    f"TradeNoteExport.mq5 (F7) and re-attach it to have the terminal "
+                    f"report this exactly.")
+                self._warned_offset = True
+            offset = trusted_offset(server, guessed, "the file's exported_at")
+        if offset is None:
+            self._err = ("the terminal's clock offset is not trustworthy yet (it has "
+                         "probably just started); waiting for a good reading")
+            self.last_reason = ("MetaTrader 5 reported an implausible clock offset, usually "
+                                "right after it starts; trades are held back until it settles.")
+        return offset
 
     def account_info(self):
         a = (self._data or {}).get("account") or {}
@@ -436,6 +533,8 @@ class BridgeBackend:
         to_unix = to.timestamp() if isinstance(to, dt.datetime) else float(to)
         out = []
         offset = self.broker_offset()
+        if offset is None:
+            return None
         for d in (self._data or {}).get("deals", []):
             # Broker clock -> UTC before anything compares or stores it.
             t = float(broker_time_to_utc(d.get("time", 0), offset))
@@ -480,6 +579,8 @@ class BridgeBackend:
             return None
         a = data.get("account") or {}
         offset = self.broker_offset()
+        if offset is None:
+            return None
 
         positions = []
         ticks = {}
@@ -565,6 +666,8 @@ class BridgeBackend:
                                                       dt.datetime.now() + dt.timedelta(days=2))
                     if d.type == DEAL_TYPE_BALANCE and d.profit != 0]
         offset = self.broker_offset()
+        if offset is None:
+            return []
         return [_Obj({
             "time": int(broker_time_to_utc(o.get("time", 0), offset)),
             "type": DEAL_TYPE_BALANCE,
@@ -743,11 +846,24 @@ def connect(cfg, backend):
     return info
 
 
+# How far back to look for the other half of a position the window cut through.
+LEG_LOOKBACK_DAYS = 30
+
+
 def fetch_deals(backend, frm, to):
     deals = backend.history_deals_get(frm, to)
     if deals is None:
         log(f"history_deals_get returned None: {backend.last_error()}")
         return []
+    # The window's start falls at an arbitrary moment, so a position opened before it
+    # and closed inside it arrived as a lone exit deal. The importer cannot price a
+    # trade from one leg: it filed it as an open position, at the EXIT time, with zero
+    # P&L, and kept it that way. So every position the window touches is completed
+    # from a wider read before anything is pushed.
+    touched = {d.position_id for d in deals}
+    wide = backend.history_deals_get(frm - dt.timedelta(days=LEG_LOOKBACK_DAYS), to)
+    if wide:
+        deals = [d for d in wide if d.position_id in touched]
     # Exclude deals belonging to positions that are STILL OPEN. Otherwise the
     # entry deal alone gets imported as an open trade, and when the position later
     # closes the re-import is dropped by TradeNote's dateUnix dedup — so the trade
@@ -1082,6 +1198,11 @@ def main():
         return
 
     info = connect(cfg, backend)
+    if backend.broker_offset() is None:
+        log("Broker clock offset not trustworthy yet -- skipping this run rather than "
+            "importing trades at the wrong times.")
+        backend.shutdown()
+        return
     # Everything below is about ONE account -- whichever the terminal is logged
     # into right now. Its state is read only now, because until connect() returns
     # there is no login to look it up by.
