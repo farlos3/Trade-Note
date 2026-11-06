@@ -70,6 +70,10 @@ services:
       # Per-trade lot at/above which a trade counts as "oversized" in the
       # Overtrading flag (default 0.1). Set to your own normal size + margin.
       OVERTRADE_LOT_CAP: ${OVERTRADE_LOT_CAP:-}
+      # MT5 trades are filed under the TRADE timezone's day only when this is
+      # "trade-tz". Set by mt5-sync/rebucket_days.py --source mt5 --apply, which
+      # re-files the stored history in the same step; do not set it by hand.
+      MT5_DAY_BUCKETS: ${MT5_DAY_BUCKETS:-}
       R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
       R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
       R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}

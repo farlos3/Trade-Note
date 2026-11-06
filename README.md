@@ -159,6 +159,7 @@ Requires `pip install pymongo pyarrow boto3` and `R2_ACCOUNT_ID` + `R2_BUCKET`
 | `MT5_TERMINAL_PATH` | Optional path to `terminal64.exe` for the start script. |
 | `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` | Optional. Enable the written analysis on the AI Analysis page (billed per token). |
 | `AI_PROVIDER` | `gemini`, `anthropic`, or `claude-cli` to use your **Claude subscription** instead of an API key (see below). |
+| `MT5_DAY_BUCKETS` | `trade-tz` files MT5 trades under the trade timezone's day (Bangkok) instead of the UTC date. Set by `mt5-sync/rebucket_days.py --source mt5 --apply`, which re-files the history in the same step -- not by hand. |
 | `CLAUDE_BRIDGE_SECRET` | Required for `claude-cli`: any random string, shared by the app and the bridge. |
 | `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | R2 for images **and** Parquet backups. |
 

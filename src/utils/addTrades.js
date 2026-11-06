@@ -453,11 +453,30 @@ async function createTempExecutions() {
                 const formatedDateTD = dateArrayTD[2] + "-" + dateArrayTD[0] + "-" + dateArrayTD[1]
                 //console.log("formatedDateTD " + formatedDateTD)
 
-                temp2.td = dayjs.tz(formatedDateTD, timeZoneTrade.value).unix()
+                // Which DAY a deal belongs to. For every other broker the export's date is
+                // already the trade timezone's date, so it is used as is. An MT5 deal's
+                // date is the UTC date (the sync writes UTC; see execTime below), so a
+                // Bangkok trade between 00:00 and 07:00 used to land on the PREVIOUS day,
+                // and the History page, the calendar and any per-day number disagreed
+                // with the trader's own day. Its day is now the trade timezone's
+                // calendar day of the same instant. Only the bucket moves: execTime
+                // below is still built from the UTC date and time, unchanged.
+                //
+                // Behind MT5_DAY_BUCKETS=trade-tz (server env) until the stored history
+                // has been re-filed (mt5-sync/rebucket_days.py). Switching it on alone
+                // would be worse than leaving it off: the day upsert keeps a stored day
+                // that holds more trades than the new import, so a trade moving to the
+                // next day would then exist on BOTH days. Off, nothing changes.
+                const tzDayBuckets = typeof process !== 'undefined' && process.env
+                    && process.env.MT5_DAY_BUCKETS === 'trade-tz'
+                const mt5Day = tzDayBuckets && selectedBroker.value === 'metaTrader5'
+                    ? dayjs.utc(formatedDateTD + " " + tradesData[key]['Exec Time']).tz(timeZoneTrade.value).format('YYYY-MM-DD')
+                    : null
+                temp2.td = dayjs.tz(mt5Day || formatedDateTD, timeZoneTrade.value).unix()
 
                 const dateArraySD = tradesData[key]['S/D'].split('/');
                 const formatedDateSD = dateArraySD[2] + "-" + dateArraySD[0] + "-" + dateArraySD[1]
-                temp2.sd = dayjs.tz(formatedDateSD, timeZoneTrade.value).unix()
+                temp2.sd = dayjs.tz(mt5Day || formatedDateSD, timeZoneTrade.value).unix()
 
                 temp2.currency = tradesData[key].Currency;
                 temp2.type = tradesData[key].Type;
