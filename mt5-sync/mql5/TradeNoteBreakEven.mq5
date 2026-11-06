@@ -16,12 +16,16 @@
 //|  that drifts toward it, and the break-even line alone says nothing |
 //|  about how much room is left before that happens.                  |
 //|                                                                   |
+//|  And it can answer BEFORE you act: set PlanSide and PlanLots to the |
+//|  recovery order you are considering and it draws where the         |
+//|  break-even and the dead point would move if you opened it now.    |
+//|                                                                   |
 //|  Read-only: reads positions, symbol properties and deal history,   |
 //|  and draws. It cannot place, modify or close an order -- being an  |
 //|  indicator rather than an EA is the point, not an accident.        |
 //+------------------------------------------------------------------+
 #property copyright "TradeNote"
-#property version   "1.01"
+#property version   "1.02"
 #property strict
 #property indicator_chart_window
 #property indicator_buffers 0
@@ -40,9 +44,20 @@ input bool   ShowDeadPoint      = true;      // also draw the stop-out ("dead") 
 input color  DeadColor          = clrTomato; // dead-point line
 input int    DeadLineWidth      = 1;         // dead-point line width
 
+// What-if: a recovery order you are only CONSIDERING. Nothing is sent; the order is
+// added to the basket in the arithmetic only. Change these in the indicator's
+// properties (Inputs tab) and the lines move at once. PLAN_NONE turns it off.
+enum PlanSideEnum { PLAN_NONE = 0, PLAN_BUY = 1, PLAN_SELL = 2 };
+input PlanSideEnum PlanSide         = PLAN_NONE; // what-if order: side
+input double PlanLots               = 0.0;       // what-if order: lots
+input double PlanEntryCostPerLot    = 0.0;       // what-if order: commission the OPEN will charge, per lot
+input color  PlanColor              = clrDeepSkyBlue; // what-if lines
+
 #define PREFIX "TN_BE_"
 #define LINE_NAME PREFIX "line"
 #define DEAD_NAME PREFIX "dead"
+#define PLAN_BE_NAME   PREFIX "plan_be"
+#define PLAN_DEAD_NAME PREFIX "plan_dead"
 
 // Entry commission is charged on the position's DEALS, not on the position, so it
 // costs a history lookup to read. It also cannot change once the position is open,
@@ -129,6 +144,7 @@ struct BasketState
    bool   hasBreakEven;   // false when the basket is flat-hedged
    double valuePerPrice;  // account currency per lot per whole unit of price
    double bid;            // the bid this snapshot was taken at
+   double k;              // constant term of the basket's P&L line (see ReadBasket)
 };
 
 bool ReadBasket(const string sym, BasketState &out)
@@ -147,7 +163,7 @@ bool ReadBasket(const string sym, BasketState &out)
    out.count = 0; out.netLots = 0.0; out.grossLots = 0.0;
    out.costs = 0.0; out.floating = 0.0;
    out.breakEven = 0.0; out.hasBreakEven = false;
-   out.valuePerPrice = valuePerPrice; out.bid = bid;
+   out.valuePerPrice = valuePerPrice; out.bid = bid; out.k = 0.0;
 
    double k = 0.0;    // the constant term of the basket's P&L line
 
@@ -186,6 +202,7 @@ bool ReadBasket(const string sym, BasketState &out)
       out.count++;
    }
 
+   out.k = k;
    if(out.count == 0)
       return true;
 
@@ -242,12 +259,13 @@ struct DeadPoint
    double room;           // equity - stopOutEquity: what can still be lost
 };
 
-void ComputeDeadPoint(const BasketState &b, DeadPoint &d)
+void DeadFrom(const double equity, const double margin, const double netLots,
+              const double bid, const double valuePerPrice, DeadPoint &d)
 {
    d.state       = 0;
    d.price       = 0.0;
-   d.equity      = AccountInfoDouble(ACCOUNT_EQUITY);
-   d.margin      = AccountInfoDouble(ACCOUNT_MARGIN);
+   d.equity      = equity;
+   d.margin      = margin;
    d.soLevel     = AccountInfoDouble(ACCOUNT_MARGIN_SO_SO);
    d.percentMode = (AccountInfoInteger(ACCOUNT_MARGIN_SO_MODE) == ACCOUNT_STOPOUT_MODE_PERCENT);
    d.marginLevel = (d.margin > 0.0) ? d.equity / d.margin * 100.0 : 0.0;
@@ -262,9 +280,16 @@ void ComputeDeadPoint(const BasketState &b, DeadPoint &d)
    // equity unmoved by price, so there is no price at which it dies.
    double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
    if(step <= 0.0) step = 0.01;
-   if(MathAbs(b.netLots) < step / 2.0) { d.state = 2; return; }
+   if(MathAbs(netLots) < step / 2.0) { d.state = 2; return; }
 
-   d.price = b.bid - d.room / (b.valuePerPrice * b.netLots);
+   d.price = bid - d.room / (valuePerPrice * netLots);
+}
+
+// The dead point of the account as it stands.
+void ComputeDeadPoint(const BasketState &b, DeadPoint &d)
+{
+   DeadFrom(AccountInfoDouble(ACCOUNT_EQUITY), AccountInfoDouble(ACCOUNT_MARGIN),
+            b.netLots, b.bid, b.valuePerPrice, d);
 }
 
 //+------------------------------------------------------------------+
@@ -300,6 +325,27 @@ void DrawDeadLine(const double price)
    ObjectSetInteger(0, DEAD_NAME, OBJPROP_WIDTH, DeadLineWidth);
 }
 
+void DrawPlanLine(const string name, const double price)
+{
+   if(ObjectFind(0, name) < 0)
+   {
+      ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
+      ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DOT);
+      ObjectSetInteger(0, name, OBJPROP_BACK, true);
+      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   }
+   ObjectSetDouble(0, name, OBJPROP_PRICE, price);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, PlanColor);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+}
+
+void ClearPlanLines()
+{
+   ObjectDelete(0, PLAN_BE_NAME);
+   ObjectDelete(0, PLAN_DEAD_NAME);
+}
+
 void SetLabel(const int row, const string text, const color clr)
 {
    string name = PREFIX "lbl" + IntegerToString(row);
@@ -320,7 +366,7 @@ void SetLabel(const int row, const string text, const color clr)
 
 void ClearPanel(const int fromRow)
 {
-   for(int row = fromRow; row < 8; row++)
+   for(int row = fromRow; row < 14; row++)
       ObjectDelete(0, PREFIX "lbl" + IntegerToString(row));
 }
 
@@ -373,6 +419,154 @@ int UpdateDeadPoint(const BasketState &b, const int firstRow, const int digits,
 }
 
 //+------------------------------------------------------------------+
+//| WHAT IF: the basket with one more order in it.                    |
+//|                                                                   |
+//| The same two straight lines as above, with the candidate order     |
+//| added to them -- nothing is sent. It opens at the price it would   |
+//| really get (a buy at the ask, a sell at the bid), so it starts     |
+//| life down by the spread, and that is already in the answer: a      |
+//| recovery order never gets the break-even for free.                 |
+//|                                                                   |
+//|   buy  v @ ask:  net += v,  k -= v*ask                             |
+//|   sell v @ bid:  net -= v,  k += v*(bid - spread)                 |
+//|                                                                   |
+//| Equity after opening is today's less the spread it costs and the   |
+//| entry commission; margin is today's plus the terminal's own        |
+//| OrderCalcMargin for this order. Hedging brokers may charge less    |
+//| for an offsetting order than OrderCalcMargin says, so the dead     |
+//| point of a HEDGE is, if anything, a little pessimistic.            |
+//+------------------------------------------------------------------+
+bool BuildPlan(const BasketState &b, BasketState &p, double &lots, double &openPrice, double &spread)
+{
+   if(PlanSide == PLAN_NONE || PlanLots <= 0.0)
+      return false;
+
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0.0) step = 0.01;
+   lots = MathFloor(PlanLots / step + 0.5) * step;
+   if(lots <= 0.0)
+      return false;
+
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   spread = (ask > b.bid) ? ask - b.bid : 0.0;
+
+   p = b;
+   if(PlanSide == PLAN_BUY)
+   {
+      openPrice  = ask;
+      p.netLots += lots;
+      p.k       -= lots * openPrice;
+   }
+   else
+   {
+      openPrice  = b.bid;
+      p.netLots -= lots;
+      p.k       += lots * (openPrice - spread);
+   }
+   double cost = -(PlanEntryCostPerLot + ExitCostPerLot) * lots;
+   p.grossLots += lots;
+   p.count++;
+   p.costs     += cost;
+   p.floating   = b.floating - spread * lots * b.valuePerPrice + cost;
+
+   if(MathAbs(p.netLots) < step / 2.0)
+   {
+      p.hasBreakEven = false;
+      p.breakEven    = 0.0;
+   }
+   else
+   {
+      p.breakEven    = -(p.k + p.costs / p.valuePerPrice) / p.netLots;
+      p.hasBreakEven = true;
+   }
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Draw and describe the what-if. Returns the first panel row free.  |
+//+------------------------------------------------------------------+
+int UpdatePlan(const BasketState &b, const int firstRow, const int digits,
+               const double pip, const string account)
+{
+   BasketState p;
+   double lots = 0.0, openPrice = 0.0, spread = 0.0;
+   if(!BuildPlan(b, p, lots, openPrice, spread))
+   {
+      ClearPlanLines();
+      return firstRow;
+   }
+
+   if(p.hasBreakEven) DrawPlanLine(PLAN_BE_NAME, p.breakEven);
+   else               ObjectDelete(0, PLAN_BE_NAME);
+
+   // Dead point of the account WITH the order: equity after paying the spread and
+   // the entry commission, margin plus what the terminal says this order needs.
+   DeadPoint d;
+   bool haveDead = false;
+   if(ShowDeadPoint)
+   {
+      double orderMargin = 0.0;
+      if(OrderCalcMargin(PlanSide == PLAN_BUY ? ORDER_TYPE_BUY : ORDER_TYPE_SELL,
+                         _Symbol, lots, openPrice, orderMargin))
+      {
+         double equity = AccountInfoDouble(ACCOUNT_EQUITY)
+                         - spread * lots * b.valuePerPrice - PlanEntryCostPerLot * lots;
+         DeadFrom(equity, AccountInfoDouble(ACCOUNT_MARGIN) + orderMargin,
+                  p.netLots, p.bid, p.valuePerPrice, d);
+         haveDead = true;
+      }
+   }
+   if(haveDead && d.state == 0) DrawPlanLine(PLAN_DEAD_NAME, d.price);
+   else                         ObjectDelete(0, PLAN_DEAD_NAME);
+
+   if(!ShowPanel) return firstRow;
+
+   int row = firstRow;
+   SetLabel(row++, StringFormat("IF %s %.2f lots @ %s  (nothing is sent)",
+                                PlanSide == PLAN_BUY ? "BUY" : "SELL", lots,
+                                DoubleToString(openPrice, digits)), PlanColor);
+   if(p.hasBreakEven)
+   {
+      string moved = b.hasBreakEven
+         ? StringFormat("   was %s", DoubleToString(b.breakEven, digits)) : "";
+      SetLabel(row++, "  Break-even  " + DoubleToString(p.breakEven, digits) +
+                      StringFormat("   %+.1f pips away", (p.breakEven - p.bid) / pip) + moved, PlanColor);
+   }
+   else
+      SetLabel(row++, StringFormat("  Hedged flat: P&L locked at %.2f %s, no break-even price",
+                                   p.floating, account), PlanColor);
+
+   if(!ShowDeadPoint) return row;
+   if(!haveDead)
+   {
+      SetLabel(row++, "  Dead point  n/a (the terminal could not price this order's margin)", clrSilver);
+      return row;
+   }
+   switch(d.state)
+   {
+      case 0:
+         SetLabel(row++, "  Dead point  " + DoubleToString(d.price, digits) +
+                         StringFormat("   %+.1f pips away", (d.price - p.bid) / pip), PlanColor);
+         break;
+      case 2:
+         SetLabel(row++, "  Dead point  none - hedged flat", PlanColor);
+         break;
+      case 1:
+         SetLabel(row++, "  Dead point  n/a (no margin in use)", clrSilver);
+         return row;
+      default:
+         SetLabel(row++, "  Dead point  REACHED with this order -- it would be stopped out", DeadColor);
+         return row;
+   }
+   if(d.percentMode)
+      SetLabel(row++, StringFormat("  Margin lvl  %.0f%%  (stop-out %.0f%%)  room %.2f %s",
+                                   d.marginLevel, d.soLevel, d.room, account), clrSilver);
+   else
+      SetLabel(row++, StringFormat("  Room        %.2f %s before stop-out (money mode)", d.room, account), clrSilver);
+   return row;
+}
+
+//+------------------------------------------------------------------+
 //| Recalculate and redraw. Called on every tick AND on a one-second  |
 //| timer: opening or closing a position does not itself produce a    |
 //| tick, and a break-even line that only moves when the market does  |
@@ -387,6 +581,7 @@ void Refresh()
    {
       ObjectDelete(0, LINE_NAME);
       ObjectDelete(0, DEAD_NAME);
+      ClearPlanLines();
       if(ShowPanel) SetLabel(0, "Break-even: symbol data unavailable", clrSilver);
       ClearPanel(1);
       ChartRedraw();
@@ -401,6 +596,7 @@ void Refresh()
    {
       ObjectDelete(0, LINE_NAME);
       ObjectDelete(0, DEAD_NAME);
+      ClearPlanLines();
       if(ShowPanel)
       {
          SetLabel(0, "No open " + sym + " positions", clrSilver);
@@ -423,11 +619,13 @@ void Refresh()
          SetLabel(1, StringFormat("P&L locked at %.2f %s -- no break-even price",
                                   b.floating, account),
                   b.floating >= 0 ? clrLimeGreen : clrTomato);
-         ClearPanel(UpdateDeadPoint(b, 2, digits, pip, account));
+         int row = UpdateDeadPoint(b, 2, digits, pip, account);
+         ClearPanel(UpdatePlan(b, row, digits, pip, account));
       }
       else
       {
          UpdateDeadPoint(b, 2, digits, pip, account);
+         UpdatePlan(b, 0, digits, pip, account);
          ClearPanel(0);
       }
       ChartRedraw();
@@ -448,11 +646,13 @@ void Refresh()
                b.floating >= 0 ? clrLimeGreen : clrTomato);
       SetLabel(3, StringFormat("Costs      %+.2f %s (swap + commission)",
                                b.costs, account), clrSilver);
-      ClearPanel(UpdateDeadPoint(b, 4, digits, pip, account));
+      int row = UpdateDeadPoint(b, 4, digits, pip, account);
+      ClearPanel(UpdatePlan(b, row, digits, pip, account));
    }
    else
    {
       UpdateDeadPoint(b, 4, digits, pip, account);
+      UpdatePlan(b, 0, digits, pip, account);
       ClearPanel(0);
    }
 
