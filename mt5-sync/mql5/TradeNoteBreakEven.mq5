@@ -25,7 +25,7 @@
 //|  indicator rather than an EA is the point, not an accident.        |
 //+------------------------------------------------------------------+
 #property copyright "TradeNote"
-#property version   "1.02"
+#property version   "1.06"
 #property strict
 #property indicator_chart_window
 #property indicator_buffers 0
@@ -37,9 +37,14 @@ input double ExitCostPerLot     = 0.0;       // commission the CLOSE will still 
 input color  LineColor          = clrGold;   // break-even line
 input int    LineWidth          = 1;         // break-even line width
 input bool   ShowPanel          = true;      // numbers in the chart corner
-input int    PanelCorner        = 0;         // 0 upper-left 1 upper-right 2 lower-left 3 lower-right
-input int    PanelXDistance     = 12;        // panel offset from that corner, px
-input int    PanelYDistance     = 18;
+// MT5's own corner numbering is NOT left-to-right (0 upper-left, 1 LOWER-left,
+// 2 lower-right, 3 upper-right), so the choice is a named enum, not a number.
+enum PanelSideEnum { PANEL_RIGHT = 0, PANEL_LEFT = 1 };
+input PanelSideEnum PanelSide   = PANEL_RIGHT;   // which side of the chart the numbers sit on
+input int    PanelXDistance     = 14;        // panel offset from that corner, px
+input int    PanelYDistance     = 30;
+input int    PanelFontSize      = 11;        // panel text size
+input double PanelLineSpacing   = 1.5;       // row height as a multiple of the text height
 input bool   ShowDeadPoint      = true;      // also draw the stop-out ("dead") price
 input color  DeadColor          = clrTomato; // dead-point line
 input int    DeadLineWidth      = 1;         // dead-point line width
@@ -295,7 +300,46 @@ void ComputeDeadPoint(const BasketState &b, DeadPoint &d)
 //+------------------------------------------------------------------+
 //| Drawing                                                          |
 //+------------------------------------------------------------------+
-void DrawLine(const double price)
+// A caption for a line, pinned to the chart's right edge at the line's height.
+// An OBJ_TEXT sits at a bar, so it would drift left as new bars arrive; a label
+// is placed in pixels, so its y is worked out from the price here and redone on
+// every chart change (scroll, zoom, resize -- see OnChartEvent). Off-screen
+// prices get no caption rather than one stuck at the edge.
+void Caption(const string lineName, const double price, const string text, const color clr)
+{
+   string name = lineName + "_txt";
+   int x = 0, y = 0;
+   double top = ChartGetDouble(0, CHART_PRICE_MAX), bottom = ChartGetDouble(0, CHART_PRICE_MIN);
+   if(price > top || price < bottom ||
+      !ChartTimePriceToXY(0, 0, iTime(_Symbol, _Period, 0), price, x, y))
+   {
+      ObjectDelete(0, name);
+      return;
+   }
+   if(ObjectFind(0, name) < 0)
+   {
+      ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_RIGHT_LOWER);
+      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+      ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
+   }
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, 6);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y - 2);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, PanelFontSize);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+}
+
+// Remove a line and its caption together.
+void DropLine(const string lineName)
+{
+   ObjectDelete(0, lineName);
+   ObjectDelete(0, lineName + "_txt");
+}
+
+void DrawLine(const double price, const int digits)
 {
    if(ObjectFind(0, LINE_NAME) < 0)
    {
@@ -308,9 +352,10 @@ void DrawLine(const double price)
    ObjectSetDouble(0, LINE_NAME, OBJPROP_PRICE, price);
    ObjectSetInteger(0, LINE_NAME, OBJPROP_COLOR, LineColor);
    ObjectSetInteger(0, LINE_NAME, OBJPROP_WIDTH, LineWidth);
+   Caption(LINE_NAME, price, "Break-even " + DoubleToString(price, digits), LineColor);
 }
 
-void DrawDeadLine(const double price)
+void DrawDeadLine(const double price, const int digits)
 {
    if(ObjectFind(0, DEAD_NAME) < 0)
    {
@@ -323,9 +368,10 @@ void DrawDeadLine(const double price)
    ObjectSetDouble(0, DEAD_NAME, OBJPROP_PRICE, price);
    ObjectSetInteger(0, DEAD_NAME, OBJPROP_COLOR, DeadColor);
    ObjectSetInteger(0, DEAD_NAME, OBJPROP_WIDTH, DeadLineWidth);
+   Caption(DEAD_NAME, price, "Dead point " + DoubleToString(price, digits), DeadColor);
 }
 
-void DrawPlanLine(const string name, const double price)
+void DrawPlanLine(const string name, const double price, const string label, const int digits)
 {
    if(ObjectFind(0, name) < 0)
    {
@@ -338,13 +384,19 @@ void DrawPlanLine(const string name, const double price)
    ObjectSetDouble(0, name, OBJPROP_PRICE, price);
    ObjectSetInteger(0, name, OBJPROP_COLOR, PlanColor);
    ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+   Caption(name, price, label + " " + DoubleToString(price, digits), PlanColor);
 }
 
 void ClearPlanLines()
 {
-   ObjectDelete(0, PLAN_BE_NAME);
-   ObjectDelete(0, PLAN_DEAD_NAME);
+   DropLine(PLAN_BE_NAME);
+   DropLine(PLAN_DEAD_NAME);
 }
+
+// The panel always grows downward from the top. The right side right-aligns the
+// text so every row ends on the same vertical line however long it is.
+ENUM_BASE_CORNER PanelCorner() { return PanelSide == PANEL_RIGHT ? CORNER_RIGHT_UPPER : CORNER_LEFT_UPPER; }
+ENUM_ANCHOR_POINT PanelAnchor() { return PanelSide == PANEL_RIGHT ? ANCHOR_RIGHT_UPPER : ANCHOR_LEFT_UPPER; }
 
 void SetLabel(const int row, const string text, const color clr)
 {
@@ -352,16 +404,64 @@ void SetLabel(const int row, const string text, const color clr)
    if(ObjectFind(0, name) < 0)
    {
       ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
-      ObjectSetInteger(0, name, OBJPROP_CORNER, PanelCorner);
-      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, PanelXDistance);
-      ObjectSetInteger(0, name, OBJPROP_YDISTANCE, PanelYDistance + row * 16);
       ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-      ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
-      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 9);
    }
+   // Set on every call, not only on creation, so changing an input moves the panel.
+   ObjectSetInteger(0, name, OBJPROP_CORNER, PanelCorner());
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, PanelAnchor());
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, PanelXDistance);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, PanelYDistance + row * (int)MathRound(PanelFontSize * PanelLineSpacing * 1.6));
+   ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, PanelFontSize);
    ObjectSetString(0, name, OBJPROP_TEXT, text);
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+}
+
+// The panel is a fixed-width table: every row is exactly PANEL_CHARS characters
+// in a monospaced font, so with the rows right-aligned every column -- names,
+// numbers, units -- lines up from row to row. (Rows of different lengths,
+// right-aligned, push each row's name column to a different place.)
+#define KEY_CHARS   12
+#define VAL_CHARS    9
+#define EXTRA_CHARS 13
+#define PANEL_CHARS (KEY_CHARS + VAL_CHARS + EXTRA_CHARS)
+
+string PadRight(const string text, const int width)
+{
+   string t = text;
+   while(StringLen(t) < width) t += " ";
+   return t;
+}
+
+string PadLeft(const string text, const int width)
+{
+   string t = text;
+   while(StringLen(t) < width) t = " " + t;
+   return t;
+}
+
+// "Name         value        extra": name left-aligned, value and extra each
+// right-aligned in their own column. With no extra, the value (a short status
+// such as "none (hedged flat)") spans both columns.
+string Row(const string key, const string value, const string extra = "")
+{
+   if(extra == "")
+      return PadRight(key, KEY_CHARS) + PadLeft(value, VAL_CHARS + EXTRA_CHARS);
+   return PadRight(key, KEY_CHARS) + PadLeft(value, VAL_CHARS) + PadLeft(extra, EXTRA_CHARS);
+}
+
+// A heading row, left-aligned across the full width of the table.
+string Head(const string text)
+{
+   return PadRight(text, PANEL_CHARS);
+}
+
+// How far a price is from the bid, in points -- the unit the trade journal's
+// "Stop Loss (Points)" uses (0.01 on gold), so the two read the same.
+string Away(const double price, const double bid, const double point)
+{
+   return StringFormat("%+.0f pts", (price - bid) / point);
 }
 
 void ClearPanel(const int fromRow)
@@ -379,15 +479,15 @@ int UpdateDeadPoint(const BasketState &b, const int firstRow, const int digits,
 {
    if(!ShowDeadPoint)
    {
-      ObjectDelete(0, DEAD_NAME);
+      DropLine(DEAD_NAME);
       return firstRow;
    }
 
    DeadPoint d;
    ComputeDeadPoint(b, d);
 
-   if(d.state == 0) DrawDeadLine(d.price);
-   else             ObjectDelete(0, DEAD_NAME);
+   if(d.state == 0) DrawDeadLine(d.price, digits);
+   else             DropLine(DEAD_NAME);
 
    if(!ShowPanel) return firstRow;
 
@@ -395,26 +495,19 @@ int UpdateDeadPoint(const BasketState &b, const int firstRow, const int digits,
    switch(d.state)
    {
       case 0:
-         SetLabel(row++, "Dead point " + DoubleToString(d.price, digits) +
-                         StringFormat("   %+.1f pips away", (d.price - b.bid) / pip), DeadColor);
+         SetLabel(row++, Row("Dead point", DoubleToString(d.price, digits),
+                             Away(d.price, b.bid, pip)), DeadColor);
          break;
       case 1:
-         SetLabel(row++, "Dead point  n/a (no margin in use)", clrSilver);
+         SetLabel(row++, Row("Dead point", "n/a (no margin in use)"), clrSilver);
          return row;
       case 2:
-         SetLabel(row++, "Dead point  none - hedged flat, price does not move equity", clrSilver);
+         SetLabel(row++, Row("Dead point", "none (hedged flat)"), clrSilver);
          break;
       default:
-         SetLabel(row++, "Dead point  REACHED - equity is at or below the stop-out level", DeadColor);
+         SetLabel(row++, Row("Dead point", "REACHED (stop-out)"), DeadColor);
          return row;
    }
-
-   if(d.percentMode)
-      SetLabel(row++, StringFormat("Margin lvl  %.0f%%  (stop-out %.0f%%)  room %.2f %s",
-                                   d.marginLevel, d.soLevel, d.room, account), clrSilver);
-   else
-      SetLabel(row++, StringFormat("Room        %.2f %s before stop-out (money mode)",
-                                   d.room, account), clrSilver);
    return row;
 }
 
@@ -496,8 +589,8 @@ int UpdatePlan(const BasketState &b, const int firstRow, const int digits,
       return firstRow;
    }
 
-   if(p.hasBreakEven) DrawPlanLine(PLAN_BE_NAME, p.breakEven);
-   else               ObjectDelete(0, PLAN_BE_NAME);
+   if(p.hasBreakEven) DrawPlanLine(PLAN_BE_NAME, p.breakEven, "If: break-even", digits);
+   else               DropLine(PLAN_BE_NAME);
 
    // Dead point of the account WITH the order: equity after paying the spread and
    // the entry commission, margin plus what the terminal says this order needs.
@@ -516,53 +609,45 @@ int UpdatePlan(const BasketState &b, const int firstRow, const int digits,
          haveDead = true;
       }
    }
-   if(haveDead && d.state == 0) DrawPlanLine(PLAN_DEAD_NAME, d.price);
-   else                         ObjectDelete(0, PLAN_DEAD_NAME);
+   if(haveDead && d.state == 0) DrawPlanLine(PLAN_DEAD_NAME, d.price, "If: dead point", digits);
+   else                         DropLine(PLAN_DEAD_NAME);
 
    if(!ShowPanel) return firstRow;
 
    int row = firstRow;
-   SetLabel(row++, StringFormat("IF %s %.2f lots @ %s  (nothing is sent)",
-                                PlanSide == PLAN_BUY ? "BUY" : "SELL", lots,
-                                DoubleToString(openPrice, digits)), PlanColor);
+   SetLabel(row++, Head(StringFormat("IF %s %.2f @ %s (not sent)",
+                                     PlanSide == PLAN_BUY ? "BUY" : "SELL", lots,
+                                     DoubleToString(openPrice, digits))), PlanColor);
    if(p.hasBreakEven)
    {
-      string moved = b.hasBreakEven
-         ? StringFormat("   was %s", DoubleToString(b.breakEven, digits)) : "";
-      SetLabel(row++, "  Break-even  " + DoubleToString(p.breakEven, digits) +
-                      StringFormat("   %+.1f pips away", (p.breakEven - p.bid) / pip) + moved, PlanColor);
+      SetLabel(row++, Row("  Break-even", DoubleToString(p.breakEven, digits),
+                          Away(p.breakEven, p.bid, pip)), PlanColor);
    }
    else
-      SetLabel(row++, StringFormat("  Hedged flat: P&L locked at %.2f %s, no break-even price",
-                                   p.floating, account), PlanColor);
+      SetLabel(row++, Row("  Break-even", StringFormat("none, locked %+.2f", p.floating)), PlanColor);
 
    if(!ShowDeadPoint) return row;
    if(!haveDead)
    {
-      SetLabel(row++, "  Dead point  n/a (the terminal could not price this order's margin)", clrSilver);
+      SetLabel(row++, Row("  Dead point", "n/a (no margin price)"), clrSilver);
       return row;
    }
    switch(d.state)
    {
       case 0:
-         SetLabel(row++, "  Dead point  " + DoubleToString(d.price, digits) +
-                         StringFormat("   %+.1f pips away", (d.price - p.bid) / pip), PlanColor);
+         SetLabel(row++, Row("  Dead point", DoubleToString(d.price, digits),
+                             Away(d.price, p.bid, pip)), PlanColor);
          break;
       case 2:
-         SetLabel(row++, "  Dead point  none - hedged flat", PlanColor);
+         SetLabel(row++, Row("  Dead point", "none (hedged flat)"), PlanColor);
          break;
       case 1:
-         SetLabel(row++, "  Dead point  n/a (no margin in use)", clrSilver);
+         SetLabel(row++, Row("  Dead point", "n/a (no margin in use)"), clrSilver);
          return row;
       default:
-         SetLabel(row++, "  Dead point  REACHED with this order -- it would be stopped out", DeadColor);
+         SetLabel(row++, Row("  Dead point", "REACHED (stop-out)"), DeadColor);
          return row;
    }
-   if(d.percentMode)
-      SetLabel(row++, StringFormat("  Margin lvl  %.0f%%  (stop-out %.0f%%)  room %.2f %s",
-                                   d.marginLevel, d.soLevel, d.room, account), clrSilver);
-   else
-      SetLabel(row++, StringFormat("  Room        %.2f %s before stop-out (money mode)", d.room, account), clrSilver);
    return row;
 }
 
@@ -579,27 +664,27 @@ void Refresh()
    BasketState b;
    if(!ReadBasket(sym, b))
    {
-      ObjectDelete(0, LINE_NAME);
-      ObjectDelete(0, DEAD_NAME);
+      DropLine(LINE_NAME);
+      DropLine(DEAD_NAME);
       ClearPlanLines();
-      if(ShowPanel) SetLabel(0, "Break-even: symbol data unavailable", clrSilver);
+      if(ShowPanel) SetLabel(0, Head("Break-even: symbol data unavailable"), clrSilver);
       ClearPanel(1);
       ChartRedraw();
       return;
    }
 
    int    digits  = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
-   double pip     = PipSize(sym);
+   double pip     = SymbolInfoDouble(sym, SYMBOL_POINT);   // distances are shown in points
    string account = AccountInfoString(ACCOUNT_CURRENCY);
 
    if(b.count == 0)
    {
-      ObjectDelete(0, LINE_NAME);
-      ObjectDelete(0, DEAD_NAME);
+      DropLine(LINE_NAME);
+      DropLine(DEAD_NAME);
       ClearPlanLines();
       if(ShowPanel)
       {
-         SetLabel(0, "No open " + sym + " positions", clrSilver);
+         SetLabel(0, Head(sym + "  no open positions"), clrSilver);
          ClearPanel(1);
       }
       else ClearPanel(0);
@@ -611,13 +696,12 @@ void Refresh()
    {
       // Fully hedged: the basket's P&L is frozen, so there is no price to draw.
       // Saying that is the answer -- an omitted line reads as "not calculated".
-      ObjectDelete(0, LINE_NAME);
+      DropLine(LINE_NAME);
       if(ShowPanel)
       {
-         SetLabel(0, StringFormat("%s  %d positions  %.2f lots hedged flat",
-                                  sym, b.count, b.grossLots), clrSilver);
-         SetLabel(1, StringFormat("P&L locked at %.2f %s -- no break-even price",
-                                  b.floating, account),
+         SetLabel(0, Head(StringFormat("%s  hedged %.2f lot (%d pos)",
+                                       sym, b.grossLots, b.count)), clrSilver);
+         SetLabel(1, Row("Locked P&L", StringFormat("%+.2f", b.floating), account),
                   b.floating >= 0 ? clrLimeGreen : clrTomato);
          int row = UpdateDeadPoint(b, 2, digits, pip, account);
          ClearPanel(UpdatePlan(b, row, digits, pip, account));
@@ -632,26 +716,23 @@ void Refresh()
       return;
    }
 
-   DrawLine(b.breakEven);
+   DrawLine(b.breakEven, digits);
 
    if(ShowPanel)
    {
-      double bid      = SymbolInfoDouble(sym, SYMBOL_BID);
-      double distance = (b.breakEven - bid) / pip;   // + = price must rise
-      SetLabel(0, StringFormat("%s  %d positions  net %+.2f lots (%.2f gross)",
-                               sym, b.count, b.netLots, b.grossLots), clrSilver);
-      SetLabel(1, "Break-even  " + DoubleToString(b.breakEven, digits) +
-                  StringFormat("   %+.1f pips away", distance), LineColor);
-      SetLabel(2, StringFormat("Floating   %+.2f %s", b.floating, account),
+      double bid = SymbolInfoDouble(sym, SYMBOL_BID);
+      SetLabel(0, Head(StringFormat("%s  %s %.2f lot (%d pos)", sym, b.netLots >= 0 ? "BUY" : "SELL",
+                                    MathAbs(b.netLots), b.count)), clrSilver);
+      SetLabel(1, Row("Break-even", DoubleToString(b.breakEven, digits),
+                      Away(b.breakEven, bid, pip)), LineColor);
+      SetLabel(2, Row("Floating", StringFormat("%+.2f", b.floating), account),
                b.floating >= 0 ? clrLimeGreen : clrTomato);
-      SetLabel(3, StringFormat("Costs      %+.2f %s (swap + commission)",
-                               b.costs, account), clrSilver);
-      int row = UpdateDeadPoint(b, 4, digits, pip, account);
+      int row = UpdateDeadPoint(b, 3, digits, pip, account);
       ClearPanel(UpdatePlan(b, row, digits, pip, account));
    }
    else
    {
-      UpdateDeadPoint(b, 4, digits, pip, account);
+      UpdateDeadPoint(b, 3, digits, pip, account);
       UpdatePlan(b, 0, digits, pip, account);
       ClearPanel(0);
    }
@@ -680,6 +761,13 @@ void OnDeinit(const int reason)
 void OnTimer()
 {
    Refresh();
+}
+
+// Line captions are placed in pixels, so they have to follow the chart when it
+// is scrolled, zoomed or resized.
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+{
+   if(id == CHARTEVENT_CHART_CHANGE) Refresh();
 }
 
 int OnCalculate(const int rates_total,

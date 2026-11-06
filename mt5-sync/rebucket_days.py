@@ -38,6 +38,7 @@ Two sources:
 Run:  python3 mt5-sync/rebucket_days.py                          # dry run
       python3 mt5-sync/rebucket_days.py --source mt5             # dry run from MT5
       python3 mt5-sync/rebucket_days.py --source mt5 --apply     # do it
+      python3 mt5-sync/rebucket_days.py --target utc             # undo: back to UTC days, flag off
 """
 import argparse
 import collections
@@ -196,12 +197,17 @@ def fingerprint(docs):
     return pos, net, execs, opened
 
 
-def misfiled(docs, tz_hours):
+def misfiled(docs, tz_hours, doc_hours=None):
+    """Trades whose entry day (in tz_hours) differs from their document's day label.
+    A day document's dateUnix is midnight in the trade timezone, so it is always read
+    with doc_hours (the trade timezone) even when trades are filed under UTC days."""
+    if doc_hours is None:
+        doc_hours = tz_hours
     bad = 0
     for d in docs:
         for t in d.get("trades") or []:
             if t.get("broker") == "metaTrader5" and t.get("entryTime") and \
-                    tz_day(t["entryTime"], tz_hours) != tz_day(d["dateUnix"], tz_hours):
+                    tz_day(t["entryTime"], tz_hours) != tz_day(d["dateUnix"], doc_hours):
                 bad += 1
     return bad
 
@@ -213,9 +219,17 @@ def main():
     ap.add_argument("--tz-hours", type=float, default=7.0, help="trade timezone offset (Asia/Bangkok = 7)")
     ap.add_argument("--source", choices=("executions", "mt5"), default="executions")
     ap.add_argument("--app-container", default="tradenote_app")
+    ap.add_argument("--target", choices=("trade-tz", "utc"), default="trade-tz",
+                    help="day to file trades under. utc = the importer's behaviour with MT5_DAY_BUCKETS "
+                         "off (the date of the deal in UTC); it also switches that flag OFF")
     ap.add_argument("--account", help="only this account label (e.g. 198654453@HFMarketsGlobal-Live16); "
                                       "every other account's days are kept verbatim")
     args = ap.parse_args()
+    args.doc_hours = args.tz_hours  # day documents are labelled in the trade timezone
+    if args.target == "utc":
+        if args.source == "mt5":
+            sys.exit("--target utc works from the stored executions; leave --source at its default.")
+        args.tz_hours = 0.0  # trades are checked against their UTC day
 
     mongo = Mongo(args.container, env_value("TRADENOTE_DATABASE") or "tradenote")
     raw = mongo.dump_trades()
@@ -229,8 +243,8 @@ def main():
     per_account = deals_from_executions(rebuild)
     before = fingerprint(docs)
     print(f"day documents: {len(docs)}  (MT5-only, rebuilt: {len(rebuild)}; kept verbatim: {len(keep)})")
-    print(f"MT5 trades filed on a day other than their trade-timezone day: {misfiled(docs, args.tz_hours)}"
-          + (f" (in {args.account}: {misfiled(rebuild, args.tz_hours)})" if args.account else ""))
+    print(f"MT5 trades filed on a day other than their trade-timezone day: {misfiled(docs, args.tz_hours, args.doc_hours)}"
+          + (f" (in {args.account}: {misfiled(rebuild, args.tz_hours, args.doc_hours)})" if args.account else ""))
     for acct, deals in per_account.items():
         print(f"  {acct}: {len(deals)} deals -> report")
 
@@ -263,8 +277,14 @@ def main():
 
     cfg = m.load_config()
     ids = json.dumps([d["_id"] for d in rebuild])
-    print("removed MT5 day documents:", mongo.eval(f"print(db.trades.deleteMany({{_id:{{$in:{ids}}}}}).deletedCount)"))
+    flag_before = container_env(args.app_container, "MT5_DAY_BUCKETS")
+    flag_changed = False
     try:
+        if args.target == "utc" and flag_before == "trade-tz":
+            print("switching the backend back to UTC days (MT5_DAY_BUCKETS off) ...")
+            set_env_flag("", args.app_container)
+            flag_changed = True
+        print("removed MT5 day documents:", mongo.eval(f"print(db.trades.deleteMany({{_id:{{$in:{ids}}}}}).deletedCount)"))
         for acct, deals in per_account.items():
             login, _, server = str(acct).partition("@")
             resp = m.push(cfg, m.build_report_xlsx(login, server, deals))
@@ -283,7 +303,7 @@ def main():
             problems.append("execution count changed")
         if after[3] > before[3]:
             problems.append(f"{after[3] - before[3]} more trades are now stuck open")
-        left = misfiled([d for d in after_docs if not args.account or d.get("account") == args.account], args.tz_hours)
+        left = misfiled([d for d in after_docs if not args.account or d.get("account") == args.account], args.tz_hours, args.doc_hours)
         if left:
             problems.append(f"{left} trades still on the wrong day")
         kept_after = {d["_id"]: d for d in after_docs}
@@ -294,10 +314,12 @@ def main():
     except Exception as e:  # noqa: BLE001 -- anything at all: put the data back
         print(f"\nCHECK FAILED: {e}\nRestoring the backup ...")
         print("restored documents:", mongo.restore_trades(raw))
+        if flag_changed:
+            set_env_flag(flag_before, args.app_container)
         return 1
 
     print(f"\nOK. {sum(before[0].values())} positions, same net P&L each; "
-          f"every MT5 trade now on its trade-timezone day.")
+          f"every MT5 trade now on its {'UTC' if args.target == 'utc' else 'trade-timezone'} day.")
     return 0
 
 
@@ -334,7 +356,7 @@ def from_mt5(args, mongo, raw, docs):
     deals = m.fetch_deals(backend, frm, now + dt.timedelta(days=2))
     positions = {str(d.position_id) for d in deals}
     print(f"MT5 closed positions to import: {len(positions)}; currently stored for this account: "
-          f"{sum(len(d.get('trades') or []) for d in rebuild)}; filed on the wrong day: {misfiled(rebuild, args.tz_hours)}")
+          f"{sum(len(d.get('trades') or []) for d in rebuild)}; filed on the wrong day: {misfiled(rebuild, args.tz_hours, args.doc_hours)}")
     if not args.apply:
         print("\nDry run only. Nothing was changed. Re-run with --apply.")
         return 0
