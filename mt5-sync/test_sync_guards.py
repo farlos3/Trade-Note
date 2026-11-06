@@ -97,5 +97,23 @@ check("...history returns None, so nothing is fetched", m.fetch_deals(b, frm, to
 check("...and the live feed reports why instead of streaming wrong times",
       b.live_snapshot() is None and "clock offset" in (b.last_reason or ""))
 
+
+# --- offsets in the past (broker DST) ---------------------------------------------
+def utc(y, mo, d, h=12):
+    return int(dt.datetime(y, mo, d, h, tzinfo=dt.timezone.utc).timestamp())
+check("EU switch 2026 is Sun 25 Oct, US switch Sun 1 Nov",
+      m._last_sunday(2026, 10) == dt.date(2026, 10, 25) and m._nth_sunday(2026, 11, 1) == dt.date(2026, 11, 1))
+check("EU summer time: in force on 24 Oct, over on 26 Oct", m.eu_dst_active(utc(2026, 10, 24)) and not m.eu_dst_active(utc(2026, 10, 26)))
+check("US DST: still in force on 30 Oct, over on 2 Nov", m.us_dst_active(utc(2026, 10, 30)) and not m.us_dst_active(utc(2026, 11, 2)))
+now_nov = utc(2026, 11, 6)
+m.BROKER_DST = "eu"
+check("eu: an October deal gets +3h although today's offset is +2h",
+      m.offset_at(utc(2026, 10, 7) + 7200, 7200, now=now_nov) == 10800)
+check("eu: a deal after the switch keeps +2h", m.offset_at(utc(2026, 10, 29) + 7200, 7200, now=now_nov) == 7200)
+check("eu: in summer, a winter deal gets one hour LESS", m.offset_at(utc(2026, 2, 10) + 10800, 10800, now=utc(2026, 7, 1)) == 7200)
+m.BROKER_DST = "none"
+check("none: every deal keeps today's offset (the old behaviour)", m.offset_at(utc(2026, 10, 7), 7200, now=now_nov) == 7200)
+check("an untrusted offset stays None whatever the rule", m.offset_at(utc(2026, 10, 7), None) is None)
+
 print(f"\n{'ALL PASSED' if failures == 0 else str(failures) + ' FAILED'}")
 sys.exit(0 if failures == 0 else 1)

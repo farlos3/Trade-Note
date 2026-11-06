@@ -129,6 +129,73 @@ def broker_time_to_utc(ts, offset_seconds):
 # rejected in favour of the last trusted value for that server, kept on disk because
 # the sync is a fresh process every minute. With nothing trusted yet, the caller is
 # told None and must not import -- skipping one run is cheap, a shifted day is not.
+# --- Offsets in the PAST ------------------------------------------------------------
+# The terminal reports one offset: today's. A broker that keeps daylight saving time
+# was an hour further ahead before its last switch, so converting October's deals
+# with November's offset files every one of them an hour late. A re-import of 40 days
+# made after the 1 Nov switch showed exactly that: the same positions, imported back
+# in October with the October offset, sat 3600 s earlier than the re-import.
+#
+# MT5 cannot say what its offset WAS, so the rule is configured in `[mt5] broker_dst`:
+#   eu    DST from the last Sunday of March to the last Sunday of October, 01:00 UTC.
+#         HFMarkets: the offset it reported live was already +2h on 29 Oct, and
+#         every position it imported in October matches this rule to the second.
+#   us    DST from the second Sunday of March, 07:00 UTC, to the first Sunday of
+#         November, 06:00 UTC (servers aligned to New York).
+#   none  (default) a single offset, exactly as before.
+BROKER_DST = "none"
+
+
+def _nth_sunday(year, month, n):
+    d = dt.date(year, month, 1)
+    first = d + dt.timedelta(days=(6 - d.weekday()) % 7)
+    return first + dt.timedelta(weeks=n - 1)
+
+
+def _last_sunday(year, month):
+    d = (dt.date(year, month + 1, 1) if month < 12 else dt.date(year + 1, 1, 1)) - dt.timedelta(days=1)
+    return d - dt.timedelta(days=(d.weekday() + 1) % 7)
+
+
+def eu_dst_active(utc_ts):
+    """Is EU summer time in force at this UTC instant?"""
+    t = dt.datetime.fromtimestamp(utc_ts, dt.timezone.utc)
+    start = dt.datetime.combine(_last_sunday(t.year, 3), dt.time(1), dt.timezone.utc)
+    end = dt.datetime.combine(_last_sunday(t.year, 10), dt.time(1), dt.timezone.utc)
+    return start <= t < end
+
+
+def dst_active(utc_ts):
+    if BROKER_DST == "us":
+        return us_dst_active(utc_ts)
+    if BROKER_DST == "eu":
+        return eu_dst_active(utc_ts)
+    return False
+
+
+def us_dst_active(utc_ts):
+    """Is US daylight saving time in force at this UTC instant?"""
+    t = dt.datetime.fromtimestamp(utc_ts, dt.timezone.utc)
+    start = dt.datetime.combine(_nth_sunday(t.year, 3, 2), dt.time(7), dt.timezone.utc)
+    end = dt.datetime.combine(_nth_sunday(t.year, 11, 1), dt.time(6), dt.timezone.utc)
+    return start <= t < end
+
+
+def offset_at(broker_ts, current_offset, now=None):
+    """The broker's offset at the moment of a past broker-clock timestamp.
+
+    `current_offset` is today's (already trusted). With a broker_dst rule it is split
+    into the standard offset and today's DST hour, and the hour is re-applied
+    according to whether DST was in force then. The UTC instant used to decide is
+    computed with the standard offset; that is an hour out only within the hour of
+    the switch itself, which is a Sunday with the market shut."""
+    if current_offset is None or BROKER_DST not in ("us", "eu"):
+        return current_offset
+    now = time.time() if now is None else now
+    standard = current_offset - (3600 if dst_active(now) else 0)
+    return standard + (3600 if dst_active(int(broker_ts) - standard) else 0)
+
+
 OFFSET_CACHE_PATH = os.path.join(HERE, ".broker-offset.json")
 MAX_ABS_OFFSET = 14 * 3600
 _offset_rejections = set()
@@ -244,7 +311,7 @@ class NativeBackend:
         for d in (mt5.history_deals_get(frm, to) or []):
             fields = {k: getattr(d, k) for k in dir(d)
                       if not k.startswith("_") and not callable(getattr(d, k))}
-            fields["time"] = broker_time_to_utc(d.time, offset)
+            fields["time"] = broker_time_to_utc(d.time, offset_at(d.time, offset))
             out.append(_Obj(fields))
         return out
 
@@ -536,8 +603,9 @@ class BridgeBackend:
         if offset is None:
             return None
         for d in (self._data or {}).get("deals", []):
-            # Broker clock -> UTC before anything compares or stores it.
-            t = float(broker_time_to_utc(d.get("time", 0), offset))
+            # Broker clock -> UTC before anything compares or stores it, with the
+            # offset that applied THEN (see offset_at), not today's.
+            t = float(broker_time_to_utc(d.get("time", 0), offset_at(d.get("time", 0), offset)))
             if frm_unix <= t <= to_unix:
                 out.append(_Obj({
                     "ticket": d.get("ticket", 0),
@@ -597,7 +665,7 @@ class BridgeBackend:
                 "tp": float(p.get("tp", 0) or 0),
                 "profit": float(p.get("profit", 0) or 0),
                 "swap": float(p.get("swap", 0) or 0),
-                "openTime": int(broker_time_to_utc(p.get("time", 0) or 0, offset)),
+                "openTime": int(broker_time_to_utc(p.get("time", 0) or 0, offset_at(p.get("time", 0) or 0, offset))),
             })
             if sym and "bid" in p and "ask" in p:
                 ticks[sym] = {"bid": float(p["bid"]), "ask": float(p["ask"])}
@@ -669,7 +737,7 @@ class BridgeBackend:
         if offset is None:
             return []
         return [_Obj({
-            "time": int(broker_time_to_utc(o.get("time", 0), offset)),
+            "time": int(broker_time_to_utc(o.get("time", 0), offset_at(o.get("time", 0), offset))),
             "type": DEAL_TYPE_BALANCE,
             "profit": float(o.get("profit", 0) or 0),
             "comment": o.get("comment", ""),
@@ -806,6 +874,8 @@ def pick_backend(cfg):
     """Native where the MetaTrader5 package exists (Windows), bridge file
     everywhere else. `[mt5] backend = native|bridge` in config.ini forces one --
     useful on Windows to test the bridge, or to point at a specific file."""
+    global BROKER_DST
+    BROKER_DST = (cfg.get("mt5", "broker_dst", fallback="none") or "none").strip().lower()
     choice = cfg.get("mt5", "backend", fallback="auto").strip().lower()
     bridge_file = cfg.get("mt5", "bridge_file", fallback="").strip()
 
