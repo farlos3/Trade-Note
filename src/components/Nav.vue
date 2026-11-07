@@ -185,6 +185,11 @@ const currentPage = computed(() =>
 const MAIN_NAV_PATHS = ['/dashboard', '/live', '/daily', '/calendar', '/analysis', '/plan', '/plan-vs-actual', '/stats', '/weekly-plan', '/mindset', '/diary', '/setups', '/screenshots', '/playbook']
 
 function prefetchOtherPages() {
+    // Warm the HTTP cache for every page's lazy chunks once per browser session.
+    // A reload keeps the HTTP cache, so if the chunks are already warm we don't
+    // need to re-fetch them -- just checking the flag costs one sessionStorage
+    // read and skips 14 redundant chunk requests on every subsequent navigation.
+    if (sessionStorage.getItem('tradenote-prefetched')) return
     const run = () => {
         const currentPath = window.location.pathname
         for (const path of MAIN_NAV_PATHS) {
@@ -193,6 +198,7 @@ function prefetchOtherPages() {
             if (loadComponent) loadComponent().catch(() => { /* best-effort warmup */ })
         }
         useWarmTradesCache()
+        try { sessionStorage.setItem('tradenote-prefetched', '1') } catch { /* ignore */ }
     }
     if (typeof window.requestIdleCallback === 'function') {
         window.requestIdleCallback(run, { timeout: 3000 })
@@ -391,37 +397,32 @@ function getLatestVersion() {
             try { latestVersion.value = JSON.parse(cached) } catch { /* ignore */ }
             resolve(); return
         }
-        await axios.get("/api/dockerVersion", { timeout: 4000 })
-    .then((response) => {
-        //console.log(" -> data " + JSON.stringify(response.data));
-        for (const element of response.data.results) { // Use for...of for iteration
-            console.log("name " + element.name);
-            if (element.name !== "latest") {
-                latestVersion.value.docker = element.name;
-                break; // Stop iterating after the first match
-            }
-        }
-    })
-    .catch((error) => {
-        console.error("Error: ", error);
-    })
-    .finally(function () {
-        // Always executed
-    });
-        
-        await axios.get("https://raw.githubusercontent.com/Eleven-Trading/TradeNote/main/package.json", { timeout: 4000 })
-            .then((response) => {
-                //console.log(" -> data " + JSON.stringify(response.data))
-                latestVersion.value.gitHub = response.data.version
 
-            })
-            .catch((error) => {
-            })
-            .finally(function () {
-                // always executed
-            })
+        // Fetch both sources in parallel instead of sequentially: each has a 4 s
+        // timeout, so sequential could block up to 8 s before resolving.
+        await Promise.all([
+            axios.get("/api/dockerVersion", { timeout: 4000 })
+                .then((response) => {
+                    for (const element of response.data.results) {
+                        console.log("name " + element.name);
+                        if (element.name !== "latest") {
+                            latestVersion.value.docker = element.name;
+                            break;
+                        }
+                    }
+                })
+                .catch((error) => {
+                    console.error("Error: ", error);
+                }),
 
-            try { sessionStorage.setItem('latestVersion', JSON.stringify(latestVersion.value)) } catch { /* ignore */ }
+            axios.get("https://raw.githubusercontent.com/Eleven-Trading/TradeNote/main/package.json", { timeout: 4000 })
+                .then((response) => {
+                    latestVersion.value.gitHub = response.data.version
+                })
+                .catch(() => {}),
+        ])
+
+        try { sessionStorage.setItem('latestVersion', JSON.stringify(latestVersion.value)) } catch { /* ignore */ }
         resolve()
     })
 }

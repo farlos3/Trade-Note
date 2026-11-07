@@ -25,6 +25,14 @@ import Parse from 'parse/dist/parse.min.js'
 const DB_NAME = 'tradenote-cache'
 const STORE = 'kv'
 
+// L1 cache for the fingerprint: avoids paying two MongoDB round-trips (count +
+// newest updatedAt) TWICE on every page load -- once for the Nav warm-up and
+// once for the page's own useGetTrades call, which arrive within milliseconds of
+// each other. 10 s is long enough to deduplicate that burst and short enough to
+// never serve a stale fingerprint to a new trade that just arrived.
+const FP_TTL_MS = 10_000
+const FP_SESSION_KEY = 'tradenote-fp-cache'
+
 let dbPromise = null
 function db() {
     if (!dbPromise) {
@@ -59,12 +67,26 @@ async function idbSet(key, value) {
 }
 
 async function fingerprint() {
+    // Check L1 (sessionStorage) before hitting MongoDB. The warm-up in Nav and
+    // the page's own load race each other; without this they'd each pay two
+    // Parse queries milliseconds apart for the identical result.
+    try {
+        const raw = sessionStorage.getItem(FP_SESSION_KEY)
+        if (raw) {
+            const { fp, ts } = JSON.parse(raw)
+            if (Date.now() - ts < FP_TTL_MS) return fp
+        }
+    } catch { /* sessionStorage blocked (private mode) — fall through */ }
+
     const mine = () => new Parse.Query('trades').equalTo('user', Parse.User.current())
     const [count, newest] = await Promise.all([
         mine().count(),
         mine().descending('updatedAt').select('updatedAt').first(),
     ])
-    return `${count}:${newest ? newest.updatedAt.getTime() : 0}`
+    const fp = `${count}:${newest ? newest.updatedAt.getTime() : 0}`
+
+    try { sessionStorage.setItem(FP_SESSION_KEY, JSON.stringify({ fp, ts: Date.now() })) } catch { /* ignore */ }
+    return fp
 }
 
 /**

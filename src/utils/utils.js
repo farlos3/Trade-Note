@@ -171,10 +171,15 @@ export function useInitParse() {
         Parse.serverURL = parse_url
 
         if ((parse_app_id == "") && path != "/" && path != "/register") window.location.replace("/")
-        if (parse_app_id != "") await useCheckCurrentUser()
-        // Refresh the user record before anything reads it: the account profile
-        // (which account is active, which exist, their balances) lives there.
-        if (parse_app_id != "") await useRefreshCurrentUser()
+        if (parse_app_id != "") {
+            // Run the session check and the user-record refresh in parallel: both
+            // are independent network calls and together they were the first
+            // sequential blocking step on every dashboard page load.
+            await Promise.all([
+                useCheckCurrentUser(),
+                useRefreshCurrentUser(),
+            ])
+        }
         resolve()
     })
 }
@@ -193,13 +198,7 @@ export function useCheckCurrentUser() {
                 window.location.replace("/");
             }
         }
-        if (path == "/" || path == "/register") {
-            if (currentUser.value) {
-                window.location.replace("/dashboard");
-            } else {
-                console.log("Your are not logged")
-            }
-        }
+        // No auto-redirect on the login/register page — the user must log in manually.
         resolve()
     })
 
@@ -852,13 +851,11 @@ export async function useInitPostHog() {
  *
  * Also clears the locally cached Parse user before navigating. Parse.User.current()
  * reads from localStorage without ever asking the server if that session is
- * still valid, and the login layout trusts it blindly (see useCheckCurrentUser):
- * if it's truthy on "/" it bounces straight back to "/dashboard" with no login
- * check at all. Without clearing it first, a dead cached session turns this
- * redirect into an infinite dashboard <-> login loop that never reaches
- * tryAutoLogin. Parse.User.logOut() clears the local cache before it attempts
- * the (already-doomed) server-side revoke, so the try/catch here is just to
- * ignore that expected second failure -- the local clear already happened.
+ * still valid. Without clearing it first, a dead cached session could leave stale
+ * data that breaks the next login attempt. Parse.User.logOut() clears the local
+ * cache before it attempts the (already-doomed) server-side revoke, so the
+ * try/catch here is just to ignore that expected second failure -- the local
+ * clear already happened.
  */
 async function useHandleMountError(error) {
     console.error("Error mounting page:", error)
