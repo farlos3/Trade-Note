@@ -9,7 +9,7 @@ import axios from 'axios'
 import * as Vite from 'vite'
 import { MongoClient } from "mongodb"
 import Proxy from 'http-proxy'
-import { useImportTrades, useGetExistingTradesArray, useUploadTrades, useSaveSheetTrade, useEnsureAccountRegistered } from './src/utils/addTrades.js';
+import { useImportTrades, useGetExistingTradesArray, useUploadTrades, useSaveSheetTrade, useEnsureAccountRegistered, useStagedImportAccounts, useDiscardStagedImport } from './src/utils/addTrades.js';
 import { useEnsureTechniqueTag, useAssignTag } from './src/utils/daily.js';
 import { currentUser, uploadMfePrices } from './src/stores/globals.js';
 import { useGetTimeZone } from './src/utils/utils.js';
@@ -1025,35 +1025,28 @@ const setupApiRoutes = (app) => {
         })
     }
 
+    /* Only a non-empty key equal to a user's own TradeNote API key (Settings -> API
+     * Keys) counts. This used to answer -1 when nothing matched -- and -1 is truthy,
+     * so EVERY request passed, with any key or none, as whichever user the previous
+     * request had left in currentUser. requireAuth hands any request carrying an
+     * api-key to this check, so that also opened the journal, the live positions
+     * and the notes to anyone who sent `api-key: x`. The provider check keeps a
+     * third-party key stored on the user (Polygon, Databento) from logging in. */
     const validateApiKey = async (req, res, next) => {
-        await getAllUsers()
-        const targetKey = req.headers['api-key'] || req.query['api-key'];
-        //console.log(" -> target Key " + targetKey)
-
-        const checkIPKey = (allUsers, targetKey) => {
+        const targetKey = String(req.headers['api-key'] || req.query['api-key'] || '')
+        if (targetKey) {
+            await getAllUsers()
             for (const user of Object.values(allUsers)) {
-                if (user.hasOwnProperty("apis")) {
-                    const index = user.apis.findIndex(obj => obj.key === targetKey);
-                    if (index !== -1) {
-                        currentUser.value = user
-                        return true;
-                    }
+                const apis = Array.isArray(user.apis) ? user.apis : []
+                if (apis.some((a) => a && a.provider === 'tradeNote' && a.key && a.key === targetKey)) {
+                    currentUser.value = user
+                    console.log(" -> Valid api key found :)")
+                    return next()
                 }
-
             }
-            return -1; // Return -1 if not found
         }
-
-        // Usage example
-        const hasIPKey = checkIPKey(allUsers, targetKey);
-
-        if (hasIPKey) {
-            console.log(" -> Valid api key found :)")
-            next();
-        } else {
-            console.log(" -> Invalid api key")
-            return res.status(401).send({ error: 'Invalid API key' });
-        }
+        console.log(" -> Invalid api key")
+        return res.status(401).send({ error: 'Invalid API key' })
     }
 
     /* One import at a time, process-wide.
@@ -1083,7 +1076,72 @@ const setupApiRoutes = (app) => {
         return run
     }
 
-    app.post('/api/trades', validateApiKey, async (req, res) => serialiseImport(async () => {
+    /* MT5 accounts allowed to push data, per user: `_User.allowedSyncAccounts`,
+     * labels in the same `<login>@<server>` form every trade is stamped with.
+     *
+     * The api key says WHO is sending; this says WHICH ACCOUNT they may send. A
+     * terminal can be logged into any account, and without this a sync run on the
+     * wrong login -- or anyone holding the key -- would write that account's trades,
+     * balance and live positions into the journal as a new profile.
+     *
+     * Fails closed: no list, no sync. The list is edited only from Settings (a
+     * logged-in browser session saving its own user); nothing reachable with just
+     * the api key can add to it. */
+    const syncLabel = (login, server) => (login && server ? `${login}@${server}` : '')
+    const allowedSyncAccounts = (user) =>
+        Array.isArray(user && user.allowedSyncAccounts) ? user.allowedSyncAccounts : []
+    const refuseAccount = (res, label) => {
+        console.log(` -> Refused sync for account ${label || '(none given)'}: not in allowedSyncAccounts`)
+        return res.status(403).send({
+            error: 'account not allowed to sync',
+            account: label || null,
+            hint: 'Add this account in TradeNote: Settings -> MT5 accounts allowed to sync',
+        })
+    }
+
+    // Lets the sync check before it sends anything, and say why clearly. Answers
+    // only for the account asked about -- the list itself is not handed out.
+    app.get('/api/mt5/allowed', validateApiKey, (req, res) => {
+        const label = String(req.query.account || '')
+        res.send({ account: label, allowed: !!label && allowedSyncAccounts(currentUser.value).includes(label) })
+    })
+
+    /* The newest trade TradeNote holds for one account (unix seconds, or null).
+     *
+     * The sync uses it to size its catch-up: after a machine was off for days, the
+     * gap to refill starts where THIS database stops, which only the database knows
+     * -- a state file on the terminal's machine cannot (a fresh machine has none).
+     * Looks at the newest few day documents because a trade is filed under the day
+     * it OPENED, so a later day can hold an earlier exit than the day before it. */
+    app.get('/api/mt5/last-trade', validateApiKey, async (req, res) => {
+        const label = String(req.query.account || '')
+        const user = currentUser.value
+        if (!label || !allowedSyncAccounts(user).includes(label)) return refuseAccount(res, label)
+        try {
+            const q = new ParseNode.Query('trades')
+            q.equalTo('user', { __type: 'Pointer', className: '_User', objectId: user.objectId })
+            q.equalTo('account', label)
+            q.descending('dateUnix')
+            q.limit(3)
+            let last = null
+            for (const day of await q.find({ useMasterKey: true })) {
+                for (const t of day.get('trades') || []) {
+                    const ts = Math.max(Number(t.exitTime) || 0, Number(t.entryTime) || 0)
+                    if (ts > (last || 0)) last = ts
+                }
+            }
+            res.send({ account: label, lastTradeUnix: last })
+        } catch (error) {
+            console.error('last-trade lookup error', error.message)
+            res.status(500).send({ error: 'lookup failed' })
+        }
+    })
+
+    app.post('/api/trades', validateApiKey, async (req, res) => {
+        // Taken now: currentUser is module state that the next request replaces,
+        // and the import below may wait in the queue behind other requests.
+        const allowed = allowedSyncAccounts(currentUser.value)
+        return serialiseImport(async () => {
         const data = req.body;
         try {
             if (data && !data.data.length > 0) {
@@ -1099,6 +1157,14 @@ const setupApiRoutes = (app) => {
                 await useGetTimeZone()
                 await useGetExistingTradesArray("api", ParseNode)
                 await useImportTrades(data.data, "api", data.selectedBroker, ParseNode)
+                // Judged on the accounts IN the parsed file, not on anything the
+                // caller claims about it, and before a single document is written.
+                const staged = useStagedImportAccounts()
+                const refused = staged.filter((label) => !allowed.includes(label))
+                if (!staged.length || refused.length) {
+                    useDiscardStagedImport()
+                    return refuseAccount(res, refused[0] || '')
+                }
                 await useUploadTrades("api", ParseNode)
 
                 // Tell every open page the journal moved, so they re-fetch now
@@ -1109,9 +1175,11 @@ const setupApiRoutes = (app) => {
             }
         } catch (error) {
             console.error(error);
+            useDiscardStagedImport()
             res.status(500).send({ error: 'Error creating executions' });
         }
-    }));
+        })
+    });
 
     /**********************************************
      * GOOGLE SHEET JOURNAL SYNC (one manual trade per edited row)
@@ -1336,14 +1404,20 @@ const setupApiRoutes = (app) => {
 
     app.post('/api/live', validateApiKey, (req, res) => {
         const body = req.body || {}
-        liveAgentSeenAt = Date.now()
         /* A heartbeat says the agent is alive but has nothing to report, so it must
            NOT overwrite the snapshot: the last real frame stays on screen, ageing
-           visibly, instead of the page emptying the moment the EA goes quiet. */
+           visibly, instead of the page emptying the moment the EA goes quiet. It
+           carries no account data, so it needs no account check. */
         if (body.agentHeartbeat) {
+            liveAgentSeenAt = Date.now()
             liveAgentReason = typeof body.reason === 'string' ? body.reason.slice(0, 300) : null
             return res.send({ ok: true, heartbeat: true, clients: liveClients.size })
         }
+        // A frame IS account data (positions, balance): same rule as the journal.
+        // An agent too old to send `server` is refused rather than trusted.
+        const label = syncLabel(body.login, body.server)
+        if (!allowedSyncAccounts(currentUser.value).includes(label)) return refuseAccount(res, label)
+        liveAgentSeenAt = Date.now()
         liveAgentReason = null
         applyLiveSnapshot(body)
         res.send({ ok: true, clients: liveClients.size })
@@ -1387,6 +1461,8 @@ const setupApiRoutes = (app) => {
     app.post('/api/account', validateApiKey, async (req, res) => {
         try {
             const b = req.body || {}
+            const label = syncLabel(b.login, b.server)
+            if (!allowedSyncAccounts(currentUser.value).includes(label)) return refuseAccount(res, label)
             const query = new ParseNode.Query(ParseNode.User)
             query.equalTo('objectId', currentUser.value.objectId)
             const user = await query.first({ useMasterKey: true })

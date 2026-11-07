@@ -2311,6 +2311,42 @@ export async function useSaveSheetTrade(ParseNode, { account, dateUnix, tz, side
     return { dateUnix: Number(builtDayUnix), tradeId: savedTrade && savedTrade.id }
 }
 
+/**
+ * The account labels in the import useImportTrades has just staged -- read off the
+ * parsed rows, before anything is written. The server checks these against the
+ * user's allowed accounts (see /api/trades) between staging and upload.
+ */
+export function useStagedImportAccounts() {
+    return [...new Set(tradesData.map((row) => row && row.Account).filter(Boolean))]
+}
+
+/**
+ * Drop everything an API import has staged in this module and the shared globals.
+ * useUploadTrades runs it after a successful upload; /api/trades runs it when it
+ * refuses an import, because these are process-wide and a refused import left
+ * here would be uploaded with the next one.
+ */
+export function useDiscardStagedImport() {
+    for (let key in executions) delete executions[key]
+    for (let key in trades) delete trades[key]
+    for (let key in blotter) delete blotter[key]
+    for (let key in pAndL) delete pAndL[key]
+
+    tradesData.length = 0
+    // The account labels collected while parsing. Left behind by a REFUSED import,
+    // they were registered on the user by the next real upload -- a rejected account
+    // showing up in the account switcher.
+    tradeAccounts.length = 0
+
+    existingTradesArray.length = 0
+    tempExecutions.length = 0
+    tradedSymbols.length = 0
+    ohlcv.length = 0
+    openPositionsParse.length = 0
+    mfePrices.length = 0
+    openPositionsFile.length = 0
+}
+
 export async function useUploadTrades(param99, param0) {
 
     console.log("\nUPLOADING TRADES")
@@ -2645,22 +2681,7 @@ export async function useUploadTrades(param99, param0) {
         await loopOpenPositionsParse()
     }
     if (param99 == "api") {
-        for (let key in executions) delete executions[key]
-        for (let key in executions) delete executions[key]
-        for (let key in trades) delete trades[key]
-        for (let key in blotter) delete blotter[key]
-        for (let key in pAndL) delete pAndL[key]
-
-        tradesData.length = 0
-
-        existingTradesArray.length = 0 // reinitialize, for API
-        tempExecutions.length = 0 // reinitialize, for API
-        tradedSymbols.length = 0 // reinitialize, for API
-        ohlcv.length = 0 // reinitialize, for API
-        openPositionsParse.length = 0 // reinitialize, for API
-        mfePrices.length = 0 // reinitialize, for API
-        openPositionsFile.length = 0 // reinitialize, for API
-
+        useDiscardStagedImport()
     }
     else {
         window.location.href = "/dashboard"

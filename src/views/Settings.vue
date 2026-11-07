@@ -4,6 +4,7 @@ import { useCheckCurrentUser, useInitTooltip, useGetAPIS, useGetLayoutStyle, use
 import { currentUser, renderProfile, availableTags, apis, layoutStyle } from '../stores/globals';
 import { useGetAvailableTags } from '../utils/daily';
 import { useAuthHeaders } from '../utils/apiAuth'
+import { accountProfiles } from '../utils/mt5Accounts'
 
 /* MODULES */
 import Parse from 'parse/dist/parse.min.js'
@@ -33,6 +34,74 @@ async function loadConnections() {
         connections.value = null
     } finally {
         connectionsLoading.value = false
+    }
+}
+
+/*********************
+ * MT5 ACCOUNTS ALLOWED TO SYNC
+ * The server accepts MT5 data -- trades, balance, live positions -- only from the
+ * accounts listed here (allowedSyncAccounts, enforced in index.mjs). The list lives
+ * on the user and is saved from this logged-in session: the api key the sync
+ * carries cannot change it, so holding the key is not enough to add an account.
+ *********************/
+const MT5_LABEL = /^\d+@[^\s@]+$/
+const allowedSync = computed(() =>
+    (currentUser.value && Array.isArray(currentUser.value.allowedSyncAccounts)) ? currentUser.value.allowedSyncAccounts : [])
+// Accounts the app already knows (traded or synced before) that are not allowed yet.
+const knownNotAllowed = computed(() =>
+    accountProfiles.value.filter((label) => MT5_LABEL.test(label) && !allowedSync.value.includes(label)))
+const newSyncLogin = ref('')
+const newSyncServer = ref('')
+const syncBusy = ref(false)
+const syncAccountsMsg = ref('')
+
+/* Parse.User.current() is the copy cached at login, not the record. Reading it
+   would show a list set elsewhere (another tab, another machine) as empty, and
+   saving an edit of it would quietly drop every account added since. So the list
+   is always fetched first and the change applied to what the server holds. */
+async function refreshAllowedSync() {
+    const user = Parse.User.current()
+    if (!user) return null
+    await user.fetch()
+    currentUser.value = JSON.parse(JSON.stringify(user))
+    return user
+}
+
+async function changeAllowedSync(change) {
+    syncBusy.value = true
+    syncAccountsMsg.value = ''
+    try {
+        const user = await refreshAllowedSync()
+        if (!user) throw new Error('not logged in')
+        const current = Array.isArray(user.get('allowedSyncAccounts')) ? user.get('allowedSyncAccounts') : []
+        user.set('allowedSyncAccounts', change(current))
+        await user.save()
+        currentUser.value = JSON.parse(JSON.stringify(user))
+        return true
+    } catch (e) {
+        syncAccountsMsg.value = 'Could not save: ' + (e.message || e)
+        return false
+    } finally {
+        syncBusy.value = false
+    }
+}
+
+async function addAllowedSync(label) {
+    if (!MT5_LABEL.test(label)) {
+        syncAccountsMsg.value = 'Enter the login number and the server exactly as MT5 shows them (e.g. 198654453 and HFMarketsGlobal-Live16).'
+        return
+    }
+    if (await changeAllowedSync((list) => (list.includes(label) ? list : [...list, label]))) {
+        newSyncLogin.value = ''
+        newSyncServer.value = ''
+        syncAccountsMsg.value = `${label} can now sync.`
+    }
+}
+
+async function removeAllowedSync(label) {
+    if (!window.confirm(`Stop accepting MT5 data from ${label}? Its trades already stored are kept.`)) return
+    if (await changeAllowedSync((list) => list.filter((l) => l !== label))) {
+        syncAccountsMsg.value = `${label} removed: the sync and live feed from it are now refused.`
     }
 }
 
@@ -126,6 +195,7 @@ onBeforeMount(async () => {
 onMounted(async () => {
     await useInitTooltip()
     loadConnections()
+    refreshAllowedSync().catch(() => { /* the section then shows the cached copy */ })
 })
 
 /* PROFILE */
@@ -786,6 +856,41 @@ const updateAPIS = async () => {
 
                 <div class="mt-3 mb-3">
                     <button type="button" v-on:click="updateAPIS" class="btn btn-success">Save</button>
+                </div>
+
+                <!--=============== MT5 ACCOUNTS ALLOWED TO SYNC ===============-->
+                <div class="settingsSection row">
+                    <p class="sectionTitle">MT5 accounts allowed to sync</p>
+                    <p class="fw-lighter">The MT5 sync and live feed only send data for these accounts. A terminal
+                        logged into any other account is refused, even with the right API key.</p>
+                    <div v-if="!allowedSync.length" class="text-warning mb-2">No account is allowed yet, so nothing
+                        from MT5 is accepted until you add one.</div>
+                    <div v-for="label in allowedSync" :key="label" class="d-flex align-items-center mb-1">
+                        <span class="me-3">{{ label }}</span>
+                        <button type="button" class="btn btn-link btn-sm text-danger p-0" :disabled="syncBusy"
+                            v-on:click="removeAllowedSync(label)">Remove</button>
+                    </div>
+                    <div v-if="knownNotAllowed.length" class="mt-2">
+                        <span class="fw-lighter me-2">Known but not allowed:</span>
+                        <button v-for="label in knownNotAllowed" :key="label" type="button"
+                            class="btn btn-outline-light btn-sm me-1 mb-1" :disabled="syncBusy"
+                            v-on:click="addAllowedSync(label)">+ {{ label }}</button>
+                    </div>
+                    <div class="row mt-2 g-2">
+                        <div class="col-12 col-md-4">
+                            <input type="text" class="form-control" v-model.trim="newSyncLogin" inputmode="numeric"
+                                placeholder="Login, e.g. 198654453" />
+                        </div>
+                        <div class="col-12 col-md-5">
+                            <input type="text" class="form-control" v-model.trim="newSyncServer"
+                                placeholder="Server, e.g. HFMarketsGlobal-Live16" />
+                        </div>
+                        <div class="col-12 col-md-3">
+                            <button type="button" class="btn btn-success w-100" :disabled="syncBusy"
+                                v-on:click="addAllowedSync(newSyncLogin + '@' + newSyncServer)">Allow</button>
+                        </div>
+                    </div>
+                    <div v-if="syncAccountsMsg" class="mt-2 small">{{ syncAccountsMsg }}</div>
                 </div>
 
 

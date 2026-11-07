@@ -198,6 +198,10 @@ def offset_at(broker_ts, current_offset, now=None):
 
 OFFSET_CACHE_PATH = os.path.join(HERE, ".broker-offset.json")
 MAX_ABS_OFFSET = 14 * 3600
+# How long to wait for a NEW tick before concluding the market is closed. Gold and FX
+# tick several times a second while open, so a few seconds is ample; it is only spent
+# when a reading differs from the trusted value, never on the normal every-minute run.
+LIVE_PROBE_SECONDS = 4
 _offset_rejections = set()
 
 
@@ -247,8 +251,9 @@ def trusted_offset(server, measured, source):
         fallback = f"keeping the last trusted {last:+d}s" if last is not None else \
             "no earlier trusted value, so nothing is imported until a good reading arrives"
         log(f"Ignoring broker clock offset {measured!r}s from {source} for {key}: not a "
-            f"plausible offset or an impossible jump. Usually the terminal has just "
-            f"started and has not received a tick yet. {fallback}.")
+            f"plausible offset, an impossible jump, or quotes were not flowing. Usually "
+            f"the terminal has just started and has not received a tick yet, or the "
+            f"market is closed. {fallback}.")
     return last
 
 
@@ -276,27 +281,55 @@ class NativeBackend:
         if getattr(self, "_offset", None) is not None:
             return self._offset
         measured = None
+        server = getattr(mt5.account_info(), "server", "")
         try:
-            # The FRESHEST tick, not the first symbol that has one: the old loop took
-            # whichever of the first 20 symbols answered, and a symbol that has not
-            # traded for hours hands back a stale time that still rounds to a
-            # perfectly ordinary-looking quarter hour.
-            symbols = [s for s in (mt5.symbols_get() or []) if getattr(s, "select", False)] \
-                or (mt5.symbols_get() or [])
-            newest = 0
-            for sym in symbols:
-                tick = mt5.symbol_info_tick(sym.name)
-                if tick and tick.time and tick.time > newest:
-                    newest = tick.time
+            newest = self._freshest_tick_time()
             if newest:
                 measured = int(round((newest - time.time()) / 900.0) * 900)
+                # "Distance from this machine's clock" only IS the offset while the
+                # tick is from right now. With the market shut (weekend, the daily
+                # break) the newest tick is hours old and the reading is that age,
+                # not the offset -- and it still looks like one: on a Saturday it came
+                # out -49,500 (-13h45m), a whole quarter hour inside +/-14h, was
+                # trusted because nothing was on file yet, and every later reading was
+                # then refused as an impossible jump from it. An hour of staleness (the
+                # daily break) is indistinguishable from a DST switch the same way.
+                # So a reading that DIFFERS from the trusted value must first prove the
+                # quotes are live; one that matches it needs no proof.
+                if measured != _read_offset_cache().get(server or "default") \
+                        and not self._quotes_flowing(newest):
+                    measured = None
         except Exception as e:  # noqa: BLE001 - never let clock detection kill a sync
             log(f"Could not measure the broker clock offset ({e}).")
-        ai = mt5.account_info()
-        offset = trusted_offset(getattr(ai, "server", ""), measured, "the freshest tick")
+        offset = trusted_offset(server, measured, "the freshest tick")
         if offset is not None:
             self._offset = offset       # cached only once it is trusted
         return offset
+
+    def _freshest_tick_time(self):
+        """Broker-clock time of the newest tick across the watched symbols, or 0.
+
+        The FRESHEST tick, not the first symbol that has one: the old loop took
+        whichever of the first 20 symbols answered, and a symbol that has not
+        traded for hours hands back a stale time that still rounds to a
+        perfectly ordinary-looking quarter hour."""
+        symbols = [s for s in (mt5.symbols_get() or []) if getattr(s, "select", False)] \
+            or (mt5.symbols_get() or [])
+        newest = 0
+        for sym in symbols:
+            tick = mt5.symbol_info_tick(sym.name)
+            if tick and tick.time and tick.time > newest:
+                newest = tick.time
+        return newest
+
+    def _quotes_flowing(self, since):
+        """Does a tick newer than `since` arrive within LIVE_PROBE_SECONDS?"""
+        deadline = time.time() + LIVE_PROBE_SECONDS
+        while time.time() < deadline:
+            time.sleep(0.5)
+            if self._freshest_tick_time() > since:
+                return True
+        return False
 
     def history_deals_get(self, frm, to):
         """Deals in the window, with their times converted to true UTC.
@@ -406,6 +439,7 @@ class NativeBackend:
 
         return {
             "login": ai.login,
+            "server": ai.server,     # with login, the account the server checks (allowedSyncAccounts)
             "currency": ai.currency,
             # balance excludes open trades; equity includes their floating P&L.
             # Both are sent so the UI can show "banked vs on the table".
@@ -695,6 +729,7 @@ class BridgeBackend:
 
         return {
             "login": a.get("login", 0),
+            "server": a.get("server", ""),
             "currency": a.get("currency", "USD"),
             "balance": float(a.get("balance", 0) or 0),
             "equity": float(a.get("equity", 0) or 0),
@@ -852,6 +887,74 @@ def tradenote_up(cfg):
         return r.status_code < 500
     except Exception:  # noqa: BLE001 - any connection error means it's down
         return False
+
+
+def account_allowed(cfg, label):
+    """(allowed, reason): may this account sync to TradeNote? (GET /api/mt5/allowed)
+
+    The server refuses a push from an account that is not in the user's allowed list
+    whatever this says; asking first means a terminal logged into the wrong account
+    sends nothing at all and says why, instead of failing request by request.
+    Anything short of a clear yes is a no."""
+    try:
+        r = requests.get(cfg.get("tradenote", "url").rstrip("/") + "/api/mt5/allowed",
+                         params={"account": label},
+                         headers={"api-key": cfg.get("tradenote", "api_key")}, timeout=30)
+        if r.status_code == 401:
+            return False, "TradeNote refused the api key ([tradenote] api_key in config.ini)."
+        if r.status_code == 404:
+            return False, "this TradeNote has no account check (update it, or it is still starting)."
+        if r.status_code != 200:
+            return False, f"unexpected HTTP {r.status_code} from TradeNote."
+        if r.json().get("allowed") is True:
+            return True, ""
+    except (requests.RequestException, ValueError) as e:
+        return False, f"could not ask TradeNote ({e.__class__.__name__})."
+    return False, "Add it in TradeNote: Settings -> MT5 accounts allowed to sync."
+
+
+DEFAULT_MAX_CATCHUP_DAYS = 90
+
+
+def server_last_trade(cfg, label):
+    """(asked_ok, unix): the newest trade TradeNote holds for this account.
+
+    `unix` is None when it holds none yet. `asked_ok` False means the server could
+    not say (older server, network) -- the caller then keeps the plain window."""
+    try:
+        r = requests.get(cfg.get("tradenote", "url").rstrip("/") + "/api/mt5/last-trade",
+                         params={"account": label},
+                         headers={"api-key": cfg.get("tradenote", "api_key")}, timeout=30)
+        if r.status_code == 200:
+            return True, r.json().get("lastTradeUnix")
+    except (requests.RequestException, ValueError):
+        pass
+    return False, None
+
+
+def crosses_dst_switch(frm, now):
+    """Does a broker DST switch (EU or US rule) fall between these two moments?
+
+    Deals before a switch carry the OLD offset, but without a `broker_dst` rule the
+    sync converts every deal with today's -- an hour out, and a re-import then files
+    those trades a second time beside the correct copies."""
+    a, b = int(frm.timestamp()), int(now.timestamp())
+    return eu_dst_active(a) != eu_dst_active(b) or us_dst_active(a) != us_dst_active(b)
+
+
+def catchup_from(now, base_days, server_last, max_days):
+    """Where the sync window must START so a gap in TradeNote gets refilled.
+
+    The normal window is the last `base_days`. If TradeNote's newest trade for the
+    account is older than that -- the machine was off, or this is a new machine --
+    start a day before it instead, so everything missed is re-sent. Never further
+    back than `max_days` (a payload that size is a deliberate act: --lookback-days).
+    An account TradeNote holds nothing for yet starts at that cap. The extra day
+    is cover for trades filed by open time and for the timezone seam."""
+    frm = now - dt.timedelta(days=base_days)
+    cap = now - dt.timedelta(days=max_days)
+    want = cap if server_last is None else dt.datetime.fromtimestamp(server_last) - dt.timedelta(days=1)
+    return max(min(frm, want), cap) if max_days > base_days else frm
 
 
 def mt5_terminal_running():
@@ -1218,6 +1321,8 @@ def parse_args():
                    help="override [sync] lookback_days for this run (recovery)")
     p.add_argument("--force", action="store_true",
                    help="push even when no deal is newer than the stored watermark")
+    p.add_argument("--check-account", action="store_true",
+                   help="only report whether the logged-in account may sync (exit 0 yes, 3 no); sends nothing")
     return p.parse_args()
 
 
@@ -1230,6 +1335,8 @@ def main():
     # MT5) unless TradeNote is actually running. Stop the project -> sync stops.
     if not tradenote_up(cfg):
         log("TradeNote not reachable -- skipping (sync only runs while the project is up).")
+        if args.check_account:      # never read as "allowed" (exit 0) when it could not ask
+            sys.exit(1)
         return
 
     # --- Sliding window, not a moving watermark --------------------------------
@@ -1265,14 +1372,46 @@ def main():
     # The bridge backend answers this from the export file's age instead.
     if not backend.terminal_running():
         log("MT5 terminal not running -- skipping (won't auto-launch it).")
+        if args.check_account:
+            sys.exit(1)
         return
 
     info = connect(cfg, backend)
+    # Before anything is read or sent: is THIS login one the TradeNote user allowed?
+    label = f"{info.login}@{info.server}"
+    allowed, why = account_allowed(cfg, label)
+    if args.check_account:
+        log(f"Account {label}: {'allowed to sync' if allowed else 'NOT allowed to sync -- ' + why}")
+        backend.shutdown()
+        sys.exit(0 if allowed else 3)
+    if not allowed:
+        log(f"Account {label} is not allowed to sync -- nothing sent. {why}")
+        backend.shutdown()
+        return
     if backend.broker_offset() is None:
         log("Broker clock offset not trustworthy yet -- skipping this run rather than "
             "importing trades at the wrong times.")
         backend.shutdown()
         return
+    # Catch-up: if TradeNote's newest trade for this account is older than the
+    # window (machine was off, or a new machine), reach back far enough to refill the
+    # gap. An explicit --lookback-days is taken as written.
+    if args.lookback_days is None:
+        asked, server_last = server_last_trade(cfg, label)
+        if asked:
+            max_days = cfg.getint("sync", "max_catchup_days", fallback=DEFAULT_MAX_CATCHUP_DAYS)
+            wider = catchup_from(now, lookback_days, server_last, max_days)
+            if wider < frm and BROKER_DST == "none" and crosses_dst_switch(wider, now):
+                # Refuse rather than guess: a wrong hour here duplicates trades.
+                log(f"Catch-up NOT done: it would reach back to {wider:%Y-%m-%d}, across a broker "
+                    "DST switch, and [mt5] broker_dst is not set (HFMarkets: eu), so older deals "
+                    "would be filed an hour off. Set it in config.ini, or pass --lookback-days.")
+            elif wider < frm:
+                frm = wider
+                since = ("it holds no trades for this account yet" if server_last is None else
+                         f"its newest trade is {dt.datetime.fromtimestamp(server_last):%Y-%m-%d %H:%M}")
+                log(f"Catching up: {since} -> window starts {frm:%Y-%m-%d %H:%M} "
+                    f"(at most {max_days} days back; raise [sync] max_catchup_days or pass --lookback-days for more).")
     # Everything below is about ONE account -- whichever the terminal is logged
     # into right now. Its state is read only now, because until connect() returns
     # there is no login to look it up by.

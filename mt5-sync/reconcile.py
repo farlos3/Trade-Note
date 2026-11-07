@@ -72,10 +72,21 @@ def env_value(key):
 
 
 def db_trades(container):
+    db = env_value("TRADENOTE_DATABASE") or "tradenote"
+    uri = env_value("BACKUP_MONGO_URI")
+    if uri:
+        # The same connection the R2 backup uses: Atlas (read-only user) or local.
+        from pymongo import MongoClient
+        out = []
+        for d in MongoClient(uri, serverSelectionTimeoutMS=15000)[db]["trades"].find({}):
+            for t in d.get("trades") or []:
+                out.append({"pos": str(t.get("positionId") or ""), "entry": t.get("entryTime"),
+                            "net": t.get("netProceeds"), "open": bool(t.get("openPosition")),
+                            "account": t.get("account") or d.get("account") or ""})
+        return out
     script = ("const out=[]; db.trades.find({}).forEach(d=>(d.trades||[]).forEach(t=>out.push("
               "{pos:String(t.positionId||''),entry:t.entryTime,net:t.netProceeds,open:!!t.openPosition,"
               "account:t.account||d.account||''})));print(JSON.stringify(out));")
-    db = env_value("TRADENOTE_DATABASE") or "tradenote"
     try:
         out = subprocess.run(["docker", "exec", container, "mongosh", "--quiet", db, "--eval", script],
                              capture_output=True, text=True, timeout=60)

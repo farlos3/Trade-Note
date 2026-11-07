@@ -209,13 +209,16 @@ per account, and an agent per account.
 
 ## Notes & caveats
 
-- **Dedup**: TradeNote drops any imported trade whose date already exists, so the
-  sliding window is safe to re-send every run. To force a clean re-pull, reset
-  `state.json` to `{}` (or delete it) and widen `lookback_days` — already-imported
-  dates simply won't duplicate.
-- **Dedup limit**: TradeNote only compares against the 50 most recent existing
-  trades. Keep `lookback_days` small enough that the window holds fewer than 50
-  trades, or heavy days could slip past the filter.
+- **Dedup**: re-sending a window is safe -- an API import rewrites each day it covers
+  (and never replaces a day with fewer trades), so the sliding window can be re-sent
+  every run, and a wide one just as well. To force a clean re-pull, reset
+  `state.json` to `{}` (or delete it) and run with `--lookback-days N`.
+- **Catch-up after downtime**: you do not need to widen anything by hand. Each run asks
+  TradeNote for its newest trade of the account and, if that is older than
+  `lookback_days`, starts the window a day before it -- up to `[sync] max_catchup_days`
+  (default 90; a longer gap: `mt5_sync.py --lookback-days N`, taken as written). It
+  also covers a new machine and a new account. Set `[mt5] broker_dst` (HFMarkets: `eu`)
+  so a catch-up across a DST switch converts the older deals correctly.
 - **Cloud (Render) target**: point `url` at your Render URL and the same key
   must exist on that instance's user. The machine running this script still needs
   the local MT5 terminal.
