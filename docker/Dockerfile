@@ -1,5 +1,7 @@
-# Using 18 alpine because supports arm/v8 and arm/v8 needed for silicon chips
-FROM node:18-alpine
+# Node 22 (LTS) alpine: also published for arm/v8, which Apple-silicon Macs need.
+# Was 18, which is end-of-life (and 20 ended in April 2026); the AWS SDK used for R2
+# already prints a warning on 18 and stops supporting it.
+FROM node:22-alpine
 # bash only. There is deliberately NO node-gyp toolchain (python3/make/g++) here:
 # nothing in the dependency tree compiles native code any more. metaapi.cloud-sdk
 # was the only package that pulled in a hard bufferutil/utf-8-validate dependency;
