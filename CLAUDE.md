@@ -19,9 +19,20 @@ Keep it updated when structure changes.
 - **Backend restart.** `index.mjs` is the Express + Parse backend. Frontend hot-reloads,
   but backend edits need:
   `docker compose -f docker-compose-dev.yml restart tradenote`
-- **Dev stack.** `docker-compose-dev.yml` → `tradenote_app` (:8080) + `tradenote_mongo`
-  (:27017). App connects over the compose network at `mongo:27017`; host tools use
-  `localhost:27017`.
+- **Dev stack.** `docker-compose-dev.yml` → `tradenote_app` (:8080). The primary
+  database is **MongoDB Atlas** (Cluster0, db `tradenote`): `MONGO_URI` is the
+  `readWrite` user `tradenote_app`; `BACKUP_MONGO_URI` is the read-only
+  `tradenote_backup` (R2 backup, `reconcile.py`). Network Access is `0.0.0.0/0`, so
+  the passwords in `.env` are the protection. R2 is backup only: `start` does NOT
+  restore from it while `MONGO_URI` is Atlas. The M0 cluster auto-pauses when idle
+  and can only be resumed in the Atlas UI. The old local mongo is behind the compose
+  profile `localdb` (`tradenote_mongo`, stopped, data kept as an offline fallback).
+- **MT5 data is accepted only from allowed accounts.** `/api/trades`, `/api/account`
+  and `/api/live` refuse (403) any account not in `_User.allowedSyncAccounts`
+  (`<login>@<server>`), checked on the PARSED report for trades. Fails closed: no
+  list = no sync. The list is edited only in Settings → "MT5 accounts allowed to
+  sync" (logged-in session); the api key alone cannot change it. A new MT5 account
+  must be added there before it can sync.
 - **dev vs prod mode.** `NODE_ENV` in `docker-compose-dev.yml` defaults to `dev`
   (Vite dev server + hot-reload, but every page load re-fetches ~90 unbundled
   modules — slow navigation, since nav links are plain `<a href>` full reloads).
