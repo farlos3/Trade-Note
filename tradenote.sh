@@ -647,7 +647,13 @@ start_claude_bridge
 
 # 4a. Baseline: whatever is in the R2 backup.
 if [[ "$SKIP_RESTORE" -eq 0 ]]; then
-  restore_from_r2
+  # With MongoDB Atlas as the primary database the R2 snapshot is only a backup:
+  # restoring it would DROP and overwrite the live data with an older copy.
+  if [[ "$(read_env MONGO_URI)" == *"mongodb.net"* ]]; then
+    printf '\033[90mDatabase is MongoDB Atlas (primary) -- skipping the R2 restore; R2 is backup only.\033[0m\n'
+  else
+    restore_from_r2
+  fi
 fi
 
 # 4b. Update: newer trades straight from the terminal, on either platform. The

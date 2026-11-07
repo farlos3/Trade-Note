@@ -16,7 +16,7 @@ Run on the HOST (Mongo is exposed on localhost:27017 by docker-compose).
 Setup once:
     pip install pymongo pyarrow boto3
 Fill these in .env (R2 -> S3 API):
-    R2_ACCOUNT_ID, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
+    R2_ACCOUNT_ID, R2_BACKUP_BUCKET (private!), R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
     (R2_ENDPOINT is derived from the account id if left blank.)
 
 Usage:
@@ -83,13 +83,21 @@ def r2_client(env):
         f"https://{account}.r2.cloudflarestorage.com" if account else "")
     key = get(env, "R2_ACCESS_KEY_ID", "")
     secret = get(env, "R2_SECRET_ACCESS_KEY", "")
-    bucket = get(env, "R2_BUCKET", "")
+    # Backups go to their OWN bucket, never R2_BUCKET. That one is served publicly
+    # (R2_PUBLIC_URL: screenshots and day files must load in the browser), and R2 makes
+    # a bucket public as a whole, not per folder -- so a backup in it is a world-readable
+    # copy of the journal, including the `_User` collection (api keys, password hash,
+    # balances). It was, until 2026-11-08. Refuse rather than fall back to it.
+    bucket = get(env, "R2_BACKUP_BUCKET", "")
     missing = [n for n, v in [("R2_ACCOUNT_ID/R2_ENDPOINT", endpoint),
                               ("R2_ACCESS_KEY_ID", key),
                               ("R2_SECRET_ACCESS_KEY", secret),
-                              ("R2_BUCKET", bucket)] if not v]
+                              ("R2_BACKUP_BUCKET", bucket)] if not v]
     if missing:
-        sys.exit("R2 not fully configured in .env - missing: " + ", ".join(missing))
+        sys.exit("R2 not fully configured in .env - missing: " + ", ".join(missing)
+                 + "  (R2_BACKUP_BUCKET must be a PRIVATE bucket, different from R2_BUCKET)")
+    if bucket == get(env, "R2_BUCKET", ""):
+        sys.exit("R2_BACKUP_BUCKET must not be R2_BUCKET: that bucket is public, a backup there is readable by anyone.")
     client = boto3.client(
         "s3", endpoint_url=endpoint,
         aws_access_key_id=key, aws_secret_access_key=secret,

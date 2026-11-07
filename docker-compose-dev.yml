@@ -11,10 +11,14 @@ services:
     image: mongo:7
     container_name: tradenote_mongo
     restart: unless-stopped
-    # Exposed on localhost so host-side tools (the parquet backup, mongodump) can
-    # reach it. The app itself connects over the compose network at mongo:27017.
+    # Not started by default: the primary database is MongoDB Atlas (MONGO_URI in
+    # .env). Opt back in for an offline local DB with
+    #   docker compose -f docker-compose-dev.yml --profile localdb up -d
+    # and point MONGO_URI at mongodb://...@mongo:27017.
+    profiles: ["localdb"]
+    # Loopback only: it used to be published on every interface.
     ports:
-      - 27017:27017
+      - 127.0.0.1:27017:27017
     volumes:
       - mongo_data:/data/db
 
@@ -25,8 +29,6 @@ services:
     image: tradenote:local
     container_name: tradenote_app
     restart: unless-stopped
-    depends_on:
-      - mongo
     ports:
       - 8080:8080
     dns:

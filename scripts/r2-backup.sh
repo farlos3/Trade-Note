@@ -54,8 +54,12 @@ done
 # result must never be read as "empty" -- see the guard below.
 count_trades() {
   local out
-  out="$(docker compose -f "$COMPOSE_FILE" exec -T mongo mongosh --quiet --eval \
-        "print(db.getSiblingDB('$DB_NAME').getCollection('trades').countDocuments())" \
+  # Through BACKUP_MONGO_URI, like backup_to_r2.py itself, so it works whether the
+  # database is a local container or Atlas (a read-only user is enough).
+  out="$(cd "$ROOT_DIR/backup" && "$PY" -c "
+from backup_to_r2 import load_env, get, mongo_client, ENV_PATH
+env = load_env(ENV_PATH)
+print(mongo_client(env)[get(env, 'TRADENOTE_DATABASE', 'tradenote')]['trades'].count_documents({}))" \
         2>/dev/null | tail -n1 | tr -d '[:space:]')"
   [[ "$out" =~ ^[0-9]+$ ]] && printf '%s' "$out"
 }

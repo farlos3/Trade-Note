@@ -64,3 +64,6 @@ chrome.log
 
 # Output of the Claude subscription bridge (started by ./tradenote.sh start)
 scripts/claude-bridge.log*
+
+# Personal trading analysis (data + notebook outputs) -- never commit
+notebook/
