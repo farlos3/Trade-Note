@@ -90,6 +90,18 @@ async function fingerprint() {
 }
 
 /**
+ * Invalidate the fingerprint L1 cache immediately.
+ *
+ * Call this whenever a write that changes the `trades` class completes
+ * (upload, delete, MT5 sync save). Without it, the next navigation within
+ * 10 s would still read the stale fingerprint and wrongly serve the old
+ * IndexedDB result instead of the freshly written data.
+ */
+export function useClearFingerprintCache() {
+    try { sessionStorage.removeItem(FP_SESSION_KEY) } catch { /* ignore */ }
+}
+
+/**
  * query.find(), answered from IndexedDB when the class has not changed since the
  * result was stored. Returns plain JSON rows -- exactly what
  * JSON.parse(JSON.stringify(results)) gave the callers before -- so a hit and a miss
