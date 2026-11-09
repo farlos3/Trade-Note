@@ -14,8 +14,14 @@ Keep it updated when structure changes.
 - **Timezone.** Trades bucket by the *trade timezone* (`timeZoneTrade`, e.g.
   Asia/Bangkok), not UTC. A trade day-doc's `dateUnix` is **start-of-day in the trade
   tz**; formatting it with `toISOString()` (UTC) shifts the label back a day — always
-  format with the trade tz (`dayInTz` in `mcp-server/analysis.mjs`). Order day comes
-  from the position's **open time**.
+  format with the trade tz (`dayInTz` in `mcp-server/analysis.mjs`). A **closed**
+  trade is filed under the day it **closed** (`closeTd`); an open position stays on
+  its open day until it closes (src/utils/addTrades.js). History filed the other way
+  (by open day) was migrated on 2026-11-09 -- **never change how days are assigned
+  without re-filing stored history in the same step**: the importer only rewrites the
+  days it covers, so every trade then exists on two days and all stats inflate
+  (it happened). `python mt5-sync/reconcile.py` reports `duplicated`; run it after any
+  importer change.
 - **Backend restart.** `index.mjs` is the Express + Parse backend. Frontend hot-reloads,
   but backend edits need:
   `docker compose -f docker-compose-dev.yml restart tradenote`
