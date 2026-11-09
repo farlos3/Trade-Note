@@ -156,7 +156,13 @@ export async function useGetFilteredTrades(param) {
                             }
                         }
 
-                        if ((selectedRange.value.start === 0 && selectedRange.value.end === 0 ? element.td >= selectedRange.value.start : element.td >= selectedRange.value.start && element.td < selectedRange.value.end) && selectedPositions.value.includes(element.strategy) && selectedAccounts.value.includes(element.account) && tradeTagsSelected) {
+                        // For closed trades, the "effective date" is the close day (closeTd)
+                        // so the trade appears in the range the P&L was actually realised.
+                        // Open positions don't have a close day yet, so they fall back to
+                        // their entry day (td) for display and range filtering.
+                        const effectiveTd = element.openPosition ? element.td : (element.closeTd || element.td)
+
+                        if ((selectedRange.value.start === 0 && selectedRange.value.end === 0 ? effectiveTd >= selectedRange.value.start : effectiveTd >= selectedRange.value.start && effectiveTd < selectedRange.value.end) && selectedPositions.value.includes(element.strategy) && selectedAccounts.value.includes(element.account) && tradeTagsSelected) {
 
                             /**
                              * We're using tempArray to be able to group

@@ -1439,6 +1439,12 @@ async function createTrades() {
                         //console.log(" tempExec "+JSON.stringify(tempExec))
                         trde.exitPrice = tempExec.price;
                         trde.exitTime = tempExec.execTime;
+                        // The day the trade CLOSED, in the trader's timezone. Used to
+                        // bucket closed trades by their close date so Calendar / Dashboard
+                        // / History all show realized P&L on the day money actually moved
+                        // rather than the day the position was opened. Open positions keep
+                        // td (the opening day) so they appear on the day they were entered.
+                        trde.closeTd = dayjs.unix(tempExec.execTime).tz(timeZoneTrade.value).startOf('day').unix()
                         /*if (trde.exitTime >= startTimeUnix.value) {
                             trde.videoEnd = trde.exitTime - startTimeUnix.value
                         }*/
@@ -1584,10 +1590,14 @@ async function createTrades() {
         //console.log(" -> Open positionsFile " + JSON.stringify(openPositionsFile))
         //console.log(" -> Open positions in Parse "+JSON.stringify(openPositionsParse))
         //console.log("temp2 " + JSON.stringify(temp2))
+        // Group closed trades by their CLOSE day (closeTd) so the P&L appears on
+        // the day the position was realized.  Open positions have no closeTd yet,
+        // so they stay grouped under their opening day (td) — they will be moved
+        // to the correct close-day bucket when a future sync closes them.
         var c = _
             .chain(temp2)
             .orderBy(["entryTime"], ["asc"])
-            .groupBy("td");
+            .groupBy(x => x.openPosition ? x.td : x.closeTd);
         //console.log(" -> Trades " + JSON.stringify(c))
         for (let key in trades) delete trades[key]
         Object.assign(trades, JSON.parse(JSON.stringify(c)))
@@ -1673,9 +1683,14 @@ async function filterExisting(param) {
             /* A date counts as already imported only for the account that
                imported it. Dropping it for every account meant the second
                account's statement for a shared trading day vanished silently,
-               logged as "Already imported date". */
+               logged as "Already imported date".
+               
+               Since trades are now bucketed by CLOSE date, `existingTradesArray`
+               holds close-day dateUnix values. We check against `trades` (the
+               close-day map) rather than `executions` (which is still keyed by
+               entry day) so the dedup comparison is consistent. */
             const alreadyImported = existingTradesArray.filter((day) => {
-                if (!executions.hasOwnProperty(day)) return false
+                if (!trades.hasOwnProperty(day)) return false
                 const stored = existingDayAccounts.get(day) || existingDayAccounts.get(Number(day))
                 const incoming = accountOfDay(day)
                 // No account on either side: the pre-split behaviour, date alone.
@@ -1687,14 +1702,21 @@ async function filterExisting(param) {
                 existingImports.push(day)
             });
 
-            let tempExecutions = _.omit(executions, alreadyImported)
-            for (let key in executions) delete executions[key]
-            Object.assign(executions, tempExecutions)
-            //console.log(" -> executions "+JSON.stringify(executions))
-
+            // alreadyImported keys are closeTd (close-day) values. `trades` is
+            // keyed by closeTd, but `executions` is keyed by td (entry day).
+            // Drop trades for already-imported close days, then also drop any
+            // execution entry-days that have no remaining trades to upload.
             let tempTrades = _.omit(trades, alreadyImported)
             for (let key in trades) delete trades[key]
             Object.assign(trades, tempTrades)
+
+            // Remove execution-day buckets whose trades were all dropped above:
+            // any td that no longer appears in any surviving trade can be omitted.
+            const survivingTds = new Set(Object.values(trades).flat().map(t => t.td))
+            const execKeysToRemove = Object.keys(executions).filter(k => !survivingTds.has(Number(k)) && !survivingTds.has(k))
+            let tempExecutions = _.omit(executions, execKeysToRemove)
+            for (let key in executions) delete executions[key]
+            Object.assign(executions, tempExecutions)
         }
         resolve()
     })
@@ -1711,7 +1733,9 @@ export async function useCreateBlotter(param) {
             let temp = _
                 .chain(filteredTradesTrades)
                 .orderBy(["entryTime"], ["asc"])
-                .groupBy("td")
+                // Mirror the createTrades grouping: closed trades go into their
+                // close-day bucket; open positions stay in their opening-day bucket.
+                .groupBy(x => x.openPosition ? x.td : (x.closeTd || x.td))
             objectZ = JSON.parse(JSON.stringify(temp))
             //console.log(" temp "+JSON.stringify(temp))
         } else {
@@ -2400,22 +2424,32 @@ export async function useUploadTrades(param99, param0) {
                 // timing glitch), and destroy-then-create has no memory of what was
                 // there before. Confirmed in practice: a day's trade count silently
                 // dropped (e.g. 19 -> 7) between sync runs with nothing on the user's
-                // end to explain it. Never let this day's trade count go DOWN: if what
-                // we're about to write is skimpier than what's already stored, keep the
-                // existing (more complete) document instead of destroying it. This is a
-                // floor, not a true merge -- a run that's missing some trades AND has a
-                // few genuinely new ones would still lose the new ones here -- but it
-                // stops the observed regression outright, with no risk to the normal
-                // growing-day case (which always has incoming >= existing).
+                // end to explain it. Never let this day's CLOSED trade count go DOWN:
+                // if what we're about to write has fewer closed trades than what's already
+                // stored, keep the existing document instead of destroying it.
+                //
+                // We compare CLOSED trades only: open positions are transient and legitimately
+                // leave this day when they close and move to their closeTd bucket.
                 if (param2 === "trades" && existingDocs.length) {
-                    const existingCount = (existingDocs[0].get("trades") || []).length
-                    const incomingCount = (trades[param1] || []).length
-                    if (incomingCount < existingCount) {
-                        console.log(` -> Skipping ${dayjs.unix(param1).format("YYYY-MM-DD")}: incoming ${incomingCount} trade(s) < existing ${existingCount}, keeping existing document`)
+                    const existingClosed = (existingDocs[0].get("trades") || []).filter(t => !t.openPosition).length
+                    const incomingClosed = (trades[param1] || []).filter(t => !t.openPosition).length
+                    if (incomingClosed < existingClosed) {
+                        console.log(` -> Skipping ${dayjs.unix(param1).format("YYYY-MM-DD")}: incoming ${incomingClosed} closed trade(s) < existing ${existingClosed}, keeping existing document`)
                         i++
                         if (i == numberOfDates) { resolve("resolve") } else { resolve() }
                         return
                     }
+                }
+
+                // If this day has no trades left (its former open positions closed on later
+                // days) and holds no new open positions, clean up any existing document
+                // so the day doesn't linger as an empty ghost or duplicate.
+                if (param2 === "trades" && !(trades[param1] || []).length && !param3) {
+                    if (existingDocs.length) await ParseNode.Object.destroyAll(existingDocs, { useMasterKey: true })
+                    console.log(` -> Cleaned up empty day ${dayjs.unix(param1).format("YYYY-MM-DD")} (all trades closed on later days)`)
+                    i++
+                    if (i == numberOfDates) { resolve("resolve") } else { resolve() }
+                    return
                 }
 
                 if (existingDocs.length) await ParseNode.Object.destroyAll(existingDocs, { useMasterKey: true })
@@ -2438,7 +2472,16 @@ export async function useUploadTrades(param99, param0) {
                 // Same missing-day case as in uploadFunction: write an empty array
                 // rather than leaving the field unset, so every day document has the
                 // shape the readers expect.
-                object.set("executions", executions[param1] || [])
+                // executions is still keyed by td (the entry day), but param1 is now
+                // the close-day bucket key. Gather executions from every entry-day that
+                // contributed trades to this close-day bucket. For pure open-position
+                // days param1 equals td, so executions[param1] is the right answer.
+                const dayTrades = trades[param1] || []
+                const entryDays = [...new Set(dayTrades.map(t => t.td))]
+                const dayExecutions = entryDays.length
+                    ? entryDays.flatMap(tdKey => executions[tdKey] || [])
+                    : (executions[param1] || [])
+                object.set("executions", dayExecutions)
                 object.set("trades", trades[param1] || [])
                 object.set("blotter", blotter[param1])
                 object.set("pAndL", pAndL[param1])
@@ -2487,8 +2530,22 @@ export async function useUploadTrades(param99, param0) {
             numberOfDates = 0
 
             if (param == "trades") {
-                keys = Object.keys(executions)
-                numberOfDates = Object.keys(executions).length
+                // Since trades are now bucketed by CLOSE date (closeTd) rather than
+                // open date (td), the set of day-keys to upload is the union of:
+                //   - days in `trades` (each close-day bucket, plus open-position days)
+                //   - days in `executions` that have NO closed trades yet (open-only days)
+                // Using trades as the primary set covers all closed days. We also need
+                // execution-only days (all-open) so their open-position document is still
+                // written to the DB, which is what lets getOpenPositionsParse pick them
+                // up on the next sync and pair them with their eventual closing legs.
+                const tradeKeys = new Set(Object.keys(trades))
+                const execKeys = new Set(Object.keys(executions))
+                // Add execution-only days (open positions with no closed trade yet)
+                for (const k of execKeys) {
+                    if (!tradeKeys.has(k)) tradeKeys.add(k)
+                }
+                keys = [...tradeKeys]
+                numberOfDates = keys.length
             }
             if (param == "cashJournals") {
                 keys = Object.keys(cashJournals.value)
@@ -2616,9 +2673,28 @@ export async function useUploadTrades(param99, param0) {
                 let openPositionIndex = tempTrades.findIndex(x => x.id == param1)
                 //console.log(" openPositionIndex " + openPositionIndex)
                 if (openPositionIndex != -1) {
-                    tempTrades[openPositionIndex].openPosition = false
-                    tempTrades[openPositionIndex].exitTime = param3
+                    const closeDay = dayjs.unix(param3).tz(timeZoneTrade.value).startOf('day').unix()
+                    if (closeDay !== Number(param2)) {
+                        // The swing trade closed on a different day and is now stored under
+                        // that close day's document (closeTd). Remove it from this opening-day
+                        // document so it is not duplicated across both days.
+                        tempTrades.splice(openPositionIndex, 1)
+                    } else {
+                        tempTrades[openPositionIndex].openPosition = false
+                        tempTrades[openPositionIndex].exitTime = param3
+                    }
                 }
+
+                if (tempTrades.length === 0) {
+                    // No trades left on the opening day: destroy the document cleanly
+                    if (param99 === "api") {
+                        await results.destroy({ useMasterKey: true })
+                    } else {
+                        await results.destroy()
+                    }
+                    return resolve()
+                }
+
                 for (let index = 0; index < tempTrades.length; index++) {
                     const element = tempTrades[index];
                     if (element.openPosition) {
@@ -2629,9 +2705,11 @@ export async function useUploadTrades(param99, param0) {
                 results.set("openPositions", openPositions)
                 results.set("trades", tempTrades)
                 if (param99 === "api") {
-                    await results.save(null, { useMasterKey: true }).then(resolve()) //very important to have await or else too quick to update
+                    await results.save(null, { useMasterKey: true })
+                    resolve()
                 } else {
-                    await results.save().then(resolve()) //very important to have await or else too quick to update
+                    await results.save()
+                    resolve()
                 }
 
             } else {
