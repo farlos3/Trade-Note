@@ -2452,8 +2452,16 @@ export async function useUploadTrades(param99, param0) {
                     return
                 }
 
-                if (existingDocs.length) await ParseNode.Object.destroyAll(existingDocs, { useMasterKey: true })
-                object = new parseObject();
+                // Rewrite the stored day IN PLACE rather than destroy it and create a new
+                // one. Between the destroy and the save there is a window (~0.3 s per day
+                // while an import runs, measured) in which the day does not exist, and a
+                // page that loads then simply lacks it -- a Calendar with one day blank
+                // that comes back by itself. Every new closed trade triggers an import
+                // that rewrites the whole sliding window, so it happened all day. A save
+                // of an existing document is one atomic write; only a duplicate of the
+                // same day (never expected, but possible from older imports) is removed.
+                if (existingDocs.length > 1) await ParseNode.Object.destroyAll(existingDocs.slice(1), { useMasterKey: true })
+                object = existingDocs.length ? existingDocs[0] : new parseObject();
                 object.set("user", { "__type": "Pointer", "className": "_User", "objectId": currentUser.value.objectId })
             } else {
                 parseObject = Parse.Object.extend(param2);
@@ -2499,10 +2507,15 @@ export async function useUploadTrades(param99, param0) {
                 object.setACL(new Parse.ACL(Parse.User.current()));
             }
 
-            object.save(param99 === "api" ? { useMasterKey: true } : undefined)
+            // save(attrs, options): the options belong in the SECOND argument. Passed as
+            // the first they were taken as an attribute (a stray `useMasterKey: true`
+            // field on every day doc) and no master key was sent at all. Creating a
+            // document needs no permission check so it went unnoticed; updating one in
+            // place (above) does, and Parse answered "Object not found".
+            object.save(null, param99 === "api" ? { useMasterKey: true } : undefined)
                 .then((object) => {
 
-                    console.log(" -> Added new " + param2 + " with id " + object.id)
+                    console.log(" -> Saved " + param2 + " with id " + object.id)
                     i++
                     if (i == numberOfDates) {
                         //console.log("resolve")
