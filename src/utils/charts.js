@@ -67,22 +67,23 @@ export async function useECharts(param) {
         }
     }
 
-    function handleCharts(prefix, useChartFunction) {
-        let elements = document.querySelectorAll(`[id^="${prefix}"]`);
-        elements.forEach(element => {
-            if (param == "clear") {
-                echarts.init(element).clear();
-            }
-            if (param == "init" || param == prefix) {
-                useChartFunction(element.id);
-            }
-        });
+        async function handleCharts(prefix, useChartFunction, excludePrefix = null) {
+            let elements = document.querySelectorAll(`[id^="${prefix}"]`);
+                for (const element of elements) {
+                    if (excludePrefix && element.id.startsWith(excludePrefix)) continue;
+                    if (param == "clear") {
+                        echarts.getInstanceByDom(element)?.clear();
+                    }
+                    if (param == "init" || param == prefix) {
+                        await useChartFunction(element.id);
+                    }
+        }
     }
 
     // Call the function for each chart type
-    handleCharts('lineBarChart', useLineBarChart);
-    handleCharts('barChart', useBarChart);
-    handleCharts('barChartNegative', useBarChartNegative);
+    await handleCharts('lineBarChart', useLineBarChart);
+    await handleCharts('barChart', useBarChart, 'barChartNegative');
+    await handleCharts('barChartNegative', useBarChartNegative);
 
 }
 
@@ -294,6 +295,7 @@ export function useLineChart(param) { //chartID, chartDataGross, chartDataNet, c
             }]
         }
         myChart.setOption(option);
+        requestAnimationFrame(() => myChart && !myChart.isDisposed() && myChart.resize());
         resolve()
     })
 }
@@ -302,7 +304,10 @@ export function useDoubleLineChart(param1, param2, param3, param4) { //chartID, 
     //console.log("param1 "+param1+", param2 "+param2+", param3 "+param3+", param4 "+param4)
     return new Promise((resolve, reject) => {
         //console.log("param1 "+param1)
-        var myChart = echarts.init(document.getElementById(param1));
+        const barEl = document.getElementById(param1);
+        if (!barEl) { resolve(); return; }
+        echarts.getInstanceByDom(barEl)?.dispose();
+        var myChart = echarts.init(barEl);
         const option = {
             tooltip: {
                 trigger: 'axis',
@@ -389,6 +394,7 @@ export function useDoubleLineChart(param1, param2, param3, param4) { //chartID, 
             ],
         }
         myChart.setOption(option);
+        requestAnimationFrame(() => myChart && !myChart.isDisposed() && myChart.resize());
         resolve()
     })
 }
@@ -396,7 +402,10 @@ export function useDoubleLineChart(param1, param2, param3, param4) { //chartID, 
 export function useLineBarChart(param) {
     //console.log("  --> " + param)
     return new Promise((resolve, reject) => {
-        var myChart = echarts.init(document.getElementById(param));
+        const el = document.getElementById(param);
+        if (!el) { resolve(); return; }
+        echarts.getInstanceByDom(el)?.dispose();
+        var myChart = echarts.init(el);
         var chartData = []
         var chartBarData = []
         var chartXAxis = []
@@ -574,6 +583,7 @@ export function useLineBarChart(param) {
             ]
         }
         myChart.setOption(option);
+        requestAnimationFrame(() => myChart && !myChart.isDisposed() && myChart.resize());
         resolve()
     })
 }
@@ -653,6 +663,7 @@ export function usePieChart(param1, param2, param3) { //chart ID, green, red, pa
             },
         };
         myChart.setOption(option);
+        requestAnimationFrame(() => myChart && !myChart.isDisposed() && myChart.resize());
         resolve()
     })
 }
@@ -987,7 +998,10 @@ export function useBarChart(param1) {
 
 
         }
-        var myChart = echarts.init(document.getElementById(param1));
+        const barEl = document.getElementById(param1);
+        if (!barEl) { resolve(); return; }
+        echarts.getInstanceByDom(barEl)?.dispose();
+        var myChart = echarts.init(barEl);
         const option = {
             xAxis: {
                 type: 'category',
@@ -1074,6 +1088,7 @@ export function useBarChart(param1) {
             },
         };
         myChart.setOption(option);
+        requestAnimationFrame(() => myChart && !myChart.isDisposed() && myChart.resize());
         resolve()
     })
 }
@@ -1225,7 +1240,7 @@ export function useBarChartNegative(param1) {
                 //for group by Symbol, if open trade then ratio will be null, so no need to show on group by symbol chart
                 if (series[j] != null) {
                     list.push({ 'ratio': series[j], 'name': yAxis[j] });
-                    
+
                 }
             }
             //2) sort:
@@ -1247,7 +1262,7 @@ export function useBarChartNegative(param1) {
                 yAxis[k] = list[k].name;
                 //console.log(" yAxis k "+JSON.stringify(yAxis[k]))
             }
-            
+
 
             /*var indices = Array.from(series.keys()).sort((a, b) => series[a] > series[b])
 
@@ -1296,9 +1311,9 @@ export function useBarChartNegative(param1) {
                     type: 'shadow'
                 },
                 formatter: (params) => {
-                    if (param1 == "barChartNegative16"){
+                    if (param1 == "barChartNegative16") {
                         return params[0].name + " " + useTwoDecCurrencyFormat(params[0].value)
-                    }else{
+                    } else {
                         return useTwoDecCurrencyFormat(params[0].value)
                     }
                 }
@@ -1461,8 +1476,12 @@ export function useBarChartNegative(param1) {
         };
 
         if (series.length > 0) {
-            var myChart = echarts.init(document.getElementById(param1));
+            const barEl = document.getElementById(param1);
+            if (!barEl) { resolve(); return; }
+            echarts.getInstanceByDom(barEl)?.dispose();
+            var myChart = echarts.init(barEl);
             myChart.setOption(option);
+            requestAnimationFrame(() => myChart && !myChart.isDisposed() && myChart.resize());
         }
         resolve()
     })
@@ -1656,6 +1675,7 @@ export function useBoxPlotChart() {
             ]
         };
         myChart.setOption(option);
+        requestAnimationFrame(() => myChart && !myChart.isDisposed() && myChart.resize());
         resolve()
     })
 }
@@ -1767,6 +1787,7 @@ export function useScatterChart(param1) { //chart ID, green, red, page
             },
         };
         myChart.setOption(option);
+        requestAnimationFrame(() => myChart && !myChart.isDisposed() && myChart.resize());
         resolve()
     })
 }

@@ -1,3 +1,4 @@
+import { nextTick } from "vue";
 import { useRoute } from "vue-router";
 import { clampRangeToProfile } from './statsProfile.js'
 import { useApplyActiveAccount } from './mt5Accounts.js'
@@ -65,7 +66,8 @@ export function useInitTab(param) {
                     selectedDashTab.value = event.target.getAttribute('id')
                     console.log("selected tab " + selectedDashTab.value)
                     localStorage.setItem('selectedDashTab', event.target.getAttribute('id'))
-                    await (renderData.value += 1)
+                    renderData.value += 1
+                    await nextTick()
                     await useECharts("init")
                     //console.log("related" + event.relatedTarget) // previous active tab
                 })
@@ -920,15 +922,17 @@ export async function useMountDashboard() {
     } finally {
         spinnerLoadingPage.value = false
     }
-    await (dashboardIdMounted.value = true)
+    dashboardIdMounted.value = true
+    buildDashboardTagGroups()
+    await nextTick()
     useInitTab("dashboard")
     useInitTooltip()
-    buildDashboardTagGroups()
     await console.timeEnd("  --> Duration mount dashboard");
     if (hasData.value) {
         console.log("\nBUILDING CHARTS")
-        await (dashboardChartsMounted.value = true)
-        await (renderData.value += 1)
+        dashboardChartsMounted.value = true
+        renderData.value += 1
+        await nextTick()
         await useECharts("init")
     }
 }
@@ -956,6 +960,7 @@ export async function useRefreshDashboardData() {
     if (hasData.value) {
         dashboardChartsMounted.value = true
         renderData.value += 1
+        await nextTick()
         await useECharts("init")
     }
 }
@@ -1468,11 +1473,11 @@ export const useGetLayoutStyle = async () => {
 export const useExport = async (param1, param2, param3, param4) => {
     // Convert the JSON object to a string
     let blobData
-    let exportName = param2 
-    if (param3 != null){
+    let exportName = param2
+    if (param3 != null) {
         exportName = exportName + "_" + param3
     }
-    
+
     let exportExt
     let csvSeparation = ";"
 

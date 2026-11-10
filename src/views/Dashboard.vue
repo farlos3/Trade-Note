@@ -295,7 +295,7 @@ function renderEquityChart() {
     const el = equityChartEl.value
     const s = equitySeries.value
     if (!el || !s) return
-    if (!equityChart) equityChart = echarts.init(el)
+    equityChart = echarts.getInstanceByDom(el) || echarts.init(el)
 
     /* Vertical marks on the days money moved, same treatment as PlanVsActual.vue:
        a markLine (not an extra series) so cash flows never enter the legend or
@@ -344,16 +344,23 @@ onMounted(() => nextTick(renderEquityChart))
    burned a full re-fetch every minute even on a closed market. The slow timer is
    kept as a safety net (a missed push should cost a minute, not the session). */
 let unsubscribeJournal = null
+const handleResize = () => {
+    document.querySelectorAll('.chartClass').forEach((el) => {
+        const inst = echarts.getInstanceByDom(el)
+        if (inst && !inst.isDisposed()) inst.resize()
+    })
+}
 onMounted(() => {
     unsubscribeJournal = useJournalUpdates(useRefreshDashboardData)
     dashboardRefreshTimer = setInterval(useRefreshDashboardData, 300000)
+    window.addEventListener('resize', handleResize)
 })
 onUnmounted(() => {
     if (unsubscribeJournal) unsubscribeJournal()
     if (dashboardRefreshTimer) clearInterval(dashboardRefreshTimer)
+    window.removeEventListener('resize', handleResize)
 })
 watch([equitySeries, renderData], () => nextTick(renderEquityChart))
-if (typeof window !== 'undefined') window.addEventListener('resize', () => equityChart && equityChart.resize())
 
 
 </script>
