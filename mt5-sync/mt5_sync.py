@@ -883,7 +883,10 @@ def tradenote_up(cfg):
     launched) unless the project is actually up."""
     try:
         url = cfg.get("tradenote", "url").rstrip("/")
-        r = requests.get(url, timeout=5)
+        # A hosted TradeNote (Render's free tier) sleeps when idle and takes ~30-60 s
+        # to wake; a 5 s wait reported it "not reachable" on every run until it woke.
+        local = url.startswith(("http://localhost", "http://127.0.0.1"))
+        r = requests.get(url, timeout=5 if local else 60)
         return r.status_code < 500
     except Exception:  # noqa: BLE001 - any connection error means it's down
         return False
