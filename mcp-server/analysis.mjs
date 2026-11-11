@@ -226,7 +226,7 @@ export function findBehaviorPatterns(trades, opts = {}) {
       if (d.byVolume) reasons.push('lots')
       if (d.byLot) reasons.push('oversized')
       return {
-        date: new Date(Number(d.dateUnix) * 1000).toISOString().slice(0, 10),
+        date: dayInTz(Number(d.dateUnix), tz),
         trades: d.a.length,
         volume: round(d.vol),
         oversizedTrades: d.oversized,

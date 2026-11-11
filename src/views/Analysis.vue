@@ -299,7 +299,15 @@ function claudePayload() {
         instruction: claudeInstruction(),
         range: d.range || null,
         timezone: d.timezone || null,
-        data: { stats: d.stats || null, patterns: d.patterns || null, notes: d.notes || [] },
+        data: {
+            stats: d.stats || null,
+            patterns: d.patterns || null,
+            derived: d.derived || null,
+            notes: d.notes || [],
+            weeklyReviews: d.weeklyReviews || [],
+            diaries: d.diaries || [],
+            entryReviews: d.entryReviews || [],
+        },
     }
 }
 
@@ -447,8 +455,13 @@ const narrative = computed(() => {
 
     const overview = `${s.trades} trades · Win ${pct(s.winRate)} · Net ${money(s.netPnL)} · PF ${fmt(s.profitFactor)} · Expectancy ${money(s.expectancy)}/trade`
 
-    const wd = Object.entries(s.byWeekday || {}).sort((a, b) => a[1].net - b[1].net)
-    const hr = Object.entries(s.byEntryHour || {}).sort((a, b) => a[1].net - b[1].net)
+    const MIN_BUCKET_TRADES = 10
+    const wd = Object.entries(s.byWeekday || {})
+        .filter(([, v]) => v && v.count >= MIN_BUCKET_TRADES)
+        .sort((a, b) => a[1].net - b[1].net)
+    const hr = Object.entries(s.byEntryHour || {})
+        .filter(([, v]) => v && v.count >= MIN_BUCKET_TRADES)
+        .sort((a, b) => a[1].net - b[1].net)
     const bestWd = wd.length ? wd[wd.length - 1] : null
     const worstHr = hr.length ? hr[0] : null
 
@@ -534,7 +547,7 @@ const narrative = computed(() => {
              together on one line. Row 2 carries the resolved window and freshness,
              which are read-outs rather than controls. -->
         <div class="d-flex flex-wrap align-items-center gap-2">
-            <div class="btn-group" role="group">
+            <div class="btn-group periodGroup" role="group">
                 <button v-for="p in PERIODS" :key="p.id" type="button"
                     v-bind:class="['btn', 'btn-sm', period === p.id ? 'btn-primary' : 'btn-outline-secondary']"
                     v-on:click="period = p.id">{{ p.label }}</button>
@@ -987,6 +1000,29 @@ const narrative = computed(() => {
     font-size: 0.75rem;
     text-decoration: none;
     opacity: 0.7;
+}
+
+/* Period toggle in the theme's own tokens (same treatment as the unit toggles in
+   Plan.vue) instead of Bootstrap's stock #0d6efd / outline-secondary grey. */
+.periodGroup .btn {
+    background-color: var(--black-bg-7);
+    border-color: var(--border-strong);
+    color: var(--white-60);
+    box-shadow: none;
+    transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.periodGroup .btn:hover {
+    color: var(--white-87);
+    background-color: var(--surface-hover);
+}
+
+.periodGroup .btn.btn-primary {
+    background-color: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+    /* keep the selected button's accent border above its neighbours' borders */
+    z-index: 1;
 }
 
 .rangeSummary {

@@ -581,6 +581,7 @@ const setupApiRoutes = (app) => {
                 meta: { fingerprint },
                 stats,
                 patterns,
+                derived: deriveMetrics(stats, patterns),
                 daily: computeDailyBreakdown(trades, tz), // per-day P&L: plan target vs reality
                 notes,
                 weeklyReviews,

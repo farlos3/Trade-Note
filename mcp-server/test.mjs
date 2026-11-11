@@ -62,13 +62,25 @@ check('holding ratio > 1', b.holdingTimeBias.ratio > 1)
 const mkDay = (iso, n) => ({
   dateUnix: U(iso + 'T00:00:00Z'),
   trades: Array.from({ length: n }, (_, i) =>
-    mk({ id: `${iso}-${i}`, entry: `${iso}T1${i}:00:00Z`, exit: `${iso}T1${i}:05:00Z`, net: 5, size: 1 })),
+    mk({ id: `${iso}-${i}`, entry: `${iso}T1${i}:00:00Z`, exit: `${iso}T1${i}:05:00Z`, net: 5, size: 0.01 })),
 })
 const multi = flattenTrades([mkDay('2026-02-02', 5), mkDay('2026-02-03', 1), mkDay('2026-02-04', 1)])
 const b2 = findBehaviorPatterns(multi, { tz: 'UTC' })
 check('overtrading median 1', b2.overtrading.medianTradesPerDay === 1)
 check('overtrading flags 1 day (the 5-trade day)', b2.overtrading.flaggedDays === 1)
 check('overtrading flagged day has 5 trades', b2.overtrading.days[0]?.trades === 5)
+
+// Start-of-day 2026-11-10 in Asia/Bangkok is 2026-11-09T17:00:00Z.
+// Formatting in UTC used to shift the flagged date back to 2026-11-09.
+const bkkDay = {
+  dateUnix: U('2026-11-09T17:00:00Z'),
+  trades: Array.from({ length: 5 }, (_, i) =>
+    mk({ id: `bkk-${i}`, entry: `2026-11-10T0${i + 1}:00:00Z`, exit: `2026-11-10T0${i + 1}:05:00Z`, net: 5, size: 0.01 })),
+}
+const bkkMulti = flattenTrades([bkkDay, mkDay('2026-11-02', 1), mkDay('2026-11-03', 1)])
+const bkkPatterns = findBehaviorPatterns(bkkMulti, { tz: 'Asia/Bangkok' })
+check('overtrading date respects trade timezone (Asia/Bangkok -> 2026-11-10, not 2026-11-09)',
+  bkkPatterns.overtrading.days[0]?.date === '2026-11-10')
 
 // --- Daily breakdown (plan vs actual) ---
 const daily1 = computeDailyBreakdown(trades)
