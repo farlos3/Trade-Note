@@ -179,5 +179,41 @@ check('pathwise drawdown ordering 0 <= P50 DD <= P90 DD <= 100',
     recentWeightedFc.maxDrawdownP50Pct <= recentWeightedFc.maxDrawdownP90Pct &&
     recentWeightedFc.maxDrawdownP90Pct <= 100)
 
+// 9. Pre-deposit tiny balance guard & Recent mode P50 stability
+const preDepositDaily = [
+    { date: '2026-10-20', net: -9, trades: 1 },
+    { date: '2026-10-21', net: 3, trades: 1 },
+    { date: '2026-10-26', net: 18, trades: 1 },
+    { date: '2026-10-29', net: -40, trades: 2 },
+    { date: '2026-11-02', net: 85, trades: 2 },
+    { date: '2026-11-04', net: -15, trades: 1 },
+    { date: '2026-11-05', net: 12, trades: 1 },
+    { date: '2026-11-06', net: -12, trades: 1 },
+    { date: '2026-11-09', net: 18, trades: 1 },
+    { date: '2026-11-10', net: -5, trades: 1 },
+    { date: '2026-11-11', net: 22, trades: 1 },
+    { date: '2026-11-13', net: 20, trades: 1 },
+]
+const preDepositEq = reconstructActualSeries({
+    daily: preDepositDaily,
+    cashFlows: [{ type: 'deposit', t: unixOf('2026-10-21'), amount: 100 }],
+    liveBalance: 200,
+    tz: 'UTC',
+    today: '2026-11-14',
+})
+const preDepositSummary = analyzeDailyResults(preDepositDaily, preDepositEq.openingByDate, preDepositEq.currentBalance)
+const preDepositFc = buildGrowthForecast({
+    summary: preDepositSummary,
+    currentBalance: preDepositEq.currentBalance,
+    horizonMonths: 3,
+    mode: 'compound',
+    paceBasis: 'recent',
+    anchorDate: '2026-11-14',
+})
+check('pre-deposit tiny balance does not inject -80%+ artifact row',
+    preDepositSummary.rows[0].pct > -0.25)
+check('recent mode P50 remains profitable on positive recent regime',
+    preDepositFc.endP50 > preDepositEq.currentBalance && preDepositFc.endP10 <= preDepositFc.endP50)
+
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILED'}`)
 process.exit(failures === 0 ? 0 : 1)

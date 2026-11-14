@@ -284,8 +284,11 @@ export function analyzeDailyResults(daily = [], openingByDate = null, fallbackBa
     const rows = sorted.map((d) => {
         const net = Number(d.net) || 0
         const baseRaw = openingByDate instanceof Map ? openingByDate.get(d.date) : null
-        // Guard against division by tiny/zero residual balance before an account reset
-        const isTinyArtifact = baseRaw != null && baseRaw > 0 && baseRaw < 10 && Math.abs(net) > baseRaw * 5
+        // Guard against division by tiny pre-deposit / pre-reset residual balance
+        const isTinyArtifact = baseRaw != null && baseRaw > 0 && (
+            (baseRaw < 10 && Math.abs(net) > baseRaw * 5) ||
+            (fb > 0 && baseRaw < fb * 0.1 && Math.abs(net) >= baseRaw * 0.5)
+        )
         const base = (baseRaw > 0 && !isTinyArtifact) ? baseRaw : (fb > 0 ? fb : null)
         const usableBase = base != null && base > 0 ? base : null
         const pct = usableBase != null ? net / usableBase : null
@@ -338,6 +341,7 @@ export function analyzeDailyResults(daily = [], openingByDate = null, fallbackBa
     let medianPct = null
     let geoMeanPct = null
     let recentMeanPct = null
+    let recentGeoMeanPct = null
     if (pctRows.length) {
         const pcts = pctRows.map((r) => r.pct)
         meanPct = (pcts.reduce((s, v) => s + v, 0) / pcts.length) * 100
@@ -349,6 +353,8 @@ export function analyzeDailyResults(daily = [], openingByDate = null, fallbackBa
 
         const recentPctRows = pctRows.slice(-Math.min(recentCount, pctRows.length))
         recentMeanPct = (recentPctRows.reduce((s, r) => s + r.pct, 0) / recentPctRows.length) * 100
+        const recentLogSum = recentPctRows.reduce((s, r) => s + Math.log(Math.max(1e-6, 1 + r.pct)), 0)
+        recentGeoMeanPct = (Math.exp(recentLogSum / recentPctRows.length) - 1) * 100
     }
 
     // Actual trading cadence across calendar weeks
@@ -392,6 +398,7 @@ export function analyzeDailyResults(daily = [], openingByDate = null, fallbackBa
         medianPct,
         geoMeanPct,
         recentMeanPct,
+        recentGeoMeanPct,
         firstDate,
         lastDate,
         calendarSpanDays,
@@ -486,12 +493,18 @@ export function buildGrowthForecast({
     const costPerCalDay = includeCosts && Number(monthlyCost) > 0 ? Number(monthlyCost) / DAYS_PER_MONTH : 0
     const activeRatio = Math.min(1, Math.max(0.05, Number(summary.activeDayRatio) || 1))
 
-    // Pick central tendency pace for expected trajectory
+    // Pick central tendency pace for expected trajectory.
+    // Compounding multiplies (1 + r), so expected growth aligns with geometric mean (log-return average),
+    // avoiding arithmetic-mean overstatement on volatile histories.
     const pacePct = paceBasis === 'median'
-        ? (summary.medianPct ?? summary.meanPct ?? 0)
+        ? (summary.medianPct ?? summary.geoMeanPct ?? summary.meanPct ?? 0)
         : paceBasis === 'recent'
-            ? (summary.recentMeanPct ?? summary.meanPct ?? 0)
-            : (summary.meanPct ?? 0)
+            ? (effectiveMode === 'compound'
+                ? (summary.recentGeoMeanPct ?? summary.recentMeanPct ?? summary.geoMeanPct ?? 0)
+                : (summary.recentMeanPct ?? summary.meanPct ?? 0))
+            : (effectiveMode === 'compound'
+                ? (summary.geoMeanPct ?? summary.meanPct ?? 0)
+                : (summary.meanPct ?? 0))
 
     const paceDollar = paceBasis === 'median'
         ? summary.medianNet
@@ -536,7 +549,7 @@ export function buildGrowthForecast({
 
     // Stationary Block Bootstrap over full chronological pool:
     // - Keeps all historical days so tail loss risk is never silently discarded
-    // - In 'recent' mode, weights block starts toward recent sessions via exponential decay
+    // - In 'recent' mode, concentrates ~90% mass in the recent window while retaining ~10% tail mass
     // - Advances blocks across active trading sessions to preserve win/loss streaks
     const pool = summary.rows.map((r) => ({
         net: r.net,
@@ -548,7 +561,7 @@ export function buildGrowthForecast({
     const avgBlockDays = M <= 1 ? 1 : Math.max(2, Math.min(5, Math.round(Math.cbrt(M))))
     const pContinue = avgBlockDays > 1 ? 1 - (1 / avgBlockDays) : 0
     const timeWeighted = paceBasis === 'recent' && M >= 6
-    const halfLife = Math.max(4, Math.min(20, summary.recentCount || 10))
+    const halfLife = Math.max(2, (summary.recentCount || 6) / 3.5)
     const startCdf = buildWeightedCdf(M, timeWeighted, halfLife)
 
     const K = futureWeekdays.length

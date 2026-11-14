@@ -339,6 +339,7 @@ const planAtForecastEnd = computed(() => {
 
 /* ---- Selected pace label helpers ---- */
 const activePacePct = computed(() => {
+    if (forecast.value?.effectiveMode === 'compound') return forecast.value.pacePct
     if (!summary.value) return null
     if (paceBasis.value === 'median') return summary.value.medianPct
     if (paceBasis.value === 'recent') return summary.value.recentMeanPct
@@ -585,13 +586,9 @@ function renderChart() {
         rawPlan = [...histPlan, ...futPlan]
     }
 
-    // Confidence band in transformed coordinates so symlog renders exact shaded span
-    const bandBaseData = rawP10.map(txVal)
-    const bandSpanData = rawP90.map((v90, i) => {
-        const v10 = rawP10[i]
-        if (v90 == null || v10 == null) return null
-        return txVal(v90) - txVal(v10)
-    })
+    const p10Tx = txArr(rawP10)
+    const p50Tx = txArr(rawP50)
+    const p90Tx = txArr(rawP90)
 
     const todayMark = {
         xAxis: todayDateLabel,
@@ -605,33 +602,38 @@ function renderChart() {
     if (showBand.value) {
         series.push(
             {
-                name: '_bandBase',
-                type: 'line',
-                stack: 'confBand',
-                data: bandBaseData,
-                showSymbol: false,
-                silent: true,
-                lineStyle: { opacity: 0 },
-                tooltip: { show: false },
-                z: 1,
-            },
-            {
                 name: 'P10–P90 range',
-                type: 'line',
-                stack: 'confBand',
-                data: bandSpanData,
-                showSymbol: false,
+                type: 'custom',
                 silent: true,
-                lineStyle: { opacity: 0 },
-                areaStyle: { color: 'rgba(0, 202, 115, 0.14)' },
+                clip: true,
+                tooltip: { show: false },
+                encode: { x: 0, y: 1 },
+                data: [[todayIdx, txVal(anchorVal)]],
+                renderItem: (_params, api) => {
+                    const upper = []
+                    const lower = []
+                    for (let i = todayIdx; i < dates.length; i++) {
+                        const y90 = p90Tx[i]
+                        const y10 = p10Tx[i]
+                        if (y90 == null || y10 == null) continue
+                        upper.push(api.coord([i, y90]))
+                        lower.push(api.coord([i, y10]))
+                    }
+                    if (upper.length < 2) return null
+                    return {
+                        type: 'polygon',
+                        shape: { points: [...upper, ...lower.reverse()] },
+                        style: { fill: 'rgba(0, 202, 115, 0.14)' },
+                    }
+                },
                 z: 1,
             },
             {
                 name: 'Optimistic (P90)',
                 type: 'line',
-                data: txArr(rawP90),
+                data: p90Tx,
                 showSymbol: false,
-                smooth: true,
+                smooth: false,
                 lineStyle: { color: P90_COLOR, width: 1.2, type: 'dotted', opacity: 0.75 },
                 itemStyle: { color: P90_COLOR },
                 z: 2,
@@ -639,9 +641,9 @@ function renderChart() {
             {
                 name: 'Median (P50)',
                 type: 'line',
-                data: txArr(rawP50),
+                data: p50Tx,
                 showSymbol: false,
-                smooth: true,
+                smooth: false,
                 lineStyle: { color: P50_COLOR, width: 1.5, type: 'dotted', opacity: 0.85 },
                 itemStyle: { color: P50_COLOR },
                 z: 2,
@@ -649,9 +651,9 @@ function renderChart() {
             {
                 name: 'Conservative (P10)',
                 type: 'line',
-                data: txArr(rawP10),
+                data: p10Tx,
                 showSymbol: false,
-                smooth: true,
+                smooth: false,
                 lineStyle: { color: P10_COLOR, width: 1.2, type: 'dotted', opacity: 0.75 },
                 itemStyle: { color: P10_COLOR },
                 z: 2,
