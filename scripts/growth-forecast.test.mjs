@@ -145,5 +145,39 @@ const oneDayForecast = buildGrowthForecast({
 check('single traded day produces valid forecast with sampleConfidence=low',
     oneDaySummary.sampleConfidence === 'low' && oneDayForecast.endExpected > 500 && oneDayForecast.endP10 === oneDayForecast.endP90)
 
+// 8. Stationary Block Bootstrap metadata, time-weighted recent tail retention & drawdown quantiles
+const streakDaily = [
+    { date: '2026-04-01', net: -250, trades: 2 },
+    { date: '2026-04-02', net: -150, trades: 2 },
+    { date: '2026-04-03', net: -100, trades: 1 },
+    { date: '2026-04-06', net: 40, trades: 1 },
+    { date: '2026-04-07', net: 50, trades: 1 },
+    { date: '2026-04-08', net: 45, trades: 1 },
+    { date: '2026-04-09', net: 60, trades: 1 },
+    { date: '2026-04-10', net: 55, trades: 1 },
+    { date: '2026-04-13', net: 70, trades: 1 },
+    { date: '2026-04-14', net: 65, trades: 1 },
+]
+const streakSummary = analyzeDailyResults(streakDaily, null, 1000)
+const recentWeightedFc = buildGrowthForecast({
+    summary: streakSummary,
+    currentBalance: 1000,
+    horizonMonths: 3,
+    mode: 'compound',
+    paceBasis: 'recent',
+    anchorDate: '2026-04-14',
+})
+check('default simCount is 1000 with stationary-block metadata',
+    recentWeightedFc.bootstrapMeta?.method === 'stationary-block' &&
+    recentWeightedFc.bootstrapMeta?.simCount === 1000 &&
+    recentWeightedFc.bootstrapMeta?.avgBlockDays >= 2 &&
+    recentWeightedFc.bootstrapMeta?.timeWeighted === true)
+check('recent mode retains old tail losses via time-weighting (probProfit < 100 & P90 DD > 0)',
+    recentWeightedFc.probProfit < 100 && recentWeightedFc.maxDrawdownP90Pct > 0)
+check('pathwise drawdown ordering 0 <= P50 DD <= P90 DD <= 100',
+    recentWeightedFc.maxDrawdownP50Pct >= 0 &&
+    recentWeightedFc.maxDrawdownP50Pct <= recentWeightedFc.maxDrawdownP90Pct &&
+    recentWeightedFc.maxDrawdownP90Pct <= 100)
+
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILED'}`)
 process.exit(failures === 0 ? 0 : 1)

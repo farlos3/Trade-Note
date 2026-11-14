@@ -231,7 +231,7 @@ const forecast = computed(() => {
         includeCosts: includeCosts.value,
         goalBalance: goalBalance.value,
         anchorDate: equity.value?.anchorDate || todayIso.value,
-        simCount: 400,
+        simCount: 1000,
         planAtDate: showPlanOverlay.value ? planCurveLookup.value : null,
     })
 })
@@ -254,7 +254,7 @@ const paceScenarios = computed(() => {
             monthlyCost: monthlyCost.value || 0,
             includeCosts: includeCosts.value,
             anchorDate: equity.value?.anchorDate || todayIso.value,
-            simCount: 200,
+            simCount: 400,
         })
         return { ...item, forecast: f }
     })
@@ -974,13 +974,15 @@ watch([equity, forecast, chartMode, yScale, showBand, showPlanOverlay, paceBasis
                         </div>
                     </div>
 
-                    <div class="statTile">
+                    <div class="statTile"
+                        :title="`Median max drawdown: ${fmt(forecast.maxDrawdownP50Pct, 1)}% · Worst-10% path drawdown: ${fmt(forecast.maxDrawdownP90Pct, 1)}%`">
                         <div class="statLabel">P10 – P90 Range</div>
                         <div class="statValue rangeValue">
                             {{ fmtCompact(forecast.endP10) }} → {{ fmtCompact(forecast.endP90) }}
                         </div>
                         <div class="statSub">
-                            P50 {{ fmtCompact(forecast.endP50) }} · {{ fmt(forecast.probProfit, 0) }}% win chance
+                            P50 {{ fmtCompact(forecast.endP50) }} · {{ fmt(forecast.probProfit, 0) }}% win · DD₉₀
+                            {{ fmt(forecast.maxDrawdownP90Pct, 1) }}%
                         </div>
                     </div>
 
@@ -1143,8 +1145,11 @@ watch([equity, forecast, chartMode, yScale, showBand, showPlanOverlay, paceBasis
 
                 <p class="txt-small text-muted mt-3 mb-0">
                     <i class="uil uil-info-circle me-1"></i>
-                    Forecast resamples your real daily results at your historical cadence ({{ fmt(summary.tradedDaysPerWeek, 1) }}
-                    traded days/week, skipping weekends). Compounding % scales with balance; Fixed $/day assumes constant size.
+                    Stationary Block Bootstrap ({{ forecast.bootstrapMeta?.simCount.toLocaleString() }} paths, avg
+                    {{ forecast.bootstrapMeta?.avgBlockDays }}d streak blocks<template
+                        v-if="forecast.bootstrapMeta?.timeWeighted">, time-weighted toward recent days</template>)
+                    at {{ fmt(summary.tradedDaysPerWeek, 1) }} traded days/week, skipping weekends.
+                    Compounding % scales with balance; Fixed $/day assumes constant size.
                 </p>
             </template>
         </div>

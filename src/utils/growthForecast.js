@@ -406,10 +406,45 @@ export function analyzeDailyResults(daily = [], openingByDate = null, fallbackBa
 }
 
 /**
+ * Build normalized cumulative distribution function for weighted block-start sampling.
+ */
+function buildWeightedCdf(length, recentWeighted, halfLife) {
+    const cdf = new Float64Array(length)
+    if (length === 0) return cdf
+    if (!recentWeighted || length < 6) {
+        for (let i = 0; i < length; i++) cdf[i] = (i + 1) / length
+        return cdf
+    }
+    const lambda = Math.LN2 / Math.max(2, halfLife)
+    let sum = 0
+    for (let i = 0; i < length; i++) {
+        const age = length - 1 - i
+        sum += Math.exp(-lambda * age)
+        cdf[i] = sum
+    }
+    for (let i = 0; i < length; i++) cdf[i] /= sum
+    cdf[length - 1] = 1
+    return cdf
+}
+
+function sampleCdfIndex(cdf, u) {
+    let lo = 0
+    let hi = cdf.length - 1
+    while (lo < hi) {
+        const mid = (lo + hi) >>> 1
+        if (u <= cdf[mid]) hi = mid
+        else lo = mid + 1
+    }
+    return lo
+}
+
+/**
  * Project future equity growth from actual daily results using:
  * 1) A deterministic expected trajectory (Compound % or Fixed $/day, using Mean / Median / Recent pace)
- * 2) A deterministic seeded bootstrap simulation (P10 / P50 / P90 confidence fan)
- *    respecting actual trading-day frequency (`activeDayRatio`) and optional fixed monthly cost drag.
+ * 2) A deterministic seeded Stationary Block Bootstrap simulation (P10 / P50 / P90 confidence fan
+ *    plus pathwise P50/P90 Max Drawdown) preserving winning/losing streaks, actual trading-day
+ *    frequency (`activeDayRatio`), exponential time-weighting for `recent` pace, and optional fixed
+ *    monthly cost drag.
  */
 export function buildGrowthForecast({
     summary,
@@ -421,7 +456,7 @@ export function buildGrowthForecast({
     includeCosts = true,
     goalBalance = null,
     anchorDate = null,
-    simCount = 400,
+    simCount = 1000,
     planAtDate = null,
 } = {}) {
     if (!summary || !summary.rows || !summary.rows.length) return null
@@ -499,36 +534,50 @@ export function buildGrowthForecast({
         }
     }
 
-    // Bootstrap pool: for 'recent' basis, weight recent rows slightly more by sampling
-    // from the recent slice if >= 5 days, else full pool; for mean/median, full pool.
-    const baseRows = paceBasis === 'recent' && summary.rows.length >= 6
-        ? summary.rows.slice(-summary.recentCount)
-        : summary.rows
-    const pool = baseRows.map((r) => ({
+    // Stationary Block Bootstrap over full chronological pool:
+    // - Keeps all historical days so tail loss risk is never silently discarded
+    // - In 'recent' mode, weights block starts toward recent sessions via exponential decay
+    // - Advances blocks across active trading sessions to preserve win/loss streaks
+    const pool = summary.rows.map((r) => ({
         net: r.net,
-        // Cap single-day compounding return at reasonable bounds if base was tiny, fallback to currentBalance
         pct: r.pct != null && Number.isFinite(r.pct)
             ? Math.max(-0.99, r.pct)
             : (startBal > 0 ? Math.max(-0.99, r.net / startBal) : 0),
     }))
+    const M = pool.length
+    const avgBlockDays = M <= 1 ? 1 : Math.max(2, Math.min(5, Math.round(Math.cbrt(M))))
+    const pContinue = avgBlockDays > 1 ? 1 - (1 / avgBlockDays) : 0
+    const timeWeighted = paceBasis === 'recent' && M >= 6
+    const halfLife = Math.max(4, Math.min(20, summary.recentCount || 10))
+    const startCdf = buildWeightedCdf(M, timeWeighted, halfLife)
 
     const K = futureWeekdays.length
-    const N = Math.max(50, Math.min(1000, Math.floor(simCount)))
+    const N = Math.max(50, Math.min(3000, Math.floor(simCount)))
     const seed = (summary.tradedDays * 1009) ^ Math.round(summary.totalNet * 100) ^ (months * 37) ^ (paceBasis.length * 131)
     const rand = mulberry32(seed)
 
     // Column-major matrix of simulated balances at step t so percentiles sort cleanly
     const cols = Array.from({ length: K }, () => new Float64Array(N))
+    const pathMaxDdPct = new Float64Array(N)
     let profitPaths = 0
     let goalPaths = 0
 
     for (let s = 0; s < N; s++) {
         let bal = startBal
+        let peakBal = startBal
+        let maxDdPct = 0
         let hitGoal = goal != null && startBal >= goal
+        let blockIdx = -1
+
         for (let t = 0; t < K; t++) {
             const costHere = costPerCalDay * calDeltas[t]
             if (rand() < activeRatio) {
-                const sample = pool[Math.floor(rand() * pool.length)]
+                if (blockIdx >= 0 && pContinue > 0 && rand() < pContinue) {
+                    blockIdx = (blockIdx + 1) % M
+                } else {
+                    blockIdx = sampleCdfIndex(startCdf, rand())
+                }
+                const sample = pool[blockIdx]
                 if (effectiveMode === 'compound') {
                     bal = Math.max(0, bal * Math.max(0, 1 + sample.pct) - costHere)
                 } else {
@@ -537,12 +586,25 @@ export function buildGrowthForecast({
             } else if (costHere > 0) {
                 bal = effectiveMode === 'compound' ? Math.max(0, bal - costHere) : bal - costHere
             }
+
+            if (bal > peakBal) {
+                peakBal = bal
+            } else if (peakBal > 0) {
+                const ddPct = ((peakBal - bal) / peakBal) * 100
+                if (ddPct > maxDdPct) maxDdPct = ddPct
+            }
+
             cols[t][s] = bal
             if (goal != null && !hitGoal && bal >= goal) hitGoal = true
         }
+        pathMaxDdPct[s] = maxDdPct
         if (bal > startBal) profitPaths++
         if (hitGoal) goalPaths++
     }
+
+    const sortedDd = Array.from(pathMaxDdPct).sort((a, b) => a - b)
+    const maxDrawdownP50Pct = round(quantileOf(sortedDd, 0.50), 1)
+    const maxDrawdownP90Pct = round(quantileOf(sortedDd, 0.90), 1)
 
     const p10Equity = new Array(K)
     const p50Equity = new Array(K)
@@ -625,5 +687,13 @@ export function buildGrowthForecast({
         probProfit: round((profitPaths / N) * 100, 1),
         probGoal: goal != null ? round((goalPaths / N) * 100, 1) : null,
         expectedGoalEta,
+        maxDrawdownP50Pct,
+        maxDrawdownP90Pct,
+        bootstrapMeta: {
+            method: 'stationary-block',
+            simCount: N,
+            avgBlockDays,
+            timeWeighted,
+        },
     }
 }
