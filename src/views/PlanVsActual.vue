@@ -12,29 +12,30 @@ import PlanCostsEditor from '../components/PlanCostsEditor.vue'
 import FpDate from '../components/FpDate.vue'
 import PlanLotSizing from '../components/PlanLotSizing.vue'
 import { activePlan } from '../utils/planStore'
-import { numOrNull, buildProjection, tierRateResolver, lotForDollars, floorLot, LOT_STEP, fmt, pnlClass } from '../utils/planMath'
+import {
+    numOrNull, buildProjection, tierRateResolver, lotForDollars, floorLot,
+    LOT_STEP, fmt, fmtCompact, pnlClass,
+} from '../utils/planMath'
+import { reconstructActualSeries, analyzeDailyResults, buildGrowthForecast } from '../utils/growthForecast'
 import { useJournalUpdates } from '../utils/journalStream'
 import { useAuthHeaders } from '../utils/apiAuth'
 import { clampFromDate } from '../utils/statsProfile'
 import { activeAccount, useScopedMt5Balance, useScopedMt5CashFlows } from '../utils/mt5Accounts'
 
-/* Everything here reads from the active plan (see PlanSelector) — the same
-   plan you edit on the Trading Plan page, including its deposits. */
+/* ---- Active plan (optional benchmark + fixed costs + goal) ---- */
 const start = computed(() => numOrNull(activePlan.value.startBalance))
-const months = computed(() => {
+const planMonths = computed(() => {
     const n = numOrNull(activePlan.value.horizonMonths)
     return n != null && n >= 1 && n <= 120 ? Math.floor(n) : null
 })
 const target = computed(() => numOrNull(activePlan.value.dailyPct))
-/* The plan can be set in % per day or a flat $ per day (see Plan.vue). Both pages
-   read the same plan, so this page has to honour the mode too -- otherwise the
-   same plan draws one line here and a different one there. */
+const goalBalance = computed(() => numOrNull(activePlan.value.goalBalance))
 const isAmountMode = computed(() => activePlan.value.targetMode === 'amount')
 const dailyAmount = computed(() => numOrNull(activePlan.value.dailyAmount))
 const projectionOptions = computed(() =>
     isAmountMode.value && dailyAmount.value > 0 ? { dailyAmount: dailyAmount.value } : {})
-// "Is a target set at all", whichever unit it is in.
-const hasTarget = computed(() => isAmountMode.value ? dailyAmount.value > 0 : target.value != null)
+const hasTarget = computed(() =>
+    isAmountMode.value ? dailyAmount.value > 0 : (target.value != null || hasTiers.value))
 const startDate = computed(() => activePlan.value.startDate)
 const deposits = computed(() => activePlan.value.deposits)
 const withdrawals = computed(() => activePlan.value.withdrawals || [])
@@ -45,18 +46,19 @@ const hasTiers = computed(() =>
 
 /* ---- Real per-day P&L from the journal ---- */
 const PERIODS = [
-    { id: '7d', label: '7 days' },
-    { id: '30d', label: '30 days' },
-    { id: '90d', label: '90 days' },
+    { id: '7d', label: '7D' },
+    { id: '30d', label: '30D' },
+    { id: '90d', label: '90D' },
     { id: 'all', label: 'All' },
 ]
-const period = ref('30d')
+const period = ref(localStorage.getItem('planVsActualPeriod') || '30d')
+if (!PERIODS.some((p) => p.id === period.value)) period.value = '30d'
+watch(period, (v) => localStorage.setItem('planVsActualPeriod', v))
+
 const loading = ref(false)
 const error = ref(null)
 const daily = ref(null)
 
-// Profile start (unix) as a YYYY-MM-DD date in the trade timezone, which is the
-// shape these endpoints take.
 const isoFromUnix = (u) => dayjs.unix(u).tz(timeZoneTrade.value || 'UTC').format('YYYY-MM-DD')
 
 function rangeFor(p) {
@@ -71,8 +73,6 @@ async function load() {
     try {
         const { from, to } = rangeFor(period.value)
         const params = { tz: timeZoneTrade.value || 'UTC', account: activeAccount.value }
-        // The stats profile floors the window, so a profile that starts today
-        // keeps pre-reset trades out even under the "All" period.
         const flooredFrom = clampFromDate(from, isoFromUnix)
         if (flooredFrom) params.from = flooredFrom
         if (to) params.to = to
@@ -86,43 +86,53 @@ async function load() {
     }
 }
 
-// Pull the real account's traded P&L automatically — on open and whenever the
-// period changes — so "actual" always reflects the live journal without a click.
 onMounted(load)
 watch(period, load)
+watch(activeAccount, load)
 
-// ...and again whenever the journal itself moves, so a page left open doesn't keep
-// comparing the plan against a stale "actual".
 let unsubscribeJournal = null
 onMounted(() => { unsubscribeJournal = useJournalUpdates(load) })
 onBeforeUnmount(() => { if (unsubscribeJournal) unsubscribeJournal() })
 
-const actual = computed(() => {
-    if (!daily.value || !daily.value.length) return null
-    const totalNet = daily.value.reduce((s, d) => s + d.net, 0)
-    const avgDailyNet = totalNet / daily.value.length
-    return {
-        tradedDays: daily.value.length,
-        winDays: daily.value.filter((d) => d.net > 0).length,
-        totalNet,
-        avgDailyNet,
-        pctPerDay: start.value > 0 ? (avgDailyNet / start.value) * 100 : null,
-    }
-})
+/* ---- Forecast controls (persisted in localStorage) ---- */
+const HORIZONS = [1, 3, 6, 12]
+const forecastMonths = ref(Number(localStorage.getItem('planForecastMonths')) || 3)
+if (![1, 3, 6, 12].includes(forecastMonths.value) && !(forecastMonths.value >= 1 && forecastMonths.value <= 120)) {
+    forecastMonths.value = 3
+}
+watch(forecastMonths, (v) => localStorage.setItem('planForecastMonths', String(v)))
 
-/* ---- Running cost of the operation ------------------------------------------
- *
- * Hosting, the VPS the terminal runs on, data feeds: money that leaves every month
- * whether or not a trade is taken. It never shows up in the account's own cash
- * flows because it is paid from somewhere else, so without this the page reports a
- * profit the operation as a whole did not actually make.
- *
- * Charged over CALENDAR time, not traded days -- the bill arrives whether the
- * market was open or not. The span used is first traded day to last, inclusive,
- * which is the window the actual figures already describe and works for the "All"
- * period where there is no explicit from/to.
- */
-const DAYS_PER_MONTH = 30.4375   // 365.25 / 12, so a year of months sums to a year
+const FORECAST_MODES = [
+    { id: 'compound', label: 'Compound (%)' },
+    { id: 'linear', label: 'Fixed ($/day)' },
+]
+const forecastMode = ref(localStorage.getItem('planForecastMode') || 'compound')
+if (!FORECAST_MODES.some((m) => m.id === forecastMode.value)) forecastMode.value = 'compound'
+watch(forecastMode, (v) => localStorage.setItem('planForecastMode', v))
+
+const PACE_BASES = [
+    { id: 'mean', label: 'Average' },
+    { id: 'median', label: 'Median' },
+    { id: 'recent', label: 'Recent' },
+]
+const paceBasis = ref(localStorage.getItem('planForecastPace') || 'mean')
+if (!PACE_BASES.some((b) => b.id === paceBasis.value)) paceBasis.value = 'mean'
+watch(paceBasis, (v) => localStorage.setItem('planForecastPace', v))
+
+const showBand = ref(localStorage.getItem('planForecastShowBand') !== 'false')
+watch(showBand, (v) => localStorage.setItem('planForecastShowBand', String(v)))
+
+const includeCosts = ref(localStorage.getItem('planForecastIncludeCosts') !== 'false')
+watch(includeCosts, (v) => localStorage.setItem('planForecastIncludeCosts', String(v)))
+
+const showPlanOverlay = ref(localStorage.getItem('planForecastShowPlan') !== 'false')
+watch(showPlanOverlay, (v) => localStorage.setItem('planForecastShowPlan', String(v)))
+
+const showPlanConfig = ref(localStorage.getItem('planForecastConfigOpen') === 'true')
+watch(showPlanConfig, (v) => localStorage.setItem('planForecastConfigOpen', String(v)))
+
+/* ---- Running cost of the operation ---- */
+const DAYS_PER_MONTH = 30.4375
 
 const monthlyCost = computed(() => {
     const rows = Array.isArray(activePlan.value.fixedCosts) ? activePlan.value.fixedCosts : []
@@ -133,204 +143,166 @@ const monthlyCost = computed(() => {
     return total > 0 ? total : null
 })
 
-const costSpanDays = computed(() => {
-    if (!daily.value || !daily.value.length) return null
-    const first = dayjs(daily.value[0].date)
-    const last = dayjs(daily.value[daily.value.length - 1].date)
-    if (!first.isValid() || !last.isValid()) return null
-    return last.diff(first, 'day') + 1   // inclusive: one traded day is one day, not zero
+/* ---- Plan curve lookup (spans both history & future forecast) ---- */
+const todayIso = computed(() => dayjs().tz(timeZoneTrade.value || 'UTC').format('YYYY-MM-DD'))
+
+const planCurveLookup = computed(() => {
+    if (!(start.value > 0) || !hasTarget.value || !startDate.value) return null
+    const horizonEnd = dayjs(todayIso.value).add(forecastMonths.value, 'month')
+    const monthsNeeded = Math.max(
+        1,
+        planMonths.value || 1,
+        horizonEnd.diff(dayjs(startDate.value), 'month') + 2,
+    )
+    const proj = buildProjection(
+        start.value,
+        target.value == null ? 0 : target.value,
+        Math.min(120, monthsNeeded),
+        deposits.value,
+        startDate.value,
+        isAmountMode.value ? [] : tiers.value,
+        withdrawals.value,
+        projectionOptions.value,
+    )
+    const days = proj.days || []
+    return (date) => {
+        if (!days.length || date < days[0].date) return start.value
+        let best = days[0]
+        for (const d of days) {
+            if (d.date > date) break
+            best = d
+        }
+        return best.closing
+    }
 })
 
+/* ---- Reconstructed historical equity & cash flows ---- */
+const liveMt5Balance = computed(() => useScopedMt5Balance())
+
+const equity = computed(() => {
+    if (!daily.value || !daily.value.length) return null
+    return reconstructActualSeries({
+        daily: daily.value,
+        cashFlows: useScopedMt5CashFlows(),
+        liveBalance: liveMt5Balance.value,
+        startBalance: start.value,
+        tz: timeZoneTrade.value || 'UTC',
+        today: todayIso.value,
+        planAtDate: showPlanOverlay.value ? planCurveLookup.value : null,
+    })
+})
+
+const balanceNow = computed(() => {
+    if (Number.isFinite(liveMt5Balance.value)) return liveMt5Balance.value
+    return equity.value ? equity.value.currentBalance : null
+})
+
+const realBalance = computed(() => {
+    const mt5 = liveMt5Balance.value
+    if (Number.isFinite(mt5) && mt5 > 0) return { value: mt5, source: 'MT5 balance' }
+    if (balanceNow.value != null && balanceNow.value > 0) return { value: balanceNow.value, source: 'journal equity' }
+    if (start.value > 0) return { value: start.value, source: 'plan start balance' }
+    return null
+})
+
+/* ---- Empirical daily results analysis ---- */
+const summary = computed(() => {
+    if (!daily.value || !daily.value.length) return null
+    const fallback = realBalance.value ? realBalance.value.value : start.value
+    return analyzeDailyResults(daily.value, equity.value?.openingByDate, fallback)
+})
+
+const canCompound = computed(() => {
+    const bal = balanceNow.value
+    return bal != null && bal > 0 && summary.value?.meanPct != null
+})
+
+/* ---- Main forward growth forecast ---- */
+const forecast = computed(() => {
+    if (!summary.value) return null
+    const curBal = balanceNow.value != null ? balanceNow.value : (start.value || 0)
+    return buildGrowthForecast({
+        summary: summary.value,
+        currentBalance: curBal,
+        horizonMonths: forecastMonths.value,
+        mode: forecastMode.value,
+        paceBasis: paceBasis.value,
+        monthlyCost: monthlyCost.value || 0,
+        includeCosts: includeCosts.value,
+        goalBalance: goalBalance.value,
+        anchorDate: equity.value?.anchorDate || todayIso.value,
+        simCount: 400,
+        planAtDate: showPlanOverlay.value ? planCurveLookup.value : null,
+    })
+})
+
+/* ---- Side-by-side scenario comparison across all 3 paces ---- */
+const paceScenarios = computed(() => {
+    if (!summary.value) return []
+    const curBal = balanceNow.value != null ? balanceNow.value : (start.value || 0)
+    return [
+        { id: 'median', label: 'Median pace', hint: 'Typical day (ignores outliers)' },
+        { id: 'mean', label: 'Average pace', hint: 'Mean of selected period' },
+        { id: 'recent', label: `Recent (${summary.value.recentCount}d)`, hint: 'Latest trading momentum' },
+    ].map((item) => {
+        const f = buildGrowthForecast({
+            summary: summary.value,
+            currentBalance: curBal,
+            horizonMonths: forecastMonths.value,
+            mode: forecastMode.value,
+            paceBasis: item.id,
+            monthlyCost: monthlyCost.value || 0,
+            includeCosts: includeCosts.value,
+            anchorDate: equity.value?.anchorDate || todayIso.value,
+            simCount: 200,
+        })
+        return { ...item, forecast: f }
+    })
+})
+
+/* ---- Historical fixed-cost drag & breakeven per traded day ---- */
 const cost = computed(() => {
-    if (monthlyCost.value == null || !actual.value || !costSpanDays.value) return null
-    const total = monthlyCost.value * (costSpanDays.value / DAYS_PER_MONTH)
+    if (monthlyCost.value == null || !summary.value) return null
+    const total = monthlyCost.value * (summary.value.calendarSpanDays / DAYS_PER_MONTH)
+    const refBal = realBalance.value?.value || start.value
     return {
         total,
-        spanDays: costSpanDays.value,
-        netAfter: actual.value.totalNet - total,
-        // What each traded day has to clear before the operation is even. Per
-        // TRADED day here, because that is the day you can actually do something
-        // about -- the cost itself accrued on the calendar.
-        breakEvenPerTradedDay: total / actual.value.tradedDays,
-        // And as a share of the balance the plan is measured against, so it can be
-        // read next to "target % per day".
-        breakEvenPctPerDay: start.value > 0
-            ? (total / actual.value.tradedDays / start.value) * 100
+        spanDays: summary.value.calendarSpanDays,
+        netAfter: summary.value.totalNet - total,
+        breakEvenPerTradedDay: total / summary.value.tradedDays,
+        breakEvenPctPerDay: refBal > 0
+            ? (total / summary.value.tradedDays / refBal) * 100
             : null,
     }
 })
 
-/** Real equity curve: your actual balance day by day, stepping by each traded
-   day's real net P&L (real ups/downs — NOT a smoothed average). Real MT5 cash
-   flows move it too: a withdrawal drops the line on the day money left, a deposit
-   lifts it on the day money landed — so topping the account back up after blowing
-   it reads as new capital, not as a winning day. The Plan line is the pure target
-   pace and does NOT move on either (see the buildProjection call below). */
-const equity = computed(() => {
-    if (!daily.value || !daily.value.length || !(start.value > 0)) return null
-    const s = start.value
+/* ---- Cash flow & breakeven tracking ---- */
+const hasCashFlow = computed(() =>
+    !!equity.value && (equity.value.totalDeposited > 0 || equity.value.totalWithdrawn > 0))
+const netCashFlow = computed(() =>
+    equity.value ? equity.value.totalDeposited - equity.value.totalWithdrawn : 0)
+
+const breakeven = computed(() => {
+    const balance = liveMt5Balance.value
+    if (!Number.isFinite(balance)) return null
+    const flows = useScopedMt5CashFlows()
+    const sum = (type) => flows
+        .filter((f) => f && f.type === type)
+        .reduce((acc, f) => acc + Math.abs(Number(f.amount) || 0), 0)
+    const deposited = sum('deposit')
+    const withdrawn = sum('withdrawal')
+    const netIn = deposited - withdrawn
+    const gap = netIn - balance
+    const avgPerDay = summary.value ? summary.value.meanNet : null
+    const daysAtCurrentPace = (gap > 0 && avgPerDay > 0) ? gap / avgPerDay : null
     const t = target.value
-    const tz = timeZoneTrade.value || 'UTC'
-    // Net P&L per traded date.
-    const netByDate = new Map()
-    daily.value.forEach((d) => netByDate.set(d.date, (netByDate.get(d.date) || 0) + (Number(d.net) || 0)))
-    const firstDate = [...netByDate.keys()].sort()[0]
-    // Real cash flows from MT5's dated balance ops (pushed by the sync), summed
-    // per date. A cash flow on a day with no trades still gets its own point.
-    // Scoped to the account filter: see useScopedMt5CashFlows.
-    const cashFlows = useScopedMt5CashFlows()
-    const sumByDate = (type) => {
-        const m = new Map()
-        cashFlows
-            .filter((cf) => cf && cf.type === type)
-            .forEach((cf) => {
-                const date = dayjs.unix(Number(cf.t)).tz(tz).format('YYYY-MM-DD')
-                const amt = Math.abs(Number(cf.amount) || 0)
-                if (amt > 0 && date >= firstDate) m.set(date, (m.get(date) || 0) + amt)
-            })
-        return m
-    }
-    const wdByDate = sumByDate('withdrawal')
-    const depByDate = sumByDate('deposit')
-    // EVERY calendar day between the first and last event -- weekends and holidays
-    // included. A traded-days-only axis squeezes a 3-day weekend into the same gap
-    // as an overnight, so distance along the axis wouldn't mean elapsed time and a
-    // "straight" line wouldn't actually be straight in time. Filling the calendar
-    // makes the axis real time, which is what the linear Plan line below needs.
-    const eventDates = [...new Set([...netByDate.keys(), ...wdByDate.keys(), ...depByDate.keys()])].sort()
-    const allDates = []
-    if (eventDates.length) {
-        const last = dayjs(eventDates[eventDates.length - 1])
-        for (let d = dayjs(eventDates[0]); !d.isAfter(last, 'day'); d = d.add(1, 'day')) {
-            allDates.push(d.format('YYYY-MM-DD'))
-        }
-    }
-
-    // Plan drawn as ONE straight line spanning the whole chart. Its endpoints still
-    // come from the real compounding target (so where the plan says you should end
-    // up stays honest), but the path between them is linear -- readable at a glance,
-    // and defined on every day including ones the market is closed. Previously this
-    // was the raw compounding curve, which only existed on trading weekdays inside
-    // the projection window, so the line started late, ended early and broke on
-    // weekends.
-    let planFirst = null, planLast = null, planSlope = 0
-    if (hasTarget.value && startDate.value && allDates.length) {
-        const monthsToToday = Math.max(1, dayjs().diff(dayjs(startDate.value), 'month') + 2)
-        const proj = buildProjection(s, t, monthsToToday, [], startDate.value,
-            isAmountMode.value ? [] : tiers.value, [], projectionOptions.value)
-        const days = proj.days || []
-        // Plan value on a date, extended past both ends of the projection: before
-        // the plan starts nothing has compounded yet (= start balance); after the
-        // last projected day, hold the final value.
-        const planAt = (date) => {
-            if (!days.length || date < days[0].date) return s
-            let best = days[0]
-            for (const d of days) {
-                if (d.date > date) break
-                best = d
-            }
-            return best.closing
-        }
-        planFirst = planAt(allDates[0])
-        planLast = planAt(allDates[allDates.length - 1])
-        planSlope = allDates.length > 1 ? (planLast - planFirst) / (allDates.length - 1) : 0
-    }
-
-    let withdrawnCum = 0, depositedCum = 0, netCum = 0
-    const dates = [], plan = [], deltas = []
-    const cumActual = [], cumPlan = [], dayActual = [], dayPlan = [], withdrawals_ = [], deposits_ = []
-    allDates.forEach((date, i) => {
-        const isTraded = netByDate.has(date)
-        const net = netByDate.get(date) || 0
-        const wdToday = wdByDate.get(date) || 0
-        const depToday = depByDate.get(date) || 0
-        withdrawnCum += wdToday
-        depositedCum += depToday
-        netCum += net
-        dates.push(date)
-        // On a day with no trade and no cash flow this is 0, so the balance simply
-        // carries forward -- a flat segment across the closed market.
-        deltas.push(net + depToday - wdToday)
-        // Cumulative profit is what TRADING earned, so it tracks neither cash flow:
-        // it is just the running sum of net P&L. Deposits are new capital, not a
-        // gain -- without this, topping up a blown account would show as a huge win.
-        cumActual.push(Number(netCum.toFixed(2)))
-        // Daily P&L view is per TRADED day; a day with no trade has no bar (null,
-        // not 0) so the line doesn't dip to zero across weekends.
-        dayActual.push(isTraded ? Number(net.toFixed(2)) : null)
-        withdrawals_.push(Number(wdToday.toFixed(2)))
-        deposits_.push(Number(depToday.toFixed(2)))
-
-        if (planFirst != null) {
-            const p = planFirst + planSlope * i
-            plan.push(Number(p.toFixed(2)))
-            cumPlan.push(Number((p - s).toFixed(2)))
-            // A linear plan needs the same profit every day, which is exactly the
-            // slope -- so the Daily view compares against a flat target line.
-            dayPlan.push(Number(planSlope.toFixed(2)))
-        } else {
-            plan.push(null); cumPlan.push(null); dayPlan.push(null)
-        }
-    })
-
-    /* Actual equity anchored on the balance MT5 actually reports, walked BACKWARD.
-       Adding up forward from the plan's startBalance double-counts, because
-       startBalance is normally the money you funded the account with and those same
-       funding deposits are also in cashFlows -- measured: ~486 charted vs 188.56
-       real. Anchoring at the newest point makes today's value right by construction
-       and pushes any journal-vs-broker drift into the distant past. Without a live
-       MT5 balance there is nothing truer to anchor to, so fall back to startBalance. */
-    const liveBalance = accs.length ? Number(accs[0].balance) : null
-    const actual = new Array(allDates.length)
-    if (Number.isFinite(liveBalance)) {
-        let bal = liveBalance
-        for (let i = allDates.length - 1; i >= 0; i--) {
-            actual[i] = Number(bal.toFixed(2))
-            bal -= deltas[i]
-        }
-    } else {
-        let bal = s
-        for (let i = 0; i < allDates.length; i++) {
-            bal += deltas[i]
-            actual[i] = Number(bal.toFixed(2))
-        }
-    }
-
-    return {
-        dates, actual, plan, cumActual, cumPlan, dayActual, dayPlan,
-        withdrawals: withdrawals_,
-        deposits: deposits_,
-        totalWithdrawn: Number(withdrawnCum.toFixed(2)),
-        totalDeposited: Number(depositedCum.toFixed(2)),
-        withdrawnOutsideRange: 0,
-    }
+    const daysAtPlan = (gap > 0 && balance > 0 && t > 0)
+        ? Math.log(netIn / balance) / Math.log(1 + t / 100)
+        : null
+    return { deposited, withdrawn, netIn, balance, gap, avgPerDay, daysAtCurrentPace, daysAtPlan }
 })
 
-/* Headline figures pulled out of the equity series so the template reads as
-   labels, not index arithmetic. `earned` is trading P&L only — it deliberately
-   equals actual.totalNet, which is why the two are never shown as separate
-   tiles. */
-/* ---- Lot for today, on the balance you actually have ----
-   Trading Plan sizes the lot on the plan's STARTING balance and projects it
-   forward. Here the account is real, so today's lot comes from today's real
-   balance: the target % of what is actually in the account, over the plan's
-   pip distance. That is the number to trade -- the plan's own balance for
-   today is shown beside it only to say whether you are ahead or behind.
-
-   Real balance, best source first: the active account's MT5 balance (synced,
-   needs nothing loaded), then the journal's equity curve, then the starting
-   balance as a last resort -- labelled, so a fallback never passes as live. */
-const realBalance = computed(() => {
-    const mt5 = useScopedMt5Balance()
-    if (Number.isFinite(mt5) && mt5 > 0) return { value: mt5, source: 'MT5 balance' }
-    if (balanceNow.value > 0) return { value: balanceNow.value, source: 'journal equity' }
-    if (start.value > 0) return { value: start.value, source: 'starting balance — no MT5 balance synced' }
-    return null
-})
-
-// Today's target in $ for a given balance: a share of it in % mode (through
-// the tier resolver, so a stepped plan sizes at the rate that applies at THAT
-// balance), or the flat amount in $ mode, which no balance changes.
+/* ---- Plan target & lot sizing helpers ---- */
 const targetDollarsAt = (balance) => {
     if (isAmountMode.value) return dailyAmount.value > 0 ? dailyAmount.value : null
     if (!(balance > 0) || (target.value == null && !hasTiers.value)) return null
@@ -340,124 +312,70 @@ const targetDollarsAt = (balance) => {
 
 const todayDollars = computed(() => (realBalance.value ? targetDollarsAt(realBalance.value.value) : null))
 
-// Where the plan says the balance should be today -- same projection the chart's
-// plan line comes from, read off at today's date.
+const projectedEndDollars = computed(() =>
+    forecast.value && forecast.value.endExpected > 0 ? targetDollarsAt(forecast.value.endExpected) : null)
+
+const projectedEndLot = computed(() => {
+    const pips = numOrNull(activePlan.value.targetPips)
+    if (!(pips > 0) || !(projectedEndDollars.value > 0)) return null
+    return floorLot(lotForDollars(projectedEndDollars.value, pips, activePlan.value.symbol))
+})
+
 const planToday = computed(() => {
-    if (!(start.value > 0) || !hasTarget.value || !startDate.value) return null
-    const today = dayjs().format('YYYY-MM-DD')
+    if (!(start.value > 0) || !hasTarget.value || !startDate.value || !planCurveLookup.value) return null
+    const today = todayIso.value
     if (today < startDate.value) return null
-    const monthsToToday = Math.max(1, dayjs().diff(dayjs(startDate.value), 'month') + 1)
-    const days = buildProjection(start.value, target.value == null ? 0 : target.value, monthsToToday,
-        deposits.value, startDate.value, isAmountMode.value ? [] : tiers.value,
-        withdrawals.value, projectionOptions.value).days
-    let balance = start.value
-    for (const d of days) { if (d.date > today) break; balance = d.closing }
+    const balance = planCurveLookup.value(today)
     const pips = numOrNull(activePlan.value.targetPips)
     const dollars = targetDollarsAt(balance)
     const lot = pips > 0 && dollars ? floorLot(lotForDollars(dollars, pips, activePlan.value.symbol)) : null
     return { balance, lot }
 })
 
-const balanceNow = computed(() =>
-    equity.value ? equity.value.actual[equity.value.actual.length - 1] : null)
-const earnedNow = computed(() =>
-    equity.value ? equity.value.cumActual[equity.value.cumActual.length - 1] : null)
-const hasCashFlow = computed(() =>
-    !!equity.value && (equity.value.totalDeposited > 0 || equity.value.totalWithdrawn > 0))
-const netCashFlow = computed(() =>
-    equity.value ? equity.value.totalDeposited - equity.value.totalWithdrawn : 0)
-
-/* How many tiles actually render. Two of them are conditional, so the desktop
-   grid takes its column count from this instead of a hard-coded 6 -- otherwise a
-   plan with no daily target (5 tiles) would leave one empty column track. */
-const statTileCount = computed(() =>
-    4 + (hasTarget.value ? 1 : 0) + (hasCashFlow.value ? 1 : 0) + (cost.value ? 1 : 0))
-
-/* Breakeven: how far the account still is from the money actually put into it,
-   and how long earning that back takes at the pace being traded now.
-   "Breakeven" here means the balance climbing back to your NET CONTRIBUTION
-   (everything deposited minus everything withdrawn) -- not to some past peak,
-   which was never your money to begin with. Read straight off MT5's own cash
-   flows so it stays right regardless of how the plan's startBalance is set. */
-const breakeven = computed(() => {
-    // Balance and flows from the SAME accounts -- the filtered ones. Reading the
-    // balance off one account while summing every account's deposits made the gap
-    // below the distance to the wrong number entirely.
-    const balance = useScopedMt5Balance()
-    if (!Number.isFinite(balance)) return null
-    const flows = useScopedMt5CashFlows()
-    const sum = (type) => flows
-        .filter((f) => f && f.type === type)
-        .reduce((acc, f) => acc + Math.abs(Number(f.amount) || 0), 0)
-    const deposited = sum('deposit')
-    const withdrawn = sum('withdrawal')
-    const netIn = deposited - withdrawn
-    const gap = netIn - balance          // > 0 means still under water
-    const avgPerDay = actual.value && actual.value.avgDailyNet != null ? actual.value.avgDailyNet : null
-    // Only meaningful while you're actually making money: at a losing average the
-    // gap never closes, so report null and let the UI say so rather than print a
-    // negative or infinite "days to go".
-    const daysAtCurrentPace = (gap > 0 && avgPerDay > 0) ? gap / avgPerDay : null
-    // At the plan's target the balance compounds, so solve balance*(1+t/100)^n = netIn.
-    const t = target.value
-    const daysAtPlan = (gap > 0 && balance > 0 && t > 0)
-        ? Math.log(netIn / balance) / Math.log(1 + t / 100)
-        : null
-    return { deposited, withdrawn, netIn, balance, gap, avgPerDay, daysAtCurrentPace, daysAtPlan }
+const planAtForecastEnd = computed(() => {
+    if (!forecast.value?.planEquity?.length) return null
+    return forecast.value.planEquity[forecast.value.planEquity.length - 1]
 })
 
-/** Same horizon, but compounding at the rate you actually achieved. */
-const actualProjection = computed(() =>
-    actual.value?.pctPerDay != null && start.value > 0 && months.value
-        ? buildProjection(start.value, actual.value.pctPerDay, months.value, deposits.value, startDate.value)
-        : null,
-)
+/* ---- Selected pace label helpers ---- */
+const activePacePct = computed(() => {
+    if (!summary.value) return null
+    if (paceBasis.value === 'median') return summary.value.medianPct
+    if (paceBasis.value === 'recent') return summary.value.recentMeanPct
+    return summary.value.meanPct
+})
 
-/** The plan's own projection, for a side-by-side comparison. */
-const targetProjection = computed(() =>
-    start.value > 0 && months.value && (hasTarget.value || (!isAmountMode.value && hasTiers.value))
-        ? buildProjection(start.value, target.value == null ? 0 : target.value,
-            months.value, deposits.value, startDate.value,
-            isAmountMode.value ? [] : tiers.value, withdrawals.value, projectionOptions.value)
-        : null,
-)
+const activePaceDollar = computed(() => {
+    if (!summary.value) return null
+    if (paceBasis.value === 'median') return summary.value.medianNet
+    if (paceBasis.value === 'recent') return summary.value.recentMeanNet
+    return summary.value.meanNet
+})
 
-/* ---- Compounding curves: plan vs actual pace ----
-   Two series, so a legend is always shown. Colours are fixed per series
-   (identity, not rank) and validated for colour-blind separation against this
-   dark surface. Deliberately NOT green/red — those mean profit/loss here. */
-const PLAN_COLOR = '#2f9bff'   // app accent, same hue the Trading Plan chart uses
-const ACTUAL_COLOR = '#f59e0b' // amber: CVD-separated from the blue on every channel
-const SURFACE = '#1b1f2a'
-// Third hue, distinct from plan-blue and actual-amber on every channel so the
-// trend never reads as either of the two lines it summarises.
+/* ---- Chart setup ---- */
+const PLAN_COLOR = '#2f9bff'
+const ACTUAL_COLOR = '#f59e0b'
+const FORECAST_COLOR = '#f59e0b'
+const P90_COLOR = '#00CA73'
+const P10_COLOR = '#F6465D'
+const P50_COLOR = '#38bdf8'
 const TREND_COLOR = '#a78bfa'
+const SURFACE = '#1b1f2a'
 const INK_MUTED = 'rgba(237, 240, 247, 0.60)'
-
-// Profit/loss colouring, only used by the daily bars where the sign IS the
-// message. The line charts stay blue/amber so plan-vs-actual never reads as
-// good-vs-bad.
 const WIN_COLOR = '#00CA73'
 const LOSS_COLOR = '#F6465D'
-// Cash flows are neither profit nor loss, so they get their own hues rather than
-// borrowing red/green -- taking planned profit out is not a bad outcome, and
-// topping the account up is not a win.
 const WITHDRAW_COLOR = '#c084fc'
 const DEPOSIT_COLOR = '#38bdf8'
 
 const CHART_MODES = [
-    { value: 'equity', label: 'Equity', title: 'Equity — your actual trades per day vs plan pace' },
-    { value: 'cumulative', label: 'Cumulative P&L', title: 'Cumulative profit since the start balance vs plan pace' },
-    { value: 'daily', label: 'Daily P&L', title: 'Profit per traded day vs the profit the plan needs that day' },
+    { value: 'forecast', label: 'Equity Forecast', title: 'Actual equity history connected to future growth forecast (with P10–P90 range)' },
+    { value: 'cumulative', label: 'Cumulative Growth', title: 'Cumulative trading profit history + projected future gain' },
+    { value: 'daily', label: 'Daily P&L', title: 'Real daily P&L bars driving the forecast (mean & median reference lines)' },
 ]
-const chartMode = ref(localStorage.getItem('planVsActualChartMode') || 'equity')
-if (!CHART_MODES.some((m) => m.value === chartMode.value)) chartMode.value = 'equity'
+const chartMode = ref(localStorage.getItem('planVsActualChartMode') || 'forecast')
+if (!CHART_MODES.some((m) => m.value === chartMode.value)) chartMode.value = 'forecast'
 watch(chartMode, (v) => localStorage.setItem('planVsActualChartMode', v))
 
-/* Linear squashes a +10 day to nothing next to a -721 one, which is exactly the
-   Daily P&L complaint. Symlog keeps the sign and compresses the extremes so small
-   and large days are readable at once. ECharts' own `type: 'log'` cannot be used:
-   it rejects zero and negative values, and half this data is negative. */
 const Y_SCALES = [
     { value: 'linear', label: 'Linear' },
     { value: 'symlog', label: 'Log' },
@@ -466,7 +384,6 @@ const yScale = ref(localStorage.getItem('planVsActualYScale') || 'linear')
 if (!Y_SCALES.some((s2) => s2.value === yScale.value)) yScale.value = 'linear'
 watch(yScale, (v) => localStorage.setItem('planVsActualYScale', v))
 
-// Signed log: sign(v) * log10(1 + |v|). Continuous through zero, unlike log.
 const symlog = (v) => (v == null ? null : Math.sign(v) * Math.log10(1 + Math.abs(v)))
 const symlogInv = (y) => Math.sign(y) * (Math.pow(10, Math.abs(y)) - 1)
 
@@ -477,162 +394,336 @@ const chartTitle = computed(
 const chartEl = ref(null)
 let chart = null
 
-const hasChart = computed(() => !!equity.value)
+const hasChart = computed(() => !!equity.value && !!forecast.value)
 
 function renderChart() {
     if (!chartEl.value || !hasChart.value) return
     if (!chart) chart = echarts.init(chartEl.value)
 
     const eq = equity.value
-    const dates = eq.dates
+    const fc = forecast.value
     const mode = chartMode.value
-    const planRaw = mode === 'equity' ? eq.plan : mode === 'cumulative' ? eq.cumPlan : eq.dayPlan
-    const actualRaw = mode === 'equity' ? eq.actual : mode === 'cumulative' ? eq.cumActual : eq.dayActual
-    // Series plot transformed values; every label and tooltip reads the raw ones,
-    // so the numbers on screen are always the real amounts.
     const useSym = yScale.value === 'symlog'
-    const tx = (arr) => (useSym ? arr.map((v) => (v == null ? null : symlog(v))) : arr)
-    const planData = tx(planRaw)
-    const actualData = tx(actualRaw)
-    const planName = mode === 'daily'
-        ? `Plan needs (${fmt(target.value, 2)}%/day)`
-        : `Plan (${fmt(target.value, 2)}%/day)`
+    const txVal = (v) => (v == null ? null : useSym ? symlog(v) : v)
+    const txArr = (arr) => arr.map(txVal)
 
-    /* Vertical marks on the days money moved in or out. Attached as markLine
-       rather than an extra series so they never enter the legend or the axis
-       scale -- a cash flow is an annotation on the curve, not a third quantity
-       to compare against. Drawn on the Actual series so they inherit its z. */
+    // Cash flow marks (historical only)
     const cashMarks = []
     eq.withdrawals.forEach((amt, i) => {
         if (amt > 0) cashMarks.push({
-            xAxis: dates[i], amount: amt,
-            lineStyle: { color: WITHDRAW_COLOR },
-            label: { color: WITHDRAW_COLOR, formatter: () => `Withdrawal −${fmt(amt, 0)}` },
+            xAxis: eq.dates[i], amount: amt,
+            lineStyle: { color: WITHDRAW_COLOR, width: 1, type: 'dotted' },
+            label: { color: WITHDRAW_COLOR, fontSize: 10, formatter: () => `WD −${fmt(amt, 0)}` },
         })
     })
     eq.deposits.forEach((amt, i) => {
         if (amt > 0) cashMarks.push({
-            xAxis: dates[i], amount: amt,
-            lineStyle: { color: DEPOSIT_COLOR },
-            // A deposit near/above the starting principal, landing right after a
-            // losing stretch, reads as re-funding a blown account rather than a
-            // routine top-up -- label it that way instead of a bare "+302" a
-            // reader has to interpret themselves.
+            xAxis: eq.dates[i], amount: amt,
+            lineStyle: { color: DEPOSIT_COLOR, width: 1, type: 'dotted' },
             label: {
                 color: DEPOSIT_COLOR,
-                formatter: () => (amt >= start.value * 0.8 ? `Account reset +${fmt(amt, 0)}` : `Deposit +${fmt(amt, 0)}`),
+                fontSize: 10,
+                formatter: () => (start.value > 0 && amt >= start.value * 0.8 ? `Reset +${fmt(amt, 0)}` : `Dep +${fmt(amt, 0)}`),
             },
         })
     })
-    const withdrawalMarkLine = cashMarks.length
-        ? {
-            silent: true,
-            symbol: 'none',
-            lineStyle: { width: 1, type: 'dotted' },
-            label: { show: true, position: 'insideEndTop', fontSize: 10 },
-            data: cashMarks,
+
+    if (mode === 'daily') {
+        const dates = eq.dates
+        const rawActual = eq.dayActual
+        const rawPlan = eq.dayPlan
+        const actualData = txArr(rawActual)
+        const planData = txArr(rawPlan)
+
+        const meanLine = summary.value ? dates.map(() => txVal(summary.value.meanNet)) : null
+        const medianLine = summary.value ? dates.map(() => txVal(summary.value.medianNet)) : null
+
+        const series = [
+            {
+                name: 'Daily P&L',
+                type: 'bar',
+                data: actualData.map((v, i) => ({
+                    value: v,
+                    itemStyle: { color: rawActual[i] >= 0 ? WIN_COLOR : LOSS_COLOR },
+                })),
+                barMaxWidth: 28,
+                z: 2,
+                markLine: cashMarks.length ? { silent: true, symbol: 'none', data: cashMarks } : undefined,
+            },
+        ]
+        if (meanLine) {
+            series.push({
+                name: `Mean (${fmt(summary.value.meanNet)})`,
+                type: 'line',
+                data: meanLine,
+                showSymbol: false,
+                smooth: false,
+                lineStyle: { color: TREND_COLOR, width: 2, type: 'dashed' },
+                itemStyle: { color: TREND_COLOR },
+                z: 3,
+            })
         }
-        : undefined
-
-    /* Average line over the ACTUAL series: where your real performance is heading
-       once the day-to-day noise is taken out. Least-squares fit, so it is the
-       average TREND rather than a moving average -- a moving average lags and
-       still wiggles, which defeats the point of comparing it against a straight
-       plan line.
-       Daily P&L mode is different: the meaningful average there is the flat mean
-       of profit per traded day, which is exactly what the plan's own flat line is
-       compared against.
-       Nulls (untraded days) are skipped rather than counted as zero, which would
-       drag the average toward zero on every weekend. */
-    const trendData = (() => {
-        const pts = []
-        actualData.forEach((v, i) => { if (v != null) pts.push([i, v]) })
-        if (pts.length < 2) return null
-
-        if (mode === 'daily') {
-            const mean = pts.reduce((s, p) => s + p[1], 0) / pts.length
-            return actualData.map(() => Number(mean.toFixed(2)))
+        if (medianLine) {
+            series.push({
+                name: `Median (${fmt(summary.value.medianNet)})`,
+                type: 'line',
+                data: medianLine,
+                showSymbol: false,
+                smooth: false,
+                lineStyle: { color: P50_COLOR, width: 1.5, type: 'dotted' },
+                itemStyle: { color: P50_COLOR },
+                z: 3,
+            })
+        }
+        if (showPlanOverlay.value && planData.some((v) => v != null)) {
+            series.push({
+                name: 'Plan target / day',
+                type: 'line',
+                data: planData,
+                showSymbol: false,
+                connectNulls: true,
+                lineStyle: { color: PLAN_COLOR, width: 1.8, type: 'dashed' },
+                itemStyle: { color: PLAN_COLOR },
+                z: 3,
+            })
         }
 
-        const n = pts.length
-        const sx = pts.reduce((s, p) => s + p[0], 0)
-        const sy = pts.reduce((s, p) => s + p[1], 0)
-        const sxy = pts.reduce((s, p) => s + p[0] * p[1], 0)
-        const sxx = pts.reduce((s, p) => s + p[0] * p[0], 0)
-        const denom = n * sxx - sx * sx
-        if (!denom) return null
-        const slope = (n * sxy - sx * sy) / denom
-        const intercept = (sy - slope * sx) / n
-        // Drawn across every index so the line spans the chart, not just the
-        // traded days it was fitted from.
-        return actualData.map((_, i) => Number((intercept + slope * i).toFixed(2)))
-    })()
+        const rawLookup = {
+            'Daily P&L': rawActual,
+            ...(meanLine ? { [`Mean (${fmt(summary.value.meanNet)})`]: dates.map(() => summary.value.meanNet) } : {}),
+            ...(medianLine ? { [`Median (${fmt(summary.value.medianNet)})`]: dates.map(() => summary.value.medianNet) } : {}),
+            'Plan target / day': rawPlan,
+        }
+
+        chart.setOption({
+            backgroundColor: 'transparent',
+            legend: { top: 0, textStyle: { color: INK_MUTED, fontSize: 11 }, itemWidth: 14, itemHeight: 8 },
+            grid: { left: 4, right: 12, top: 34, bottom: 4, containLabel: true },
+            tooltip: {
+                trigger: 'axis',
+                axisPointer: { type: 'line', lineStyle: { color: 'rgba(255,255,255,0.25)', width: 1 } },
+                backgroundColor: SURFACE,
+                borderColor: 'rgba(255,255,255,0.12)',
+                textStyle: { color: 'rgba(237,240,247,0.92)', fontSize: 12 },
+                formatter: (params) => {
+                    const i = params[0].dataIndex
+                    const head = `<div style="font-weight:700;margin-bottom:4px">${dates[i]}</div>`
+                    const lines = params
+                        .map((p) => {
+                            const arr = rawLookup[p.seriesName]
+                            const val = arr ? arr[i] : null
+                            return val == null ? null : `${p.marker} ${p.seriesName}: <b>${fmt(val)}</b>`
+                        })
+                        .filter(Boolean)
+                    return head + lines.join('<br/>')
+                },
+            },
+            xAxis: {
+                type: 'category',
+                data: dates,
+                boundaryGap: true,
+                axisLine: { lineStyle: { color: 'rgba(255,255,255,0.12)' } },
+                axisTick: { show: false },
+                axisLabel: { color: INK_MUTED, fontSize: 10, hideOverlap: true },
+            },
+            yAxis: {
+                type: 'value',
+                scale: true,
+                axisLine: { show: false },
+                axisTick: { show: false },
+                splitLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
+                axisLabel: {
+                    color: INK_MUTED,
+                    fontSize: 10,
+                    formatter: (v) => Math.round(useSym ? symlogInv(v) : v).toLocaleString(),
+                },
+            },
+            dataZoom: [
+                { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
+                { type: 'inside', yAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: 'shift' },
+            ],
+            series,
+        }, true)
+        chart.resize()
+        return
+    }
+
+    /* ---- Combined timeline: Historical [0..H-1] + Future [H..H+K-1] ---- */
+    const histDates = eq.dates
+    const futDates = fc.dates
+    const dates = [...histDates, ...futDates]
+    const H = histDates.length
+    const K = futDates.length
+    const todayIdx = H - 1
+    const todayDateLabel = histDates[todayIdx]
+
+    const isCum = mode === 'cumulative'
+    const histRaw = isCum ? eq.cumActual : eq.actual
+    const cumOffset = isCum ? (eq.cumActual[todayIdx] || 0) : 0
+    const anchorVal = histRaw[todayIdx]
+
+    // Stitch future curves starting right from todayIdx so there is no gap at Today
+    const nullHistPrefix = new Array(Math.max(0, H - 1)).fill(null)
+    const nullFutSuffix = new Array(K).fill(null)
+
+    const rawActual = [...histRaw, ...nullFutSuffix]
+    const rawExpected = [...nullHistPrefix, anchorVal, ...(isCum ? fc.expectedCum.map((v) => v + cumOffset) : fc.expectedEquity)]
+    const rawP10 = [...nullHistPrefix, anchorVal, ...(isCum ? fc.p10Cum.map((v) => v + cumOffset) : fc.p10Equity)]
+    const rawP50 = [...nullHistPrefix, anchorVal, ...(isCum ? fc.p50Cum.map((v) => v + cumOffset) : fc.p50Equity)]
+    const rawP90 = [...nullHistPrefix, anchorVal, ...(isCum ? fc.p90Cum.map((v) => v + cumOffset) : fc.p90Equity)]
+
+    // Optional Plan target curve across history + future
+    const hasHistPlan = eq.plan.some((v) => v != null)
+    const hasFutPlan = isCum ? !!fc.planCum : !!fc.planEquity
+    let rawPlan = null
+    if (showPlanOverlay.value && (hasHistPlan || hasFutPlan)) {
+        const histPlan = isCum ? eq.cumPlan : eq.plan
+        const planOffset = isCum ? (eq.cumPlan[todayIdx] || 0) : 0
+        const futPlan = isCum
+            ? (fc.planCum ? fc.planCum.map((v) => (v == null ? null : v + planOffset)) : new Array(K).fill(null))
+            : (fc.planEquity || new Array(K).fill(null))
+        rawPlan = [...histPlan, ...futPlan]
+    }
+
+    // Confidence band in transformed coordinates so symlog renders exact shaded span
+    const bandBaseData = rawP10.map(txVal)
+    const bandSpanData = rawP90.map((v90, i) => {
+        const v10 = rawP10[i]
+        if (v90 == null || v10 == null) return null
+        return txVal(v90) - txVal(v10)
+    })
+
+    const todayMark = {
+        xAxis: todayDateLabel,
+        lineStyle: { color: 'rgba(255,255,255,0.35)', width: 1.5, type: 'dashed' },
+        label: { color: 'rgba(237,240,247,0.85)', fontSize: 10, formatter: () => 'Today' },
+    }
+    const allMarks = [...cashMarks, todayMark]
 
     const series = []
-    if (planData.some((v) => v != null)) {
+
+    if (showBand.value) {
+        series.push(
+            {
+                name: '_bandBase',
+                type: 'line',
+                stack: 'confBand',
+                data: bandBaseData,
+                showSymbol: false,
+                silent: true,
+                lineStyle: { opacity: 0 },
+                tooltip: { show: false },
+                z: 1,
+            },
+            {
+                name: 'P10–P90 range',
+                type: 'line',
+                stack: 'confBand',
+                data: bandSpanData,
+                showSymbol: false,
+                silent: true,
+                lineStyle: { opacity: 0 },
+                areaStyle: { color: 'rgba(0, 202, 115, 0.14)' },
+                z: 1,
+            },
+            {
+                name: 'Optimistic (P90)',
+                type: 'line',
+                data: txArr(rawP90),
+                showSymbol: false,
+                smooth: true,
+                lineStyle: { color: P90_COLOR, width: 1.2, type: 'dotted', opacity: 0.75 },
+                itemStyle: { color: P90_COLOR },
+                z: 2,
+            },
+            {
+                name: 'Median (P50)',
+                type: 'line',
+                data: txArr(rawP50),
+                showSymbol: false,
+                smooth: true,
+                lineStyle: { color: P50_COLOR, width: 1.5, type: 'dotted', opacity: 0.85 },
+                itemStyle: { color: P50_COLOR },
+                z: 2,
+            },
+            {
+                name: 'Conservative (P10)',
+                type: 'line',
+                data: txArr(rawP10),
+                showSymbol: false,
+                smooth: true,
+                lineStyle: { color: P10_COLOR, width: 1.2, type: 'dotted', opacity: 0.75 },
+                itemStyle: { color: P10_COLOR },
+                z: 2,
+            },
+        )
+    }
+
+    if (rawPlan) {
         series.push({
-            name: planName,
+            name: 'Plan target',
             type: 'line',
-            // Not smoothed, unlike Actual below: each point is already an exact
-            // compounding calculation (planBal * (1 + pct/100) per traded day,
-            // see buildProjection-equivalent loop above) with no noise to
-            // visually smooth over. Bezier-interpolating it would only distort
-            // the true exponential shape with overshoot between points.
-            data: planData,
+            data: txArr(rawPlan),
             showSymbol: false,
-            // A date with no plan value (before the plan's start date, or a
-            // weekend the market is closed) is null, not 0 -- connectNulls draws
-            // a straight line across that gap instead of breaking the line.
             connectNulls: true,
-            lineStyle: { color: PLAN_COLOR, width: 2, type: 'dashed' },
-            itemStyle: { color: PLAN_COLOR, borderColor: SURFACE, borderWidth: 2 },
+            lineStyle: { color: PLAN_COLOR, width: 1.8, type: 'dashed', opacity: 0.85 },
+            itemStyle: { color: PLAN_COLOR },
             z: 3,
         })
     }
-    if (mode === 'daily') {
-        // Bars, not a line: each day is an independent amount, and colouring by
-        // sign is the whole point of this view.
-        series.push({
-            name: 'Actual (real trades)',
-            type: 'bar',
-            data: actualData.map((v) => ({
-                value: v,
-                itemStyle: { color: v >= 0 ? WIN_COLOR : LOSS_COLOR },
-            })),
-            barMaxWidth: 28,
-            z: 2,
-            markLine: withdrawalMarkLine,
-        })
-    } else {
-        series.push({
-            name: 'Actual (real trades)',
+
+    series.push(
+        {
+            name: 'Actual',
             type: 'line',
             smooth: true,
-            data: actualData,
-            showSymbol: true,
-            symbolSize: 6,
-            lineStyle: { color: ACTUAL_COLOR, width: 2 },
-            itemStyle: { color: ACTUAL_COLOR, borderColor: SURFACE, borderWidth: 2 },
+            data: txArr(rawActual),
+            showSymbol: H <= 45,
+            symbolSize: 5,
+            lineStyle: { color: ACTUAL_COLOR, width: 2.2 },
+            itemStyle: { color: ACTUAL_COLOR, borderColor: SURFACE, borderWidth: 1.5 },
             areaStyle: { color: 'rgba(245, 158, 11, 0.08)' },
-            markLine: withdrawalMarkLine,
-        })
+            markLine: { silent: true, symbol: 'none', data: allMarks },
+            z: 4,
+        },
+        {
+            name: `Forecast (${PACE_BASES.find((b) => b.id === paceBasis.value)?.label || 'Expected'})`,
+            type: 'line',
+            smooth: true,
+            data: txArr(rawExpected),
+            showSymbol: false,
+            lineStyle: { color: FORECAST_COLOR, width: 2.2, type: 'dashed' },
+            itemStyle: { color: FORECAST_COLOR },
+            z: 4,
+        },
+    )
+
+    // Optional Goal horizontal markLine on Equity Forecast view
+    if (!isCum && goalBalance.value > 0) {
+        series[series.length - 1].markLine = {
+            silent: true,
+            symbol: 'none',
+            data: [{
+                yAxis: txVal(goalBalance.value),
+                lineStyle: { color: '#00CA73', width: 1.2, type: 'dashed' },
+                label: {
+                    color: '#00CA73',
+                    fontSize: 10,
+                    position: 'insideEndTop',
+                    formatter: () => `Goal ${fmtCompact(goalBalance.value, 0)}`,
+                },
+            }],
+        }
     }
 
-    if (trendData) {
-        series.push({
-            name: mode === 'daily' ? 'Average / traded day' : 'Actual trend (average)',
-            type: 'line',
-            data: trendData,
-            showSymbol: false,
-            // Never smoothed: it is a straight fit by definition, and curving it
-            // would imply structure the regression explicitly removed.
-            smooth: false,
-            lineStyle: { color: TREND_COLOR, width: 2, type: 'dashed', opacity: 0.9 },
-            itemStyle: { color: TREND_COLOR },
-            // Under both real lines: this is a reference, not a thing to read
-            // values off.
-            z: 1,
-        })
+    const forecastSeriesName = `Forecast (${PACE_BASES.find((b) => b.id === paceBasis.value)?.label || 'Expected'})`
+    const rawMap = {
+        Actual: rawActual,
+        [forecastSeriesName]: rawExpected,
+        'Optimistic (P90)': rawP90,
+        'Median (P50)': rawP50,
+        'Conservative (P10)': rawP10,
+        'Plan target': rawPlan,
     }
 
     chart.setOption({
@@ -642,6 +733,7 @@ function renderChart() {
             textStyle: { color: INK_MUTED, fontSize: 11 },
             itemWidth: 14,
             itemHeight: 8,
+            data: series.map((s) => s.name).filter((n) => n !== '_bandBase' && n !== 'P10–P90 range'),
         },
         grid: { left: 4, right: 12, top: 34, bottom: 4, containLabel: true },
         tooltip: {
@@ -652,22 +744,23 @@ function renderChart() {
             textStyle: { color: 'rgba(237,240,247,0.92)', fontSize: 12 },
             formatter: (params) => {
                 const i = params[0].dataIndex
-                const head = `<div style="font-weight:700;margin-bottom:4px">${dates[i]}</div>`
-                // Read the untransformed arrays by index: under a symlog scale
-                // p.value is the compressed number, which is meaningless to show.
-                const rawFor = (p) => {
-                    const src = p.seriesName === planName ? planRaw : actualRaw
-                    const v = src[p.dataIndex]
-                    return v == null ? null : v
+                const tag = i <= todayIdx ? 'Actual' : 'Forecast'
+                const head = `<div style="font-weight:700;margin-bottom:4px">${dates[i]} <span style="opacity:.6;font-weight:400">(${tag})</span></div>`
+                const seen = new Set()
+                const lines = []
+                for (const p of params) {
+                    if (p.seriesName === '_bandBase' || p.seriesName === 'P10–P90 range' || seen.has(p.seriesName)) continue
+                    seen.add(p.seriesName)
+                    const arr = rawMap[p.seriesName]
+                    const val = arr ? arr[i] : null
+                    if (val == null) continue
+                    lines.push(`${p.marker} ${p.seriesName}: <b>${fmt(val)}</b>`)
                 }
-                const lines = params
-                    .filter((p) => rawFor(p) != null)
-                    .map((p) => `${p.marker} ${p.seriesName}: <b>${fmt(rawFor(p))}</b>`)
-                if (params.length === 2) {
-                    const a = planRaw[i], b = actualRaw[i]
-                    if (a != null && b != null) {
-                        const diff = b - a
-                        lines.push(`<span style="opacity:.7">Gap: ${diff >= 0 ? '+' : ''}${fmt(diff)}</span>`)
+                if (rawPlan && rawPlan[i] != null) {
+                    const comp = i <= todayIdx ? rawActual[i] : rawExpected[i]
+                    if (comp != null) {
+                        const diff = comp - rawPlan[i]
+                        lines.push(`<span style="opacity:.7">vs Plan: ${diff >= 0 ? '+' : ''}${fmt(diff)}</span>`)
                     }
                 }
                 return head + lines.join('<br/>')
@@ -676,8 +769,7 @@ function renderChart() {
         xAxis: {
             type: 'category',
             data: dates,
-            // Bars need to sit inside their slot; lines should reach the edges.
-            boundaryGap: mode === 'daily',
+            boundaryGap: false,
             axisLine: { lineStyle: { color: 'rgba(255,255,255,0.12)' } },
             axisTick: { show: false },
             axisLabel: { color: INK_MUTED, fontSize: 10, hideOverlap: true },
@@ -691,15 +783,12 @@ function renderChart() {
             axisLabel: {
                 color: INK_MUTED,
                 fontSize: 10,
-                // Ticks are positioned in transformed space but must be labelled
-                // with the real amount they represent.
-                formatter: (v) => Math.round(useSym ? symlogInv(v) : v).toLocaleString(),
+                formatter: (v) => {
+                    const raw = useSym ? symlogInv(v) : v
+                    return Math.abs(raw) >= 1e6 ? fmtCompact(raw, 1) : Math.round(raw).toLocaleString()
+                },
             },
         },
-        // Drag or scroll inside the plot to zoom. The point of this on the value
-        // axis: even with symlog, zooming in is the direct way to inspect a
-        // cluster of small days. `filterMode: 'none'` keeps out-of-view points
-        // affecting the line instead of chopping the series.
         dataZoom: [
             { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
             { type: 'inside', yAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: 'shift' },
@@ -717,9 +806,7 @@ onBeforeUnmount(() => {
     if (chart) { chart.dispose(); chart = null }
 })
 
-// The canvas only exists once there is something to draw. Switching mode has to
-// re-render too, since the series type and axis change with it.
-watch([equity, chartMode, yScale], async () => {
+watch([equity, forecast, chartMode, yScale, showBand, showPlanOverlay, paceBasis, goalBalance], async () => {
     if (!hasChart.value) {
         if (chart) { chart.dispose(); chart = null }
         return
@@ -731,236 +818,220 @@ watch([equity, chartMode, yScale], async () => {
 
 <template>
     <div class="planPage p-3">
-        <PlanSelector />
-
-        <p class="txt-small text-muted mb-3">
-            Compares what you actually traded against the plan you set on
-            <a href="/plan">Trading Plan</a>. This is the same plan — editing it here updates that page too.
+        <p class="txt-small text-muted mb-2">
+            Uses your <strong>actual daily trading results</strong> (win/loss distribution, cadence, and % or $/day pace)
+            to project your future equity curve and P10–P90 outcome range.
         </p>
 
-        <!-- The two halves of this page come from different scopes and saying so
-             is the honest fix: the plan is one set of targets shared by every
-             account, while everything it is compared against (trades, cash flows,
-             closing balance) belongs to the account selected in the nav. Reading
-             a shared target against one account's balance is only meaningful if
-             you know that is what you are looking at. -->
         <p v-if="activeAccount" class="txt-small planScopeNote mb-3">
             <i class="uil uil-info-circle me-1"></i>
-            Actuals are account <strong>{{ activeAccount }}</strong>. The plan above is shared by all
-            accounts — switch accounts in the top bar to compare the same plan against the other one.
+            Forecasting from account <strong>{{ activeAccount }}</strong>. Switch accounts in the top bar to project
+            another profile.
         </p>
 
-        <!-- Plan inputs (shared with /plan) -->
-        <div class="planInputs mb-3">
-            <div>
-                <label class="planLabel">Start date</label>
-                <FpDate mode="date" v-model="activePlan.startDate" />
-            </div>
-            <div>
-                <label class="planLabel">Starting balance</label>
-                <input type="number" min="0" step="100" placeholder="e.g. 1000" class="form-control form-control-sm"
-                    v-model="activePlan.startBalance" />
-            </div>
-            <div>
-                <label class="planLabel">Horizon (months)</label>
-                <input type="number" min="1" max="120" step="1" placeholder="e.g. 3" class="form-control form-control-sm"
-                    v-model="activePlan.horizonMonths" />
-            </div>
-            <div>
-                <label class="planLabel">Target % per day</label>
-                <input type="number" step="0.1" placeholder="e.g. 1" class="form-control form-control-sm"
-                    v-model="activePlan.dailyPct" />
-            </div>
-        </div>
-
+        <!-- ==================== PRIMARY CARD: DAILY RESULTS -> GROWTH FORECAST ==================== -->
         <div class="planCard mb-3">
-            <PlanDepositsEditor :plan="activePlan" />
-        </div>
-
-        <div class="planCard mb-3">
-            <PlanCostsEditor :plan="activePlan" />
-        </div>
-
-        <!-- ---------- Lot for today, on the real balance ---------- -->
-        <div class="planCard mb-3" v-if="todayDollars">
             <div class="planCardHead">
-                <span class="planCardTitle">Lot for today</span>
-            </div>
-            <p class="txt-small mt-2 mb-2">
-                Your balance now is <strong>{{ fmt(realBalance.value) }}</strong>
-                <span class="text-muted">({{ realBalance.source }})</span>.
-                <template v-if="planToday">
-                    On plan you would be at <strong class="planHi">{{ fmt(planToday.balance) }}</strong><span
-                        v-if="planToday.lot != null">, trading
-                        <strong class="planHi">{{ planToday.lot >= LOT_STEP ? fmt(planToday.lot, 2) : '&lt;0.01' }} lot</strong></span>
-                    —
-                    <span v-bind:class="pnlClass(realBalance.value - planToday.balance)">
-                        {{ realBalance.value >= planToday.balance ? 'ahead by' : 'behind by' }}
-                        {{ fmt(Math.abs(realBalance.value - planToday.balance)) }}</span>.
-                </template>
-            </p>
-            <PlanLotSizing :plan="activePlan" :dollars="todayDollars"
-                :basis="!isAmountMode && !hasTiers ? fmt(target, 2) + '% of your real ' + fmt(realBalance.value) : ''">
-                Sized on your real balance, not the plan's — trade this, and it re-sizes itself as the balance
-                moves. The pip distance is shared with Trading Plan.
-            </PlanLotSizing>
-        </div>
-
-        <div class="planCard">
-            <div class="planCardHead">
-                <span class="planCardTitle">Your actual results</span>
-                <div class="d-flex align-items-center gap-2">
-                    <div class="btn-group btn-group-sm" role="group">
+                <div>
+                    <span class="planCardTitle">Daily Results → Growth Forecast</span>
+                    <span v-if="summary" class="txt-small text-muted ms-2">
+                        based on {{ summary.tradedDays }} traded day(s) ({{ summary.firstDate }} → {{ summary.lastDate }})
+                    </span>
+                </div>
+                <div class="d-flex flex-wrap align-items-center gap-2">
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Sample window">
                         <button v-for="p in PERIODS" :key="p.id" type="button"
                             v-bind:class="['btn', 'btn-sm', period === p.id ? 'btn-primary' : 'btn-outline-secondary']"
                             v-on:click="period = p.id">{{ p.label }}</button>
                     </div>
-                    <button type="button" class="btn btn-success btn-sm" v-on:click="load" :disabled="loading">
-                        <span v-if="loading" class="spinner-border spinner-border-sm me-2" role="status"></span>
-                        Load my results
+                    <button type="button" class="btn btn-outline-secondary btn-sm" v-on:click="load" :disabled="loading"
+                        title="Reload journal results">
+                        <span v-if="loading" class="spinner-border spinner-border-sm me-1" role="status"></span>
+                        <i v-else class="uil uil-sync"></i>
                     </button>
                 </div>
             </div>
 
             <div v-if="error" class="alert alert-danger py-2 mt-3 mb-0">{{ error }}</div>
-            <div v-else-if="daily === null" class="hintLine">
-                Click <strong>Load my results</strong> to pull the P&amp;L you actually made, per day, from your journal.
+            <div v-else-if="daily === null" class="hintLine">Loading your daily trading results…</div>
+            <div v-else-if="!summary || !forecast" class="hintLine">
+                No closed trades in the selected window — switch to <strong>90D</strong> or <strong>All</strong>, or
+                record trades to generate a growth forecast.
             </div>
-            <div v-else-if="!actual" class="hintLine">No trades in the selected period — nothing to compare against yet.</div>
-            <div v-else-if="!(start > 0)" class="hintLine">Enter a starting balance above to express your results as % per day.</div>
             <template v-else>
-                <!-- Six tiles, deliberately. Seven never split evenly across a row,
-                     so the last one was left alone and stretched the full width.
-                     Two merges got there without dropping a number: Principal folded
-                     under Balance (which was previously only visible inside a
-                     subtitle), and Deposited/Withdrawn became one Cash flow tile —
-                     they are the same category and had carried identical subtitles.
-                     "Earned" is not a tile because it is the same value as the net
-                     under Avg P&L / day. -->
-                <div class="statGrid my-3" :style="{ '--stat-tiles': statTileCount }">
-                    <div class="statTile">
-                        <div class="statLabel">Balance</div>
-                        <div class="statValue">{{ balanceNow == null ? fmt(start, 2) : fmt(balanceNow) }}</div>
-                        <div class="statSub">principal {{ fmt(start, 2) }}</div>
-                    </div>
-                    <div class="statTile">
-                        <div class="statLabel">Days traded</div>
-                        <div class="statValue">{{ actual.tradedDays }}</div>
-                        <div class="statSub">{{ actual.winDays }} green · {{ actual.tradedDays - actual.winDays }} red</div>
-                    </div>
-                    <div class="statTile">
-                        <div class="statLabel">Avg P&amp;L / day</div>
-                        <div class="statValue" v-bind:class="pnlClass(actual.avgDailyNet)">{{ fmt(actual.avgDailyNet) }}</div>
-                        <div class="statSub">earned {{ fmt(actual.totalNet) }}</div>
-                    </div>
-                    <div class="statTile">
-                        <div class="statLabel">Actual % per day</div>
-                        <div class="statValue" v-bind:class="pnlClass(actual.pctPerDay)">{{ fmt(actual.pctPerDay, 3) }}%</div>
-                        <div class="statSub">of {{ fmt(start, 0) }}</div>
-                    </div>
-                    <!-- Compared in the unit the plan is actually set in. Showing a
-                         percentage gap against a dollar target would be arithmetic
-                         between two different things. -->
-                    <div class="statTile" v-if="hasTarget">
-                        <div class="statLabel">Gap vs target</div>
-                        <div v-if="isAmountMode" class="statValue"
-                            v-bind:class="pnlClass(actual.avgDailyNet - dailyAmount)">
-                            {{ fmt(actual.avgDailyNet - dailyAmount) }}
-                        </div>
-                        <div v-else class="statValue" v-bind:class="pnlClass(actual.pctPerDay - target)">
-                            {{ fmt(actual.pctPerDay - target, 3) }}%
-                        </div>
-                        <div class="statSub">
-                            target {{ isAmountMode ? fmt(dailyAmount) + ' / day' : fmt(target, 2) + '% / day' }}
+                <!-- Interactive forecast controls bar -->
+                <div class="forecastControls my-3">
+                    <div class="fcGroup">
+                        <span class="fcLabel">Horizon</span>
+                        <div class="chartModes" role="group" aria-label="Forecast horizon">
+                            <button v-for="m in HORIZONS" :key="m" type="button"
+                                :class="['chartModeBtn', { active: forecastMonths === m }]"
+                                v-on:click="forecastMonths = m">{{ m === 12 ? '1Y' : m + 'M' }}</button>
+                            <button v-if="planMonths && !HORIZONS.includes(planMonths)" type="button"
+                                :class="['chartModeBtn', { active: forecastMonths === planMonths }]"
+                                v-on:click="forecastMonths = planMonths">Plan ({{ planMonths }}M)</button>
                         </div>
                     </div>
-                    <!-- What is left once the operation pays for itself. Separate
-                         from "earned" because the cost is not a trading result --
-                         it accrues whether or not the terminal was even open. -->
-                    <div class="statTile" v-if="cost">
-                        <div class="statLabel">After fixed cost</div>
-                        <div class="statValue" v-bind:class="pnlClass(cost.netAfter)">{{ fmt(cost.netAfter) }}</div>
-                        <div class="statSub">cost {{ fmt(cost.total) }} over {{ cost.spanDays }}d</div>
-                    </div>
-                    <!-- Money moved in/out. Kept out of "earned" so a top-up after
-                         blowing the account never reads as trading profit. -->
-                    <div class="statTile" v-if="hasCashFlow">
-                        <div class="statLabel">Cash flow</div>
-                        <div class="statValue cashFlowValue">
-                            <span v-if="equity.totalDeposited > 0" class="depositHi">+{{ fmt(equity.totalDeposited, 0) }}</span>
-                            <span v-if="equity.totalWithdrawn > 0" class="withdrawHi">−{{ fmt(equity.totalWithdrawn, 0) }}</span>
+
+                    <div class="fcGroup">
+                        <span class="fcLabel">Model</span>
+                        <div class="chartModes" role="group" aria-label="Growth model">
+                            <button v-for="fm in FORECAST_MODES" :key="fm.id" type="button"
+                                :class="['chartModeBtn', { active: forecast.effectiveMode === fm.id }]"
+                                :disabled="fm.id === 'compound' && !canCompound"
+                                :title="fm.id === 'compound' && !canCompound ? 'Compounding requires a positive account balance' : ''"
+                                v-on:click="forecastMode = fm.id">{{ fm.label }}</button>
                         </div>
-                        <div class="statSub">net {{ netCashFlow >= 0 ? '+' : '−' }}{{ fmt(Math.abs(netCashFlow)) }}</div>
+                    </div>
+
+                    <div class="fcGroup">
+                        <span class="fcLabel">Pace</span>
+                        <div class="chartModes" role="group" aria-label="Pace basis">
+                            <button v-for="b in PACE_BASES" :key="b.id" type="button"
+                                :class="['chartModeBtn', { active: paceBasis === b.id }]"
+                                v-on:click="paceBasis = b.id">{{ b.label }}</button>
+                        </div>
+                    </div>
+
+                    <div class="fcToggles">
+                        <button type="button" :class="['fcPill', { active: showBand }]"
+                            v-on:click="showBand = !showBand"
+                            title="Bootstrap 10th–90th percentile outcome range">
+                            P10–P90 Band
+                        </button>
+                        <button v-if="monthlyCost" type="button" :class="['fcPill', { active: includeCosts }]"
+                            v-on:click="includeCosts = !includeCosts"
+                            title="Subtract monthly fixed costs over calendar days in the forecast">
+                            After Costs
+                        </button>
+                        <button v-if="hasTarget && start > 0 && startDate" type="button"
+                            :class="['fcPill', { active: showPlanOverlay }]"
+                            v-on:click="showPlanOverlay = !showPlanOverlay"
+                            title="Overlay your Trading Plan target curve for comparison">
+                            Plan Overlay
+                        </button>
                     </div>
                 </div>
 
-                <p v-if="cost" class="hintLine mb-0">
-                    Running cost is {{ fmt(monthlyCost, 2) }} a month, so a traded day has to clear
-                    <strong>{{ fmt(cost.breakEvenPerTradedDay) }}</strong><span v-if="cost.breakEvenPctPerDay != null">
-                    ({{ fmt(cost.breakEvenPctPerDay, 3) }}% of {{ fmt(start, 0) }})</span> before the operation is even.<span
-                        v-if="isAmountMode && dailyAmount > 0">
-                    Your {{ fmt(dailyAmount) }}/day target {{ dailyAmount > cost.breakEvenPerTradedDay ? 'covers' : 'does not cover' }} it.</span><span
-                        v-else-if="!isAmountMode && target != null && cost.breakEvenPctPerDay != null">
-                    Your {{ fmt(target, 2) }}%/day target {{ target > cost.breakEvenPctPerDay ? 'covers' : 'does not cover' }} it.</span>
-                </p>
+                <!-- Honest diagnostic pills (sample size, momentum, outlier skew) -->
+                <div class="signalStrip mb-3"
+                    v-if="summary.sampleConfidence === 'low' || summary.momentum !== 'steady' || summary.outlierSkew">
+                    <span v-if="summary.sampleConfidence === 'low'" class="sigBadge sigWarn">
+                        <i class="uil uil-exclamation-triangle me-1"></i>
+                        Thin sample ({{ summary.tradedDays }}d) — bands sharpen at 10–30+ traded days
+                    </span>
+                    <span v-if="summary.momentum === 'accelerating'" class="sigBadge sigOk">
+                        <i class="uil uil-arrow-growth me-1"></i>
+                        Momentum accelerating: last {{ summary.recentCount }}d avg {{ fmt(summary.recentMeanNet) }}/day vs
+                        {{ fmt(summary.meanNet) }} overall
+                    </span>
+                    <span v-else-if="summary.momentum === 'cooling'" class="sigBadge sigWarn">
+                        <i class="uil uil-chart-down me-1"></i>
+                        Momentum cooling: last {{ summary.recentCount }}d avg {{ fmt(summary.recentMeanNet) }}/day vs
+                        {{ fmt(summary.meanNet) }} overall
+                    </span>
+                    <span v-if="summary.outlierSkew" class="sigBadge sigInfo">
+                        <i class="uil uil-info-circle me-1"></i>
+                        Mean ({{ fmt(summary.meanNet) }}) differs from Median ({{ fmt(summary.medianNet) }}) — outlier
+                        days skew average
+                    </span>
+                </div>
 
-                <p v-if="equity && equity.withdrawnOutsideRange > 0" class="hintLine mb-0">
-                    {{ fmt(equity.withdrawnOutsideRange) }} of withdrawals fall after the last traded day in this
-                    period, so they are not on the curve yet.
-                </p>
-
-                <!-- How far from getting the deposited money back, and how long that takes. -->
-                <div v-if="breakeven" class="breakevenBox mb-3">
-                    <div class="breakevenHead">
-                        <span class="breakevenTitle">
-                            <i class="uil uil-balance-scale me-1"></i>Back to breakeven
-                        </span>
-                        <span v-if="breakeven.gap > 0" class="breakevenGap">
-                            need <strong>{{ fmt(breakeven.gap) }}</strong> more
-                        </span>
-                        <span v-else class="breakevenGapOk">
-                            above breakeven by <strong>{{ fmt(-breakeven.gap) }}</strong>
-                        </span>
+                <!-- 6 Forecast Summary Tiles -->
+                <div class="statGrid my-3" style="--stat-tiles: 6">
+                    <div class="statTile">
+                        <div class="statLabel">Current Balance</div>
+                        <div class="statValue">{{ balanceNow == null ? '—' : fmtCompact(balanceNow) }}</div>
+                        <div class="statSub">{{ realBalance ? realBalance.source : 'from journal P&L' }}</div>
                     </div>
 
-                    <div class="breakevenRows">
-                        <div class="beRow">
-                            <span class="beLabel">Deposited</span>
-                            <span class="beVal depositHi">+{{ fmt(breakeven.deposited) }}</span>
+                    <div class="statTile">
+                        <div class="statLabel">Daily Pace ({{ PACE_BASES.find(b => b.id === paceBasis)?.label }})</div>
+                        <div v-if="forecast.effectiveMode === 'compound'" class="statValue"
+                            v-bind:class="pnlClass(activePacePct)">
+                            {{ activePacePct != null ? fmt(activePacePct, 2) + '%' : '—' }}
                         </div>
-                        <div class="beRow">
-                            <span class="beLabel">Withdrawn</span>
-                            <span class="beVal withdrawHi">−{{ fmt(breakeven.withdrawn) }}</span>
+                        <div v-else class="statValue" v-bind:class="pnlClass(activePaceDollar)">
+                            {{ fmt(activePaceDollar) }}
                         </div>
-                        <div class="beRow beRowStrong">
-                            <span class="beLabel">Your money in (net)</span>
-                            <span class="beVal">{{ fmt(breakeven.netIn) }}</span>
+                        <div class="statSub">
+                            {{ fmt(summary.tradedDaysPerWeek, 1) }}d/wk · avg {{ fmt(summary.meanNet) }}
                         </div>
-                        <div class="beRow">
-                            <span class="beLabel">Balance now</span>
-                            <span class="beVal" v-bind:class="pnlClass(breakeven.balance - breakeven.netIn)">
-                                {{ fmt(breakeven.balance) }}
+                    </div>
+
+                    <div class="statTile">
+                        <div class="statLabel">Projected (+{{ forecast.months }}M)</div>
+                        <div class="statValue" v-bind:class="pnlClass(forecast.expectedGain)">
+                            {{ fmtCompact(forecast.endExpected) }}
+                        </div>
+                        <div class="statSub">
+                            <span v-bind:class="pnlClass(forecast.expectedGain)">
+                                {{ forecast.expectedGain >= 0 ? '+' : '' }}{{ fmtCompact(forecast.expectedGain) }}
+                                <template v-if="forecast.expectedReturnPct != null">
+                                    ({{ fmt(forecast.expectedReturnPct, 1) }}%)
+                                </template>
                             </span>
                         </div>
                     </div>
 
-                    <div v-if="breakeven.gap > 0" class="beProjection">
-                        <div v-if="breakeven.daysAtCurrentPace != null" class="beProjLine">
-                            At your current pace ({{ fmt(breakeven.avgPerDay) }}/traded day) that is
-                            <strong>{{ Math.ceil(breakeven.daysAtCurrentPace) }}</strong> more trading day(s).
+                    <div class="statTile">
+                        <div class="statLabel">P10 – P90 Range</div>
+                        <div class="statValue rangeValue">
+                            {{ fmtCompact(forecast.endP10) }} → {{ fmtCompact(forecast.endP90) }}
                         </div>
-                        <div v-else class="beProjLine beProjWarn">
-                            <i class="uil uil-exclamation-triangle me-1"></i>
-                            Your average is {{ fmt(breakeven.avgPerDay) }} per traded day — losing, so at this pace
-                            the gap never closes. It widens.
+                        <div class="statSub">
+                            P50 {{ fmtCompact(forecast.endP50) }} · {{ fmt(forecast.probProfit, 0) }}% win chance
                         </div>
-                        <div v-if="breakeven.daysAtPlan != null" class="beProjLine beProjPlan">
-                            Hitting your {{ fmt(target, 2) }}%/day target instead:
-                            <strong>{{ Math.ceil(breakeven.daysAtPlan) }}</strong> trading day(s).
+                    </div>
+
+                    <div class="statTile">
+                        <div class="statLabel">Daily Win Rate</div>
+                        <div class="statValue">{{ fmt(summary.dayWinRate * 100, 0) }}%</div>
+                        <div class="statSub">
+                            {{ summary.winDays }}W · {{ summary.lossDays }}L · PF
+                            {{ summary.dailyProfitFactor != null ? fmt(summary.dailyProfitFactor, 2) : '∞' }}
+                        </div>
+                    </div>
+
+                    <div class="statTile" v-if="goalBalance > 0">
+                        <div class="statLabel">Goal ({{ fmtCompact(goalBalance, 0) }})</div>
+                        <div class="statValue"
+                            v-bind:class="forecast.expectedGoalEta ? 'greenTrade' : 'text-muted'">
+                            <template v-if="forecast.expectedGoalEta?.already">Reached</template>
+                            <template v-else-if="forecast.expectedGoalEta">
+                                ~{{ forecast.expectedGoalEta.tradingDays }}d
+                            </template>
+                            <template v-else>&gt;{{ forecast.months }}M</template>
+                        </div>
+                        <div class="statSub">
+                            <template v-if="forecast.expectedGoalEta && !forecast.expectedGoalEta.already">
+                                {{ forecast.expectedGoalEta.date }} · {{ fmt(forecast.probGoal, 0) }}% odds
+                            </template>
+                            <template v-else>
+                                {{ fmt(forecast.probGoal, 0) }}% sim reach odds
+                            </template>
+                        </div>
+                    </div>
+                    <div class="statTile" v-else-if="planAtForecastEnd != null">
+                        <div class="statLabel">Vs Plan (+{{ forecast.months }}M)</div>
+                        <div class="statValue" v-bind:class="pnlClass(forecast.endExpected - planAtForecastEnd)">
+                            {{ forecast.endExpected >= planAtForecastEnd ? '+' : '' }}{{ fmtCompact(forecast.endExpected - planAtForecastEnd) }}
+                        </div>
+                        <div class="statSub">plan target {{ fmtCompact(planAtForecastEnd) }}</div>
+                    </div>
+                    <div class="statTile" v-else>
+                        <div class="statLabel">Forecast Activity</div>
+                        <div class="statValue">~{{ fmt(forecast.expectedTradedDays, 0) }}d</div>
+                        <div class="statSub">
+                            of {{ forecast.futureTradingDays }} market days
+                            <template v-if="forecast.totalCostDrag > 0">
+                                · −{{ fmt(forecast.totalCostDrag, 0) }} cost
+                            </template>
                         </div>
                     </div>
                 </div>
 
+                <!-- ECharts Interactive Forecast Chart -->
                 <div v-if="hasChart" class="chartWrap mb-3">
                     <div class="chartHead">
                         <div class="chartTitle">{{ chartTitle }}</div>
@@ -977,7 +1048,7 @@ watch([equity, chartMode, yScale], async () => {
                                     :class="['chartModeBtn', { active: yScale === sc.value }]"
                                     :aria-pressed="yScale === sc.value" v-on:click="yScale = sc.value"
                                     :title="sc.value === 'symlog'
-                                        ? 'Compress the extremes so small days stay readable next to large ones'
+                                        ? 'Compress extremes so small days stay readable next to large ones'
                                         : 'Plain linear value axis'">
                                     {{ sc.label }}
                                 </button>
@@ -987,22 +1058,185 @@ watch([equity, chartMode, yScale], async () => {
                     <div ref="chartEl" class="chartBox"></div>
                 </div>
 
-                <p v-if="actualProjection" class="goalLine mb-0">
-                    At your actual pace, {{ fmt(start, 0) }} becomes
-                    <strong v-bind:class="pnlClass(actualProjection.profit)">{{ fmt(actualProjection.finalBalance) }}</strong>
-                    in {{ months }} month(s)
-                    (<span v-bind:class="pnlClass(actualProjection.totalReturnPct)">{{ fmt(actualProjection.totalReturnPct) }}%</span>)<span
-                        v-if="targetProjection"> — vs <strong class="planHi">{{ fmt(targetProjection.finalBalance) }}</strong>
-                        (<span class="planHi">{{ fmt(targetProjection.totalReturnPct) }}%</span>) if you hit your
-                        <span class="targetHi">{{ fmt(target, 2) }}%/day target</span></span>.
-                </p>
-                <p v-else-if="!months" class="hintLine mb-0">Enter a horizon above to project your actual pace forward.</p>
+                <!-- 3-Scenario Comparison Strip -->
+                <div class="scenarioGrid mb-3">
+                    <div v-for="sc in paceScenarios" :key="sc.id"
+                        :class="['scenarioCard', { active: paceBasis === sc.id }]"
+                        v-on:click="paceBasis = sc.id">
+                        <div class="scHead">
+                            <span class="scTitle">{{ sc.label }}</span>
+                            <span class="scRate" v-bind:class="pnlClass(sc.forecast?.expectedGain)">
+                                <template v-if="sc.forecast?.effectiveMode === 'compound'">
+                                    {{ fmt(sc.forecast.pacePct, 2) }}%/d
+                                </template>
+                                <template v-else-if="sc.forecast">
+                                    {{ fmt(sc.forecast.paceDollar) }}/d
+                                </template>
+                            </span>
+                        </div>
+                        <div class="scVal" v-if="sc.forecast">
+                            {{ fmtCompact(sc.forecast.endExpected) }}
+                            <span class="scGain" v-bind:class="pnlClass(sc.forecast.expectedGain)">
+                                ({{ sc.forecast.expectedGain >= 0 ? '+' : '' }}{{ fmtCompact(sc.forecast.expectedGain) }})
+                            </span>
+                        </div>
+                        <div class="scHint">{{ sc.hint }}</div>
+                    </div>
+                </div>
 
-                <p class="txt-small text-muted mt-2 mb-0">
-                    <i class="uil uil-info-circle me-1"></i>Actual % per day = average daily net P&amp;L ÷ your starting
-                    balance, over the days you actually traded in the selected period.
+                <!-- Fixed Cost Reality Check -->
+                <p v-if="cost" class="hintLine mb-2">
+                    Running cost is <strong>{{ fmt(monthlyCost, 2) }}/mo</strong> — over {{ cost.spanDays }}d of history
+                    that is {{ fmt(cost.total) }} (net after cost:
+                    <strong v-bind:class="pnlClass(cost.netAfter)">{{ fmt(cost.netAfter) }}</strong>).
+                    Each traded day must average <strong>{{ fmt(cost.breakEvenPerTradedDay) }}</strong>
+                    <span v-if="cost.breakEvenPctPerDay != null">({{ fmt(cost.breakEvenPctPerDay, 3) }}%)</span>
+                    just to cover overhead.
+                </p>
+
+                <!-- Back to breakeven vs net deposited capital -->
+                <div v-if="breakeven" class="breakevenBox mt-2">
+                    <div class="breakevenHead">
+                        <span class="breakevenTitle">
+                            <i class="uil uil-balance-scale me-1"></i>Net Contribution Breakeven
+                        </span>
+                        <span v-if="breakeven.gap > 0" class="breakevenGap">
+                            need <strong>{{ fmt(breakeven.gap) }}</strong> to break even
+                        </span>
+                        <span v-else class="breakevenGapOk">
+                            above net contribution by <strong>{{ fmt(-breakeven.gap) }}</strong>
+                        </span>
+                    </div>
+
+                    <div class="breakevenRows">
+                        <div class="beRow">
+                            <span class="beLabel">Deposited</span>
+                            <span class="beVal depositHi">+{{ fmt(breakeven.deposited) }}</span>
+                        </div>
+                        <div class="beRow">
+                            <span class="beLabel">Withdrawn</span>
+                            <span class="beVal withdrawHi">−{{ fmt(breakeven.withdrawn) }}</span>
+                        </div>
+                        <div class="beRow beRowStrong">
+                            <span class="beLabel">Net capital in</span>
+                            <span class="beVal">{{ fmt(breakeven.netIn) }}</span>
+                        </div>
+                        <div class="beRow">
+                            <span class="beLabel">Balance now</span>
+                            <span class="beVal" v-bind:class="pnlClass(breakeven.balance - breakeven.netIn)">
+                                {{ fmt(breakeven.balance) }}
+                            </span>
+                        </div>
+                    </div>
+
+                    <div v-if="breakeven.gap > 0" class="beProjection">
+                        <div v-if="breakeven.daysAtCurrentPace != null" class="beProjLine">
+                            At current average ({{ fmt(breakeven.avgPerDay) }}/traded day):
+                            <strong>{{ Math.ceil(breakeven.daysAtCurrentPace) }}</strong> more trading day(s).
+                        </div>
+                        <div v-else class="beProjLine beProjWarn">
+                            <i class="uil uil-exclamation-triangle me-1"></i>
+                            Average is {{ fmt(breakeven.avgPerDay) }}/traded day — negative expectancy widens the gap.
+                        </div>
+                    </div>
+                </div>
+
+                <p class="txt-small text-muted mt-3 mb-0">
+                    <i class="uil uil-info-circle me-1"></i>
+                    Forecast resamples your real daily results at your historical cadence ({{ fmt(summary.tradedDaysPerWeek, 1) }}
+                    traded days/week, skipping weekends). Compounding % scales with balance; Fixed $/day assumes constant size.
                 </p>
             </template>
+        </div>
+
+        <!-- ==================== LOT FOR TODAY & PROJECTED LOT SCALING ==================== -->
+        <div class="planCard mb-3" v-if="todayDollars">
+            <div class="planCardHead">
+                <span class="planCardTitle">Position Sizing (Today &amp; Projected)</span>
+            </div>
+            <p class="txt-small mt-2 mb-2">
+                Balance now: <strong>{{ fmt(realBalance.value) }}</strong>
+                <span class="text-muted">({{ realBalance.source }})</span>
+                <template v-if="planToday">
+                    · Plan benchmark today: <strong class="planHi">{{ fmt(planToday.balance) }}</strong>
+                    (<span v-bind:class="pnlClass(realBalance.value - planToday.balance)">
+                        {{ realBalance.value >= planToday.balance ? '+' : '−' }}{{ fmt(Math.abs(realBalance.value - planToday.balance)) }}
+                    </span>)
+                </template>
+                <template v-if="forecast && projectedEndLot != null">
+                    · At projected +{{ forecast.months }}M (<strong>{{ fmtCompact(forecast.endExpected) }}</strong>):
+                    <strong class="greenTrade">{{ fmt(projectedEndLot, 2) }} lot</strong>
+                </template>
+            </p>
+            <PlanLotSizing :plan="activePlan" :dollars="todayDollars"
+                :basis="!isAmountMode && !hasTiers && target != null ? fmt(target, 2) + '% of ' + fmt(realBalance.value) : ''">
+                Sized on your real balance today; projected lot shows how size scales if your forecast plays out.
+            </PlanLotSizing>
+        </div>
+
+        <!-- ==================== COLLAPSIBLE PLAN BENCHMARK & FIXED COSTS ==================== -->
+        <div class="planCard">
+            <div class="planCardHead configToggleHead" v-on:click="showPlanConfig = !showPlanConfig">
+                <div class="d-flex flex-wrap align-items-center gap-2">
+                    <span class="planCardTitle">
+                        <i :class="['uil', showPlanConfig ? 'uil-angle-down' : 'uil-angle-right', 'me-1']"></i>
+                        Plan Benchmark, Goal &amp; Fixed Costs
+                    </span>
+                    <span class="txt-small text-muted">
+                        {{ activePlan.name }}
+                        <template v-if="goalBalance > 0"> · Goal {{ fmtCompact(goalBalance, 0) }}</template>
+                        <template v-if="hasTarget">
+                            · Target {{ isAmountMode ? fmt(dailyAmount) + '/d' : fmt(target, 2) + '%/d' }}
+                        </template>
+                        <template v-if="monthlyCost"> · Cost {{ fmt(monthlyCost, 0) }}/mo</template>
+                    </span>
+                </div>
+                <span class="txt-small text-muted">{{ showPlanConfig ? 'Hide' : 'Configure' }}</span>
+            </div>
+
+            <div v-if="showPlanConfig" class="mt-3">
+                <PlanSelector />
+
+                <p class="txt-small text-muted mb-3">
+                    Shared with <a href="/plan">Trading Plan</a> — set a goal balance, optional plan target line,
+                    or monthly overhead costs to factor into your forecast.
+                </p>
+
+                <div class="planInputs mb-3">
+                    <div>
+                        <label class="planLabel">Goal balance</label>
+                        <input type="number" min="0" step="100" placeholder="e.g. 5000"
+                            class="form-control form-control-sm" v-model="activePlan.goalBalance" />
+                    </div>
+                    <div>
+                        <label class="planLabel">Start date</label>
+                        <FpDate mode="date" v-model="activePlan.startDate" />
+                    </div>
+                    <div>
+                        <label class="planLabel">Starting balance</label>
+                        <input type="number" min="0" step="100" placeholder="e.g. 1000"
+                            class="form-control form-control-sm" v-model="activePlan.startBalance" />
+                    </div>
+                    <div>
+                        <label class="planLabel">Plan horizon (months)</label>
+                        <input type="number" min="1" max="120" step="1" placeholder="e.g. 3"
+                            class="form-control form-control-sm" v-model="activePlan.horizonMonths" />
+                    </div>
+                    <div>
+                        <label class="planLabel">Target % per day</label>
+                        <input type="number" step="0.1" placeholder="e.g. 1" class="form-control form-control-sm"
+                            v-model="activePlan.dailyPct" />
+                    </div>
+                </div>
+
+                <div class="subCard mb-3">
+                    <PlanDepositsEditor :plan="activePlan" />
+                </div>
+
+                <div class="subCard">
+                    <PlanCostsEditor :plan="activePlan" />
+                </div>
+            </div>
         </div>
     </div>
 </template>
@@ -1016,13 +1250,91 @@ watch([equity, chartMode, yScale], async () => {
     padding: 0.5rem 0.7rem;
 }
 
-/* Fixed column counts, each a divisor of the six tiles, so every row comes out
-   full: 6 across on desktop, 3 on tablet, 2 on phone. Content-driven wrapping
-   was the problem before -- auto-fit and flex-wrap both pick whatever number
-   happens to fit, and at some widths that leaves the last tile on its own. Flex
-   then stretches it across the whole row (a wide box with one small number in
-   the corner); grid instead leaves that span empty. Choosing the counts removes
-   the case rather than trading one artifact for the other. */
+.forecastControls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem 1.1rem;
+    padding: 0.6rem 0.75rem;
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 0.5rem;
+}
+
+.fcGroup {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+}
+
+.fcLabel {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--white-60);
+}
+
+.fcToggles {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-left: auto;
+}
+
+.fcPill {
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: transparent;
+    color: var(--white-60);
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.22rem 0.6rem;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.fcPill:hover {
+    color: var(--white-87);
+    border-color: rgba(255, 255, 255, 0.28);
+}
+
+.fcPill.active {
+    background: rgba(0, 202, 115, 0.16);
+    border-color: rgba(0, 202, 115, 0.45);
+    color: #00CA73;
+}
+
+.signalStrip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.sigBadge {
+    font-size: 0.76rem;
+    padding: 0.3rem 0.65rem;
+    border-radius: 0.4rem;
+    border: 1px solid transparent;
+}
+
+.sigOk {
+    background: rgba(0, 202, 115, 0.10);
+    border-color: rgba(0, 202, 115, 0.28);
+    color: #00CA73;
+}
+
+.sigWarn {
+    background: rgba(245, 158, 11, 0.10);
+    border-color: rgba(245, 158, 11, 0.28);
+    color: #f59e0b;
+}
+
+.sigInfo {
+    background: rgba(56, 189, 248, 0.10);
+    border-color: rgba(56, 189, 248, 0.28);
+    color: #38bdf8;
+}
+
 .statGrid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1035,14 +1347,12 @@ watch([equity, chartMode, yScale], async () => {
     }
 }
 
-@media (min-width: 1040px) {
+@media (min-width: 1120px) {
     .statGrid {
         grid-template-columns: repeat(var(--stat-tiles, 6), minmax(0, 1fr));
     }
 }
 
-/* Width comes from the grid track, so no flex-basis or max-width here -- adding
-   either would fight the column definition and reintroduce the leftover strip. */
 .statTile {
     background-color: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.06);
@@ -1051,39 +1361,94 @@ watch([equity, chartMode, yScale], async () => {
 }
 
 .statLabel {
-    font-size: 0.72rem;
+    font-size: 0.70rem;
     text-transform: uppercase;
     letter-spacing: 0.04em;
     opacity: 0.6;
 }
 
 .statValue {
-    font-size: 1.35rem;
+    font-size: 1.28rem;
     font-weight: 700;
     margin-top: 0.15rem;
+    font-variant-numeric: tabular-nums;
 }
 
-/* Two signed amounts in one value slot. Wraps rather than overflowing when the
-   tile is narrow, and steps down a little so "+481 −70" still fits beside the
-   single-number tiles on the same row. */
-.cashFlowValue {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 0.4rem;
-    font-size: 1.15rem;
+.rangeValue {
+    font-size: 1.05rem;
 }
 
 .statSub {
     font-size: 0.72rem;
-    opacity: 0.6;
+    opacity: 0.65;
+    margin-top: 0.1rem;
+}
+
+.scenarioGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 0.65rem;
+}
+
+.scenarioCard {
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 0.55rem;
+    padding: 0.65rem 0.85rem;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.scenarioCard:hover {
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+.scenarioCard.active {
+    background: rgba(245, 158, 11, 0.08);
+    border-color: rgba(245, 158, 11, 0.45);
+}
+
+.scHead {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.5rem;
+    font-size: 0.75rem;
+}
+
+.scTitle {
+    font-weight: 600;
+    color: var(--white-87);
+}
+
+.scRate {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.scVal {
+    font-size: 1.08rem;
+    font-weight: 700;
+    margin-top: 0.2rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.scGain {
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.scHint {
+    font-size: 0.70rem;
+    color: var(--white-60);
+    margin-top: 0.15rem;
 }
 
 .planInputs {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     gap: 0.75rem;
-    max-width: 720px;
+    max-width: 880px;
 }
 
 .planLabel {
@@ -1102,32 +1467,33 @@ watch([equity, chartMode, yScale], async () => {
     padding: 0.9rem 1rem;
 }
 
+.subCard {
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    background-color: rgba(255, 255, 255, 0.02);
+    border-radius: 0.5rem;
+    padding: 0.75rem 0.9rem;
+}
+
 .planCardHead {
     display: flex;
     flex-wrap: wrap;
-    align-items: end;
+    align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
+}
+
+.configToggleHead {
+    cursor: pointer;
+    user-select: none;
 }
 
 .planCardTitle {
     font-weight: 700;
 }
 
-.goalLine {
-    font-size: 0.92rem;
-}
-
-/* Plan target highlight — same blue as the Plan line in the chart, so the
-   target figure reads as "plan", distinct from the green/red actual. */
 .planHi {
     color: #2f9bff;
     font-weight: 700;
-}
-
-.targetHi {
-    font-weight: 700;
-    text-decoration: underline;
 }
 
 .chartWrap {
@@ -1136,13 +1502,10 @@ watch([equity, chartMode, yScale], async () => {
     padding: 0.6rem 0.4rem 0.4rem;
 }
 
-/* Matches WITHDRAW_COLOR in the chart, so the tile and the marks read as one
-   thing. Not red: a planned withdrawal is not a loss. */
 .withdrawHi {
     color: #c084fc;
 }
 
-/* Matches DEPOSIT_COLOR. Not green: new capital is not a win. */
 .depositHi {
     color: #38bdf8;
 }
@@ -1217,16 +1580,8 @@ watch([equity, chartMode, yScale], async () => {
     color: var(--white-70);
 }
 
-.beProjLine+.beProjLine {
-    margin-top: 0.25rem;
-}
-
 .beProjWarn {
     color: #F6465D;
-}
-
-.beProjPlan {
-    color: #38bdf8;
 }
 
 .chartHead {
@@ -1266,8 +1621,13 @@ watch([equity, chartMode, yScale], async () => {
     transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-.chartModeBtn:hover {
+.chartModeBtn:hover:not(:disabled) {
     color: var(--white-87);
+}
+
+.chartModeBtn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
 }
 
 .chartModeBtn.active {
@@ -1275,12 +1635,9 @@ watch([equity, chartMode, yScale], async () => {
     color: #2f9bff;
 }
 
-/* Taller than the old 280px: with a range spanning roughly -700 to +450, height
-   is what gives a +10 day any pixels at all. Scales with the viewport so it
-   doesn't dominate a laptop screen. */
 .chartBox {
     width: 100%;
-    height: clamp(320px, 52vh, 520px);
+    height: clamp(340px, 54vh, 540px);
 }
 
 .chartControls {
@@ -1290,8 +1647,6 @@ watch([equity, chartMode, yScale], async () => {
     flex-wrap: wrap;
 }
 
-/* Explicit colour, not opacity: opacity would multiply with the inherited
-   alpha and drop this below the readable threshold. */
 .hintLine {
     font-size: 0.85rem;
     color: var(--white-60);
