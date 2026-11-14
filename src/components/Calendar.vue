@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { pageId, selectedMonth, selectedPlSatisfaction, amountCase, calendarData, miniCalendarsData, timeZoneTrade, spinnerLoadingPage, filteredTrades, notes } from '../stores/globals';
 import { useThousandCurrencyFormat, useTwoDecCurrencyFormat, useMountCalendar, useMountDaily } from '../utils/utils';
+import { buildCalendarWeeks, isSameYearMonth } from '../utils/calendarSummary';
 import dayjs from 'dayjs'
 import utc from 'dayjs/plugin/utc.js'
 dayjs.extend(utc)
@@ -22,14 +23,41 @@ dayjs.extend(customParseFormat)
 // Column order must match the calendarize() offset in utils/calendar.js (0 = Sunday).
 const days = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]
 
+const viewedMonthParts = computed(() => {
+    const d = dayjs(selectedMonth.value.start * 1000).tz(timeZoneTrade.value)
+    return { year: d.year(), month: d.month() }
+})
+
+const nowMonthParts = computed(() => {
+    const d = dayjs().tz(timeZoneTrade.value)
+    return { year: d.year(), month: d.month() }
+})
+
+const isViewingLatestMonth = computed(() =>
+    isSameYearMonth(
+        viewedMonthParts.value.year,
+        viewedMonthParts.value.month,
+        nowMonthParts.value.year,
+        nowMonthParts.value.month
+    )
+)
+
+const calendarWeeks = computed(() => buildCalendarWeeks(calendarData, amountCase.value))
+
 // Year-at-a-glance summary. On the Calendar page filteredTrades already spans
 // the full calendar year (see useGetSelectedRange), independent of which month
 // the grid above is showing, so aggregate it per month plus a year total.
 const yearSummary = computed(() => {
-    const year = dayjs(selectedMonth.value.start * 1000).tz(timeZoneTrade.value).year()
+    const year = viewedMonthParts.value.year
+    const { year: nowYear, month: nowMonth } = nowMonthParts.value
     const key = amountCase.value + 'Proceeds'
     const months = Array.from({ length: 12 }, (_, m) => ({
-        m, label: dayjs().month(m).format('MMM'), total: 0, trades: 0, has: false
+        m,
+        label: dayjs().month(m).format('MMM'),
+        total: 0,
+        trades: 0,
+        has: false,
+        isLatest: isSameYearMonth(year, m, nowYear, nowMonth)
     }))
     for (const t of filteredTrades) {
         if (Number(t.year) !== year) continue
@@ -68,17 +96,56 @@ async function monthLastNext(param) {
             <div class="col-12">
                 <div class="calMonthNav">
                     <i class="uil uil-angle-left-b calNavBtn pointerClass" v-on:click="monthLastNext(-1)"></i>
-                    <span class="calMonthLabel" v-if="calendarData.hasOwnProperty(0)">{{ calendarData[0][0].month }}</span>
+                    <span class="calMonthLabelWrap" v-if="calendarData.hasOwnProperty(0)">
+                        <span class="calMonthLabel">{{ calendarData[0][0].month }}</span>
+                        <span v-if="pageId == 'calendar' && isViewingLatestMonth" class="calLatestBadge" title="Latest month">
+                            <span class="calLatestDot"></span>Latest
+                        </span>
+                    </span>
                     <i class="uil uil-angle-right-b calNavBtn pointerClass" v-on:click="monthLastNext(1)"></i>
                 </div>
             </div>
         </div>
     </div>
     <div v-bind:class="[pageId === 'calendar' ? 'mb-4' : '', 'col-12']">
-        <div class="row">
-            <div class="col" v-for="(day, index) in days">
+        <div v-if="pageId == 'calendar'" class="calMonthGrid">
+            <div class="calWeekday" v-for="day in days" :key="day">{{ day }}</div>
+            <div class="calWeekday calWeekHeading">Weekly</div>
+            <template v-for="w in calendarWeeks" :key="w.index">
+                <template v-for="(cell, dIdx) in w.cells" :key="`${w.index}-${dIdx}`">
+                    <div v-if="cell && cell.day > 0"
+                        v-bind:class="[{ 'greenTradeDiv': selectedPlSatisfaction == 'pl' ? cell.pAndL[amountCase + 'Proceeds'] >= 0 : cell.satisfaction == true, 'redTradeDiv': selectedPlSatisfaction == 'pl' ? cell.pAndL[amountCase + 'Proceeds'] < 0 : cell.satisfaction == false }, 'calDivDash', 'calCellPos']">
+                        <!-- Same whole-day note flag as the History day cards -- a
+                             note set on this date shows here too. -->
+                        <i v-if="cell.dateUnix && notes.some(n => n.tradeId === 'day' && n.dateUnix === cell.dateUnix && n.note && n.note.trim())"
+                            class="uil uil-bell calNoteBell" title="Day note"></i>
+                        <p class="mb-1 dayNumber">{{ cell.day }}</p>
+                        <div class="d-none d-md-block text-center calCellBody">
+                            <p class="calAmount mb-1" v-show="cell.pAndL[amountCase + 'Proceeds'] !== undefined">
+                                {{ (cell.pAndL[amountCase + 'Proceeds'] >= 0 ? '+' : '') + useTwoDecCurrencyFormat(cell.pAndL[amountCase + 'Proceeds']) }}
+                            </p>
+                            <p class="calTrades mb-0" v-show="cell.pAndL.trades">{{ cell.pAndL.trades }} trades</p>
+                        </div>
+                    </div>
+                    <div v-else class="calDivDash calDayEmpty"></div>
+                </template>
+                <div v-bind:class="['calWeekCell', w.has ? (w.total >= 0 ? 'calWeekWin' : 'calWeekLoss') : 'calWeekEmpty']">
+                    <div class="calWeekMeta">
+                        <span class="calWeekNum">W{{ w.weekNum }}</span>
+                        <span class="calWeekRange">{{ w.rangeLabel }}</span>
+                    </div>
+                    <div class="calWeekAmount" v-if="w.has">
+                        {{ (w.total >= 0 ? '+' : '') + useTwoDecCurrencyFormat(w.total) }}
+                    </div>
+                    <div class="calWeekDash" v-else>—</div>
+                    <div class="calWeekTrades" v-if="w.has">{{ w.trades }} {{ w.trades === 1 ? 'trade' : 'trades' }}</div>
+                </div>
+            </template>
+        </div>
+        <div v-else class="row">
+            <div class="col" v-for="(day, index) in days" :key="day">
                 <div class="calWeekday">{{ day }}</div>
-                <div v-for="line in calendarData">
+                <div v-for="(line, lineIdx) in calendarData" :key="lineIdx">
                     <div class="row">
                         <div v-show="line[index] != 0"
                             v-bind:class="[{ 'greenTradeDiv': selectedPlSatisfaction == 'pl' ? line[index].pAndL[amountCase + 'Proceeds'] >= 0 : line[index].satisfaction == true, 'redTradeDiv': selectedPlSatisfaction == 'pl' ? line[index].pAndL[amountCase + 'Proceeds'] < 0 : line[index].satisfaction == false, 'calDivDay': pageId == 'daily', 'calDivDash': pageId == 'calendar' }, 'col', 'calCellPos']">
@@ -87,12 +154,6 @@ async function monthLastNext(param) {
                             <i v-if="line[index].dateUnix && notes.some(n => n.tradeId === 'day' && n.dateUnix === line[index].dateUnix && n.note && n.note.trim())"
                                 class="uil uil-bell calNoteBell" title="Day note"></i>
                             <p class="mb-1 dayNumber" v-show="line[index].day != 0">{{ line[index].day }}</p>
-                            <div v-if="pageId == 'calendar'" class="d-none d-md-block text-center calCellBody">
-                                <p class="calAmount mb-1" v-show="line[index].pAndL[amountCase + 'Proceeds']">
-                                    {{ (line[index].pAndL[amountCase + 'Proceeds'] >= 0 ? '+' : '') + useTwoDecCurrencyFormat(line[index].pAndL[amountCase + 'Proceeds']) }}
-                                </p>
-                                <p class="calTrades mb-0" v-show="line[index].pAndL.trades">{{ line[index].pAndL.trades }} trades</p>
-                            </div>
                         </div>
                     </div>
                 </div>
@@ -110,8 +171,13 @@ async function monthLastNext(param) {
         </div>
         <div class="yearGrid">
             <div v-for="mo in yearSummary.months" :key="mo.m"
-                v-bind:class="['yearCell', mo.has ? (mo.total >= 0 ? 'yearWin' : 'yearLoss') : 'yearEmpty']">
-                <div class="yearMonth">{{ mo.label }}</div>
+                v-bind:class="['yearCell', mo.has ? (mo.total >= 0 ? 'yearWin' : 'yearLoss') : 'yearEmpty', { 'yearCellLatest': mo.isLatest }]">
+                <div class="yearMonth">
+                    <span>{{ mo.label }}</span>
+                    <span v-if="mo.isLatest" class="yearLatestBadge" title="Latest month">
+                        <span class="calLatestDot"></span>Latest
+                    </span>
+                </div>
                 <div class="yearAmount" v-show="mo.has">
                     {{ (mo.total >= 0 ? '+' : '') + useTwoDecCurrencyFormat(mo.total) }}
                 </div>
@@ -130,12 +196,44 @@ async function monthLastNext(param) {
     margin-bottom: 0.75rem;
 }
 
+.calMonthLabelWrap {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+}
+
 .calMonthLabel {
     font-weight: 700;
     font-size: 1rem;
     color: var(--white-87);
     min-width: 130px;
     text-align: center;
+}
+
+.calLatestBadge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.14rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--blue-active-color, #38bdf8);
+    background: rgba(56, 189, 248, 0.14);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    line-height: 1.2;
+}
+
+.calLatestDot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: #00CA73;
+    box-shadow: 0 0 6px #00CA73;
+    flex-shrink: 0;
 }
 
 .calNavBtn {
@@ -155,6 +253,164 @@ async function monthLastNext(param) {
 .calNavBtn:hover {
     background-color: var(--surface-hover);
     border-color: var(--border-strong);
+}
+
+/* Calendar-page 8-column grid (Su..Sa + Weekly summary) */
+.calMonthGrid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr)) minmax(140px, 1fr);
+    gap: 6px;
+    align-items: stretch;
+}
+
+.calMonthGrid .calWeekday {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--white-60);
+    padding-bottom: 0.2rem;
+    border: 1px solid transparent;
+    text-align: center;
+}
+
+.calMonthGrid .calWeekHeading {
+    color: var(--blue-active-color, #38bdf8);
+    margin-left: 14px;
+    position: relative;
+}
+
+.calMonthGrid .calWeekHeading::before,
+.calWeekCell::before {
+    content: '';
+    position: absolute;
+    left: -11px;
+    top: -4px;
+    bottom: -4px;
+    width: 1px;
+    background: var(--border-strong, rgba(255, 255, 255, 0.18));
+    pointer-events: none;
+}
+
+.calMonthGrid .calWeekHeading::before {
+    top: 2px;
+}
+
+.calWeekCell:last-child::before {
+    bottom: 0;
+}
+
+.calMonthGrid .calDivDash {
+    margin: 0;
+    height: 100%;
+}
+
+.calDayEmpty {
+    opacity: 0.32;
+    pointer-events: none;
+}
+
+.calWeekCell {
+    position: relative;
+    margin-left: 14px;
+    border-radius: var(--radius-sm, 8px);
+    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+    padding: 0.55rem 0.5rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.18rem;
+    text-align: center;
+}
+
+.calWeekEmpty {
+    background-color: var(--black-bg-7, rgba(255, 255, 255, 0.02));
+    color: var(--white-60);
+}
+
+.calWeekWin {
+    background-color: rgba(0, 202, 115, 0.09);
+    border-color: rgba(0, 202, 115, 0.28);
+}
+
+.calWeekLoss {
+    background-color: rgba(246, 70, 93, 0.09);
+    border-color: rgba(246, 70, 93, 0.28);
+}
+
+.calWeekMeta {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--white-70, rgba(237, 240, 247, 0.72));
+}
+
+.calWeekNum {
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 0.06rem 0.32rem;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.07);
+    color: var(--white-87, rgba(237, 240, 247, 0.92));
+}
+
+.calWeekRange {
+    opacity: 0.85;
+}
+
+.calWeekAmount {
+    font-weight: 800;
+    font-size: 1.05rem;
+    line-height: 1.2;
+}
+
+.calWeekWin .calWeekAmount {
+    color: #00CA73;
+}
+
+.calWeekLoss .calWeekAmount {
+    color: var(--red-color, #F6465D);
+}
+
+.calWeekDash {
+    font-size: 0.95rem;
+    opacity: 0.5;
+}
+
+.calWeekTrades {
+    font-weight: 600;
+    font-size: 0.76rem;
+    color: var(--white-60, rgba(237, 240, 247, 0.6));
+}
+
+@media (max-width: 767.98px) {
+    .calMonthGrid {
+        grid-template-columns: repeat(7, minmax(0, 1fr));
+        gap: 4px;
+    }
+
+    .calWeekHeading {
+        display: none;
+    }
+
+    .calWeekCell {
+        grid-column: 1 / -1;
+        flex-direction: row;
+        justify-content: space-between;
+        min-height: 36px;
+        padding: 0.35rem 0.65rem;
+        margin-left: 0;
+        margin-bottom: 0.35rem;
+    }
+
+    .calWeekCell::before {
+        display: none;
+    }
+
+    .calWeekAmount {
+        font-size: 0.92rem;
+    }
 }
 
 /* Calendar-page day cells: heavier text, centered + larger P/L amount */
@@ -281,6 +537,10 @@ async function monthLastNext(param) {
     gap: 0.15rem;
 }
 
+.yearCellLatest {
+    box-shadow: 0 0 0 1.5px rgba(56, 189, 248, 0.7);
+}
+
 .yearEmpty {
     background-color: var(--black-bg-7, rgba(255, 255, 255, 0.02));
     color: var(--white-50, rgba(255, 255, 255, 0.4));
@@ -315,8 +575,28 @@ async function monthLastNext(param) {
 }
 
 .yearMonth {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
     font-weight: 700;
     font-size: 0.9rem;
+}
+
+.yearLatestBadge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.24rem;
+    padding: 0.1rem 0.38rem;
+    border-radius: 999px;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    background: rgba(14, 16, 21, 0.55);
+    color: #edf0f7;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    line-height: 1.15;
 }
 
 .yearAmount {
