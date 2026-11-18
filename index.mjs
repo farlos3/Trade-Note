@@ -358,13 +358,14 @@ const setupApiRoutes = (app) => {
     })()
 
     // Default model per provider; ANALYSIS_MODEL overrides either.
-    // Gemini defaults to the cheapest tier (flash-lite), and to the floating
+    // Gemini defaults to flash (free tier; lite was too shallow), and to the floating
     // "-latest" alias rather than a pinned version: Google retires pinned models
     // for new keys ("no longer available to new users"), which is exactly how a
     // hard-coded gemini-2.5-flash broke here. The alias tracks the current model.
     // For claude-cli an empty model means "let the bridge choose" (its default is sonnet).
     const ANALYSIS_MODEL = process.env.ANALYSIS_MODEL
-        || (AI_PROVIDER === 'gemini' ? 'gemini-flash-lite-latest'
+        // flash, not flash-lite: lite restated the numbers back instead of explaining them.
+        || (AI_PROVIDER === 'gemini' ? 'gemini-flash-latest'
             : AI_PROVIDER === 'claude-cli' ? ''
             : 'claude-opus-5')
 
@@ -421,7 +422,8 @@ const setupApiRoutes = (app) => {
         const { data } = await axios.post(url, {
             systemInstruction: { parts: [{ text: system }] },
             contents: [{ role: 'user', parts: [{ text: userText }] }],
-            generationConfig: { maxOutputTokens: 8192, temperature: 0.4 },
+            // Room for the model's thinking tokens, which count against this limit.
+            generationConfig: { maxOutputTokens: 16384, temperature: 0.4 },
         }, {
             headers: { 'x-goog-api-key': geminiKey, 'Content-Type': 'application/json' },
             timeout: 120000,

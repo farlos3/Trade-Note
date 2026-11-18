@@ -64,7 +64,7 @@ export const THIN_BUCKET_TRADES = 10
 export function deriveMetrics(stats, patterns) {
     const out = {
         breakEvenWinRate: null, payoffRatio: null, edgeMargin: null, netWithoutFlaggedDays: null,
-        thinBuckets: { byEntryHour: [], byWeekday: [], bySymbol: [] },
+        thinBuckets: { byEntryHour: [], byWeekday: [], bySymbol: [], byDirection: [], byLotSize: [], byHoldTime: [] },
     }
     if (!stats) return out
     for (const group of Object.keys(out.thinBuckets)) {
@@ -165,6 +165,20 @@ export function buildSystemPrompt({ lang } = {}) {
         '   the lot figures in patterns), say that the blend can hide current habits and which part you are relying on.',
         '6. Test the trader\'s own rules. If the notes or reviews state a rule (a risk percentage, a trade limit, no entry',
         '   without a setup), check it against the numbers and report kept or broken, with a figure.',
+        '7. Break the result apart. stats.byDirection (long vs short), stats.byLotSize and stats.byHoldTime show WHERE',
+        '   the money is made and lost. Find the slice that carries the losses: e.g. larger lots losing while 0.01 wins,',
+        '   or quick exits winning while long holds bleed. That is usually the most useful finding in the whole reply.',
+        '8. Read the sequence. stats.streaks, stats.maxDrawdown and stats.days show how the money moved: how deep the',
+        '   worst run-down went against the net result, whether one best day carried the period (bestDayShareOfNet),',
+        '   and how many days were red. stats.largestLosses / largestWins give the biggest trades with date, hour,',
+        '   lot and holding time; check whether the big losses share a trait (same lot, long holds, same hour, right',
+        '   after another loss) and match them against the notes written that day.',
+        '',
+        'DEPTH',
+        'Do not stop at restating a number. For each finding give: what happened (the figure), the likely mechanism',
+        '(why the numbers look like this, grounded in another figure or in the trader\'s own words), and what it cost.',
+        'Connect sources: a statistic is worth more next to the note or entry review that explains it. Prefer one',
+        'finding explained properly over three named in passing.',
         '',
         'TONE',
         'Direct and specific. No flattery, no moralising, no diagnosing anyone\'s mental state. Name what the data shows',
@@ -197,7 +211,9 @@ export function buildSystemPrompt({ lang } = {}) {
         placeholder.point,
         placeholder.point,
         '',
-        'Every bullet sits under one of those headings; do not merge sections. Keep each bullet to one or two',
-        'sentences and the whole reply short. Do not restate the raw JSON.',
+        'Every bullet sits under one of those headings; do not merge sections. The verdict is two or three sentences:',
+        'the edge (or lack of it) and the single biggest reason. Strengths: two to four bullets. Watch-outs: three to',
+        'five bullets, ordered by money. Each bullet is two to four sentences carrying the figure, the mechanism and',
+        'the cost. Do not restate the raw JSON.',
     ].join('\n')
 }

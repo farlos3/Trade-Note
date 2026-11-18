@@ -127,6 +127,64 @@ export function computeStats(trades, tz = 'UTC') {
       const h = localParts(t.entryTime, tz).hour
       return h == null ? 'Unknown' : String(h).padStart(2, '0') + ':00'
     }),
+    byDirection: groupBy((t) => t.direction),
+    byLotSize: groupBy((t) => String(round(t.size, 2))),
+    byHoldTime: groupBy((t) => holdBucket(t)),
+    ...sequenceStats(trades, tz),
+  }
+}
+
+/** Holding time as a coarse bucket, so scalps and overnight holds are judged apart. */
+function holdBucket(t) {
+  if (!(t.exitTime > t.entryTime)) return 'Unknown'
+  const m = (t.exitTime - t.entryTime) / 60
+  return m < 15 ? '<15m' : m < 60 ? '15-60m' : m < 240 ? '1-4h' : m < 1440 ? '4-24h' : '>1d'
+}
+
+/**
+ * What only the ORDER of trades shows: streaks, the deepest run-down of the realised
+ * equity, how lopsided the days are, and the largest single trades with their context.
+ * Trades arrive sorted by entry time (flattenTrades).
+ */
+function sequenceStats(trades, tz) {
+  let run = 0, maxLossStreak = 0, maxWinStreak = 0
+  let cum = 0, peak = 0, maxDrawdown = 0
+  for (const t of trades) {
+    if (t.pnl < 0) run = run < 0 ? run - 1 : -1
+    else if (t.pnl > 0) run = run > 0 ? run + 1 : 1
+    maxLossStreak = Math.max(maxLossStreak, -run)
+    maxWinStreak = Math.max(maxWinStreak, run)
+    cum += t.pnl
+    peak = Math.max(peak, cum)
+    maxDrawdown = Math.max(maxDrawdown, peak - cum)
+  }
+  const days = computeDailyBreakdown(trades, tz)
+  const net = trades.reduce((s, t) => s + t.pnl, 0)
+  const byNet = [...days].sort((a, b) => b.net - a.net)
+  const describe = (t) => ({
+    date: dayInTz(t.entryTime, tz),
+    time: String(localParts(t.entryTime, tz).hour ?? '').padStart(2, '0') + ':00',
+    direction: t.direction,
+    lot: round(t.size, 2),
+    holdMinutes: t.exitTime > t.entryTime ? Math.round((t.exitTime - t.entryTime) / 60) : null,
+    net: round(t.pnl),
+  })
+  const byPnl = [...trades].sort((a, b) => a.pnl - b.pnl)
+  return {
+    streaks: { maxConsecutiveLosses: maxLossStreak, maxConsecutiveWins: maxWinStreak },
+    maxDrawdown: round(maxDrawdown),
+    days: {
+      traded: days.length,
+      green: days.filter((d) => d.net > 0).length,
+      red: days.filter((d) => d.net < 0).length,
+      best: byNet[0] || null,
+      worst: byNet[byNet.length - 1] || null,
+      // Share of the whole period's net made by the single best day: near or over
+      // 100% means one day carried the result.
+      bestDayShareOfNet: net > 0 && byNet[0] ? round(byNet[0].net / net, 2) : null,
+    },
+    largestLosses: byPnl.slice(0, 5).filter((t) => t.pnl < 0).map(describe),
+    largestWins: byPnl.slice(-5).reverse().filter((t) => t.pnl > 0).map(describe),
   }
 }
 
