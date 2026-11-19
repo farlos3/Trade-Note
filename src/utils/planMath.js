@@ -275,19 +275,34 @@ export function rollup(days, granularity) {
  * plain so it can be unit-tested directly with plain Node. Keep in sync if
  * addOrder.js's tables change.
  */
-function pipSizeFor(symbol) {
-    const s = (symbol || '').toUpperCase()
-    if (s.includes('JPY')) return 0.01
-    if (s.includes('XAU')) return 0.01
-    if (s.includes('XAG')) return 0.001
-    return 0.0001
+const ASSET_CLASSES = [
+    { pipSize: 1, contractSize: 1, match: ['BTC', 'ETH', 'LTC', 'XRP', 'SOL', 'DOGE', 'ADA', 'BNB'] },
+    {
+        pipSize: 1, contractSize: 1,
+        match: ['USA100', 'US100', 'NAS', 'NDX', 'USTEC', 'USA30', 'US30', 'DJ30', 'USA500', 'US500',
+            'SPX', 'GER40', 'DE40', 'DAX', 'UK100', 'FTSE', 'JP225', 'NIKKEI', 'NETH25', 'EU50',
+            'STOXX', 'HK50', 'AUS200', 'FRA40', 'ESP35'],
+    },
+    { pipSize: 0.01, contractSize: 100, match: ['OIL', 'WTI', 'BRENT'] },
+    { pipSize: 0.01, contractSize: 100, match: ['XAU'] },
+    { pipSize: 0.001, contractSize: 1000, match: ['XAG'] },
+    { pipSize: 0.01, contractSize: 100000, match: ['JPY'] },
+]
+
+const FOREX_SPEC = { pipSize: 0.0001, contractSize: 100000 }
+
+function assetSpecFor(symbol) {
+    if (!symbol) return FOREX_SPEC
+    const s = String(symbol).toUpperCase()
+    return ASSET_CLASSES.find((c) => c.match.some((m) => s.includes(m))) || FOREX_SPEC
 }
 
-function contractSizeFor(symbol) {
-    const s = (symbol || '').toUpperCase()
-    if (s.includes('XAU')) return 100
-    if (s.includes('XAG')) return 5000
-    return 100000 // standard forex lot
+export function pipSizeFor(symbol) {
+    return assetSpecFor(symbol).pipSize
+}
+
+export function contractSizeFor(symbol) {
+    return assetSpecFor(symbol).contractSize
 }
 
 /** USD per pip, per 1.00 lot, for `symbol`. */
@@ -370,6 +385,7 @@ const lotFallsShort = (d) => d.lot != null && d.profit > 0 && d.lotDollars < 0.9
 export function suggestedPipDistances(symbol) {
     const s = (symbol || '').toUpperCase()
     if (s.includes('XAU')) return [100, 200, 300, 500, 1000, 1500, 2000]
+    if (pipSizeFor(s) >= 1) return [10, 20, 50, 100, 150, 200, 300]
     return [10, 20, 30, 50, 100, 150, 200]
 }
 
@@ -458,6 +474,222 @@ export function realismVerdict(pctPerDay) {
     if (p <= 3) return { verdict: 'Very aggressive — rarely sustainable.', tone: 'bad' }
     return { verdict: 'Unrealistic — compounds faster than professionals sustain.', tone: 'bad' }
 }
+
+/* ============================================================================
+ * PER-TRADE COMPOUNDING & RISK-BASED LOT SIZING
+ * ============================================================================ */
+
+export const MAX_TRADE_PROJECTION_STEPS = 2000
+
+/**
+ * Project balance trade by trade (ไม้ต่อไม้).
+ * - If `numTrades` is provided (>= 1), simulates that exact number of trades.
+ * - Otherwise, if `goalBalance` is provided, simulates up to `MAX_TRADE_PROJECTION_STEPS`
+ *   until `closing >= goalBalance` so the trader immediately sees how many trades
+ *   it takes to reach the goal.
+ */
+export function buildTradeProjection({
+    start,
+    pctPerTrade = 0,
+    tradeAmount = null,
+    numTrades = null,
+    goalBalance = null,
+    tiers = [],
+    maxTrades = MAX_TRADE_PROJECTION_STEPS,
+} = {}) {
+    if (!(start > 0)) return null
+    const amt = Number(tradeAmount)
+    const useAmount = Number.isFinite(amt) && amt > 0
+    const pct = Number(pctPerTrade)
+    const hasTiers = Array.isArray(tiers) && tiers.some((t) => t && t.pct !== '' && t.pct != null && Number.isFinite(Number(t.pct)))
+    if (!useAmount && !(pct > 0) && !hasTiers) return null
+
+    const hasGoal = Number(goalBalance) > 0
+    const goal = hasGoal ? Number(goalBalance) : null
+    const fixedCount = numTrades != null && Number(numTrades) >= 1
+        ? Math.min(Math.floor(Number(numTrades)), maxTrades)
+        : null
+
+    if (fixedCount == null && !hasGoal) return null
+
+    const rateAt = tierRateResolver(Number.isFinite(pct) ? pct : 0, useAmount ? [] : tiers)
+    const rows = []
+    let bal = start
+    let goalTrades = hasGoal && goal <= start ? 0 : null
+
+    const limit = fixedCount != null ? fixedCount : maxTrades
+    for (let n = 1; n <= limit; n++) {
+        const opening = bal
+        const rate = useAmount ? (opening > 0 ? amt / opening : 0) : rateAt(opening)
+        const profit = useAmount ? amt : opening * rate
+        if (!useAmount && !(rate > 0)) break
+        bal = opening + profit
+        if (hasGoal && goalTrades === null && bal >= goal) {
+            goalTrades = n
+        }
+        rows.push({
+            n,
+            label: `Trade #${n}`,
+            opening,
+            ratePct: rate * 100,
+            profit,
+            closing: bal,
+            cumulativeReturnPct: ((bal - start) / start) * 100,
+            progressPct: hasGoal ? (bal / goal) * 100 : null,
+        })
+        if (fixedCount == null && hasGoal && bal >= goal) {
+            break
+        }
+    }
+
+    // If a fixed horizon ended before reaching the goal, continue counting silently
+    // up to maxTrades so we can still tell the trader which trade hits the goal.
+    let reachedGoal = goalTrades !== null
+    let hitCap = false
+    if (fixedCount != null && hasGoal && goalTrades === null) {
+        let probeBal = bal
+        for (let n = rows.length + 1; n <= maxTrades; n++) {
+            const rate = useAmount ? (probeBal > 0 ? amt / probeBal : 0) : rateAt(probeBal)
+            const profit = useAmount ? amt : probeBal * rate
+            if (!useAmount && !(rate > 0)) break
+            probeBal += profit
+            if (probeBal >= goal) {
+                goalTrades = n
+                reachedGoal = true
+                break
+            }
+        }
+        if (goalTrades === null) hitCap = true
+    } else if (fixedCount == null && hasGoal && goalTrades === null) {
+        hitCap = rows.length >= maxTrades
+    }
+
+    const finalBalance = rows.length ? rows[rows.length - 1].closing : start
+    return {
+        tradeCount: rows.length,
+        startBalance: start,
+        finalBalance,
+        profit: finalBalance - start,
+        totalReturnPct: ((finalBalance - start) / start) * 100,
+        goalTrades,
+        alreadyAtGoal: hasGoal && goal <= start,
+        reachedGoal,
+        hitCap,
+        trades: rows,
+    }
+}
+
+/** Compound % per trade needed to grow `start` to `goal` in `numTrades` trades. */
+export function requiredPctPerTrade(start, goal, numTrades) {
+    if (!(start > 0) || !(goal > 0) || !(numTrades >= 1)) return null
+    if (goal <= start) return 0
+    return (Math.pow(goal / start, 1 / Math.floor(numTrades)) - 1) * 100
+}
+
+/** Flat $ profit per trade needed to grow `start` to `goal` in `numTrades` trades. */
+export function requiredAmountPerTrade(start, goal, numTrades) {
+    if (!(start > 0) || !(goal > 0) || !(numTrades >= 1)) return null
+    if (goal <= start) return 0
+    return (goal - start) / Math.floor(numTrades)
+}
+
+/** How many trades at the plan's current target to reach `goal` from `start`. */
+export function tradesToGoal({
+    start,
+    goal,
+    pctPerTrade = 0,
+    tradeAmount = null,
+    tiers = [],
+    maxTrades = MAX_TRADE_PROJECTION_STEPS,
+} = {}) {
+    if (!(start > 0) || !(goal > 0)) return null
+    if (goal <= start) return { trades: 0, already: true, finalBalance: start }
+    const proj = buildTradeProjection({ start, pctPerTrade, tradeAmount, goalBalance: goal, tiers, maxTrades })
+    if (!proj || proj.goalTrades == null) return null
+    return { trades: proj.goalTrades, already: false, finalBalance: proj.finalBalance }
+}
+
+const RR_LEVELS = [1, 1.5, 2, 3, 4, 5]
+
+/**
+ * Risk-based position size calculator:
+ *   riskDollars = (riskMode === 'amount') ? riskAmount : balance * (riskPercent / 100)
+ *   exactLot    = riskDollars / (slPips * pipValuePerLot)
+ * Floored to 0.01 lot so actual risk never exceeds the trader's risk limit.
+ */
+export function calculateRiskLot({
+    balance = null,
+    riskMode = 'pct',
+    riskPercent = null,
+    riskAmount = null,
+    slPips = null,
+    symbol = 'XAUUSD',
+    pipValueOverride = null,
+} = {}) {
+    const bal = Number(balance)
+    const hasBalance = Number.isFinite(bal) && bal > 0
+    const sl = Number(slPips)
+    if (!(sl > 0)) return null
+
+    const isAmount = riskMode === 'amount'
+    let riskDollars = null
+    if (isAmount) {
+        const amt = Number(riskAmount)
+        if (amt > 0) riskDollars = amt
+    } else {
+        const pct = Number(riskPercent)
+        if (hasBalance && pct > 0) riskDollars = bal * (pct / 100)
+    }
+    if (!(riskDollars > 0)) return null
+
+    const detectedPipSize = pipSizeFor(symbol)
+    const detectedContractSize = contractSizeFor(symbol)
+    const override = Number(pipValueOverride)
+    const pipValue = Number.isFinite(override) && override > 0
+        ? override
+        : detectedPipSize * detectedContractSize
+    if (!(pipValue > 0)) return null
+
+    const exactLot = riskDollars / (sl * pipValue)
+    const flooredLot = floorLot(exactLot)
+    const belowMin = !(flooredLot >= LOT_STEP)
+    const actualRiskDollars = belowMin ? 0 : flooredLot * sl * pipValue
+    const minLotRiskDollars = LOT_STEP * sl * pipValue
+    const maxSlAtMinLot = riskDollars / (LOT_STEP * pipValue)
+
+    const rrTable = RR_LEVELS.map((rr) => {
+        const tpPips = sl * rr
+        const profitAtFloored = belowMin ? minLotRiskDollars * rr : actualRiskDollars * rr
+        return {
+            rr,
+            label: `1:${rr}`,
+            tpPips,
+            profitDollars: profitAtFloored,
+            returnPct: hasBalance ? (profitAtFloored / bal) * 100 : null,
+            projectedBalance: hasBalance ? bal + profitAtFloored : null,
+        }
+    })
+
+    return {
+        riskDollars,
+        riskPctOfBalance: hasBalance ? (riskDollars / bal) * 100 : null,
+        pipSize: detectedPipSize,
+        contractSize: detectedContractSize,
+        pipValuePerLot: pipValue,
+        isCustomPipValue: Number.isFinite(override) && override > 0,
+        slPips: sl,
+        exactLot,
+        flooredLot,
+        belowMin,
+        actualRiskDollars,
+        actualRiskPct: hasBalance ? (actualRiskDollars / bal) * 100 : null,
+        minLotRiskDollars,
+        minLotRiskPct: hasBalance ? (minLotRiskDollars / bal) * 100 : null,
+        maxSlAtMinLot,
+        rrTable,
+    }
+}
+
 
 /* ---- shared formatting ---- */
 export const fmt = (n, d = 2) =>

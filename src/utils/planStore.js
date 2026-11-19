@@ -52,8 +52,15 @@ function blankPlan(id) {
         // contract-size conventions as manual order entry (see addOrder.js).
         symbol: 'XAUUSD',
         lotSize: '',
+        // Per-trade growth plan fields (used by Trading Plan). Kept separate from
+        // dailyPct/dailyAmount/horizonMonths so Plan vs Actual keeps its daily benchmark.
+        tradeTargetMode: 'pct',
+        tradePct: '',
+        tradeAmount: '',
+        horizonTrades: '',
+        tradeTiers: [],
         // The reverse direction: a pip distance to size the lot FROM -- "make the
-        // day's target (e.g. 10% of the account) over this many pips". Blank means
+        // target (e.g. 10% of the account) over this many pips". Blank means
         // "show me the options" rather than "no sizing".
         targetPips: '',
     }
@@ -177,6 +184,16 @@ export function addTier(plan) {
 export function removeTier(plan, tierId) {
     const idx = plan.tiers.findIndex((t) => t.id === tierId)
     if (idx !== -1) plan.tiers.splice(idx, 1)
+}
+
+export function addTradeTier(plan) {
+    if (!Array.isArray(plan.tradeTiers)) plan.tradeTiers = []
+    plan.tradeTiers.push({ id: Date.now() + Math.random(), from: '', pct: '' })
+}
+
+export function removeTradeTier(plan, tierId) {
+    const idx = plan.tradeTiers.findIndex((t) => t.id === tierId)
+    if (idx !== -1) plan.tradeTiers.splice(idx, 1)
 }
 
 watch(state, () => {

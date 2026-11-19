@@ -2,241 +2,146 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import PlanSelector from '../components/PlanSelector.vue'
-import PlanDepositsEditor from '../components/PlanDepositsEditor.vue'
-import PlanWithdrawalsEditor from '../components/PlanWithdrawalsEditor.vue'
-import FpDate from '../components/FpDate.vue'
 import PlanLotSizing from '../components/PlanLotSizing.vue'
-import { activePlan, addTier, removeTier } from '../utils/planStore'
+import RiskLotCalculator from '../components/RiskLotCalculator.vue'
+import { activePlan, addTradeTier, removeTradeTier } from '../utils/planStore'
 import {
-    numOrNull, buildProjection, rollup, requiredPctPerDay, realismVerdict,
-    calendarWeeksAhead, equivalentPctForNDays, dollarsToPips, pipsRealismVerdict,
-    pipValuePerLot, tierRateResolver, LOT_STEP, timeToGoal, withLots,
-    fmt, fmtCompact, pnlClass, toneClass,
+    numOrNull, buildTradeProjection, requiredPctPerTrade, requiredAmountPerTrade,
+    tradesToGoal, dollarsToPips, pipsRealismVerdict, pipValuePerLot,
+    tierRateResolver, LOT_STEP, withLots, fmt, fmtCompact, pnlClass, toneClass,
 } from '../utils/planMath'
 
-/* Pure calculator — no journal data involved. Inputs start empty on purpose:
-   nothing is computed until you enter your own numbers. Everything reads from
-   the active plan (see PlanSelector) so multiple plans don't share values. */
+/* ---- Top-level sub-tabs inside Trading Plan ---- */
+const TABS = [
+    { id: 'plan', label: 'Per-Trade Plan', icon: 'uil-chart-line' },
+    { id: 'lotCalc', label: 'Risk & Lot Size', icon: 'uil-balance-scale' },
+]
+const storedTab = localStorage.getItem('tradenote_plan_tab')
+const activeTab = ref(TABS.some((t) => t.id === storedTab) ? storedTab : 'plan')
+watch(activeTab, (v) => localStorage.setItem('tradenote_plan_tab', v))
+
+/* ---- Per-trade plan inputs ---- */
 const start = computed(() => numOrNull(activePlan.value.startBalance))
-const months = computed(() => {
-    const n = numOrNull(activePlan.value.horizonMonths)
-    return n != null && n >= 1 && n <= 120 ? Math.floor(n) : null
-})
-const target = computed(() => numOrNull(activePlan.value.dailyPct))
 const goal = computed(() => numOrNull(activePlan.value.goalBalance))
-const startDate = computed(() => activePlan.value.startDate)
-const deposits = computed(() => activePlan.value.deposits)
-const withdrawals = computed(() => activePlan.value.withdrawals || [])
-
-// Optional stepped daily target (lower the %/day as the account grows).
-/* Which target the plan is set in. 'amount' means a flat sum per trading day,
-   which does not compound and which the tiers cannot step, so the tier block
-   hides itself in that mode rather than sitting there doing nothing. */
-const targetMode = computed({
-    get: () => (activePlan.value.targetMode === 'amount' ? 'amount' : 'pct'),
-    set: (v) => { activePlan.value.targetMode = v === 'amount' ? 'amount' : 'pct' },
+const horizonTrades = computed(() => {
+    const n = numOrNull(activePlan.value.horizonTrades)
+    return n != null && n >= 1 ? Math.min(Math.floor(n), 2000) : null
 })
-const dailyAmount = computed(() => numOrNull(activePlan.value.dailyAmount))
-const isAmountMode = computed(() => targetMode.value === 'amount')
-// What buildProjection takes: only set when the mode actually calls for it.
-const projectionOptions = computed(() =>
-    isAmountMode.value && dailyAmount.value > 0 ? { dailyAmount: dailyAmount.value } : {})
 
-const tiers = computed(() => activePlan.value.tiers || [])
+const targetMode = computed({
+    get: () => (activePlan.value.tradeTargetMode === 'amount' ? 'amount' : 'pct'),
+    set: (v) => { activePlan.value.tradeTargetMode = v === 'amount' ? 'amount' : 'pct' },
+})
+const tradePct = computed(() => numOrNull(activePlan.value.tradePct))
+const tradeAmount = computed(() => numOrNull(activePlan.value.tradeAmount))
+const isAmountMode = computed(() => targetMode.value === 'amount')
+
+const tiers = computed(() => activePlan.value.tradeTiers || [])
 const hasTiers = computed(() =>
     tiers.value.some((t) => t && t.pct !== '' && t.pct != null && Number.isFinite(Number(t.pct))),
 )
+const hasAnyTarget = computed(() =>
+    isAmountMode.value ? tradeAmount.value > 0 : (tradePct.value > 0 || hasTiers.value),
+)
 
 const projection = computed(() => {
-    if (!(start.value > 0) || !months.value) return null
-    // In amount mode the percentage is irrelevant, so the guard is the amount.
-    if (isAmountMode.value) {
-        if (!(dailyAmount.value > 0)) return null
-    } else if (target.value == null && !hasTiers.value) {
-        return null
-    }
-    return buildProjection(start.value, target.value == null ? 0 : target.value,
-        months.value, deposits.value, startDate.value,
-        isAmountMode.value ? [] : tiers.value, withdrawals.value, projectionOptions.value)
-})
-
-/* Goal seek without a horizon: at the target already set above, when does the
-   balance reach the goal? The %-needed answer below needs a horizon to divide
-   by; this one doesn't, so a goal is never left showing nothing just because
-   the plan has no end date. Same inputs as the projection card, so deposits,
-   withdrawals, tiers and $/day mode are all honoured. */
-const goalTime = computed(() => {
-    if (!(start.value > 0) || !(goal.value > 0)) return null
-    if (isAmountMode.value ? !(dailyAmount.value > 0) : (target.value == null && !hasTiers.value)) return null
-    return timeToGoal(start.value, goal.value, target.value == null ? 0 : target.value,
-        startDate.value, deposits.value, isAmountMode.value ? [] : tiers.value,
-        withdrawals.value, projectionOptions.value)
-})
-// Whether a target is set at all -- to tell "no target" apart from "target set
-// but the goal is out of reach in 10 years" in the hint.
-const hasAnyTarget = computed(() =>
-    isAmountMode.value ? dailyAmount.value > 0 : (target.value != null || hasTiers.value))
-
-const goalSeek = computed(() => {
-    if (!(start.value > 0) || !(goal.value > 0) || !months.value) return null
-    const p = requiredPctPerDay(start.value, goal.value, months.value, deposits.value, startDate.value, withdrawals.value)
-    if (p == null) return null
-    const days = projection.value ? projection.value.tradingDays
-        : buildProjection(start.value, 0, months.value, deposits.value, startDate.value).tradingDays
-    // Weekly-equivalent of the same daily rate -- same plan, easier to reason
-    // about than a bare daily %. avgTradingDaysPerWeek uses the actual horizon
-    // (not a flat assumption of 5) so it stays correct for any date range.
-    const weeks = calendarWeeksAhead(months.value, startDate.value)
-    const avgTradingDaysPerWeek = weeks > 0 ? days / weeks : 5
-    const requiredPctPerWeek = equivalentPctForNDays(p, avgTradingDaysPerWeek)
-    // Verdict/tone always judge the underlying daily reality -- it's the same
-    // plan whichever unit you display it in.
-    return {
-        requiredPctPerDay: p,
-        requiredPctPerWeek,
-        weeks,
-        tradingDays: days,
-        ...realismVerdict(p),
-    }
-})
-
-/* Goal seek's headline number: daily or weekly. Weekly by default -- easier
-   to reason about than a bare daily % for most traders. */
-const GOAL_SEEK_UNITS = [
-    { id: 'week', label: 'Weekly' },
-    { id: 'day', label: 'Daily' },
-]
-const goalSeekUnit = ref('week')
-
-/* The pip distance every table sizes its lots at -- the "Pips" field in the
-   Lot size box. One value for both the projection and the goal-seek path, so
-   the two cards answer the same question ("what lot today, over this
-   distance?") for their own day-by-day balances, and agree with each other. */
-const sizingPips = computed(() => {
-    const n = numOrNull(activePlan.value.targetPips)
-    return n > 0 ? n : null
-})
-
-/** "0.05", "<0.01", or "0.05 → 0.08" for a period whose lot grows within it. */
-function lotLabel(r) {
-    const one = (x) => (x == null ? '—' : x >= LOT_STEP ? fmt(x, 2) : '<0.01')
-    if ('lotFrom' in r) return r.lotFrom === r.lotTo ? one(r.lotFrom) : one(r.lotFrom) + ' → ' + one(r.lotTo)
-    return one(r.lot)
-}
-
-/** Hover text for a daily lot cell: the unrounded figure and what the
- *  tradeable lot really earns, so the floor is never invisible. */
-function lotTitle(r) {
-    if ('lotFrom' in r || r.lotExact == null) return ''
-    return `exact ${fmt(r.lotExact, 4)} lot · at ${r.lot >= LOT_STEP ? fmt(r.lot, 2) : '0.00'} lot this makes ${fmt(r.lotDollars)} of the ${fmt(r.profit)} target`
-}
-
-/* The path to the goal, as a table -- grouped by the same Weekly/Daily toggle
-   the headline answer uses, so the rows are in the unit the question asks in.
-
-   Which path: the card's main answer when there is one (the required % over
-   the horizon, which by construction lands on the goal at the end), otherwise
-   the plan's own target run up to the day it reaches the goal (goalTime). Same
-   inputs as the calculation each row restates -- deposits and withdrawals in
-   both; tiers/$-mode only on the target path, because requiredPctPerDay solves
-   for a single flat rate and has none. */
-const goalPath = computed(() => {
-    if (goalSeek.value) {
-        const p = buildProjection(start.value, goalSeek.value.requiredPctPerDay, months.value,
-            deposits.value, startDate.value, [], withdrawals.value)
-        return { source: 'required', days: p.days }
-    }
-    if (goalTime.value && !goalTime.value.already) {
-        const p = buildProjection(start.value, target.value == null ? 0 : target.value, 120,
-            deposits.value, startDate.value, isAmountMode.value ? [] : tiers.value,
-            withdrawals.value, projectionOptions.value)
-        return { source: 'target', days: p.days.slice(0, goalTime.value.tradingDays) }
-    }
-    return null
-})
-
-const goalPathRows = computed(() => {
-    if (!goalPath.value) return []
-    const days = withLots(goalPath.value.days, sizingPips.value, activePlan.value.symbol)
-    return rollup(days, goalSeekUnit.value === 'week' ? 'weekly' : 'daily').map((r) => {
-        // Growth within the period itself, on what was in the account for it --
-        // the money deposited during the period is capital, not return.
-        const base = r.opening + (r.deposit || 0)
-        return {
-            ...r,
-            periodPct: base > 0 ? (r.profit / base) * 100 : null,
-            progressPct: goal.value > 0 ? (r.closing / goal.value) * 100 : null,
-        }
+    if (!(start.value > 0) || !hasAnyTarget.value) return null
+    return buildTradeProjection({
+        start: start.value,
+        pctPerTrade: tradePct.value == null ? 0 : tradePct.value,
+        tradeAmount: isAmountMode.value ? tradeAmount.value : null,
+        numTrades: horizonTrades.value,
+        goalBalance: goal.value,
+        tiers: isAmountMode.value ? [] : tiers.value,
     })
 })
 
-/* ---- Tie Goal seek to Target projection above it ----
-   How the Target % per day you've already set compares to what this goal
-   actually needs, plus a one-click way to carry the goal-seek result up into
-   the Target field so the projection/chart/table above recompute against it. */
+/* Exact trade count to reach goal at the current target (even when horizonTrades differs) */
+const goalTradesResult = computed(() => {
+    if (!(start.value > 0) || !(goal.value > 0) || !hasAnyTarget.value) return null
+    return tradesToGoal({
+        start: start.value,
+        goal: goal.value,
+        pctPerTrade: tradePct.value == null ? 0 : tradePct.value,
+        tradeAmount: isAmountMode.value ? tradeAmount.value : null,
+        tiers: isAmountMode.value ? [] : tiers.value,
+    })
+})
+
+/* Required %/trade and $/trade to hit goal within `horizonTrades` */
+const goalSeek = computed(() => {
+    if (!(start.value > 0) || !(goal.value > 0) || !horizonTrades.value) return null
+    const pctNeeded = requiredPctPerTrade(start.value, goal.value, horizonTrades.value)
+    const amtNeeded = requiredAmountPerTrade(start.value, goal.value, horizonTrades.value)
+    if (pctNeeded == null) return null
+    return {
+        trades: horizonTrades.value,
+        requiredPctPerTrade: pctNeeded,
+        requiredAmountPerTrade: amtNeeded,
+    }
+})
+
 const targetVsGoalSeek = computed(() => {
-    if (!goalSeek.value || target.value == null) return null
-    const gap = target.value - goalSeek.value.requiredPctPerDay // + = ahead of what's needed, - = short
+    if (!goalSeek.value || isAmountMode.value || !(tradePct.value > 0)) return null
+    const gap = tradePct.value - goalSeek.value.requiredPctPerTrade
     return { gap, onTrack: gap >= 0 }
 })
 
 function applyGoalSeekToTarget() {
     if (!goalSeek.value) return
-    // 3dp matches how the rate is displayed elsewhere on this page.
-    activePlan.value.dailyPct = Number(goalSeek.value.requiredPctPerDay.toFixed(3))
+    targetMode.value = 'pct'
+    activePlan.value.tradePct = Number(goalSeek.value.requiredPctPerTrade.toFixed(3))
 }
 
-/* ---- Pips/day: the same $/day target, in the unit you actually trade in ----
-   Day 1's $ profit (not a later day) — the required $ grows as the balance
-   compounds, so this is a starting-point estimate, not a constant target. */
+/* ---- Pip distance & lot sizing ---- */
+const sizingPips = computed(() => {
+    const n = numOrNull(activePlan.value.targetPips)
+    return n > 0 ? n : null
+})
+
 const lotSize = computed(() => numOrNull(activePlan.value.lotSize))
 
-const targetPipsPerDay = computed(() => {
-    if (!projection.value || !(lotSize.value > 0)) return null
-    const day1Profit = projection.value.days[0]?.profit
-    const pips = dollarsToPips(day1Profit, activePlan.value.symbol, lotSize.value)
-    return pips == null ? null : { pips, ...pipsRealismVerdict(pips) }
-})
-
-const goalSeekPipsPerDay = computed(() => {
-    if (!goalSeek.value || !(start.value > 0) || !(lotSize.value > 0)) return null
-    const day1Dollars = start.value * (goalSeek.value.requiredPctPerDay / 100)
-    const pips = dollarsToPips(day1Dollars, activePlan.value.symbol, lotSize.value)
-    return pips == null ? null : { pips, ...pipsRealismVerdict(pips) }
-})
-
-/* ---- Lot sizing: the reverse of the pips figures above ----
-   Those take a lot size and say how many pips the target needs. This takes a
-   pip distance and says what lot makes the target over it -- e.g. 10% of the
-   account over 1000 pips -- or, with no distance given, lists the lot for a
-   range of distances to choose from.
-
-   Needs only the starting balance and a target: deliberately NOT the horizon
-   (sizing one day's trade has nothing to do with how many months the plan
-   runs) and not the Lot size field (the lot is the answer here, not an input). */
-const day1TargetDollars = computed(() => {
-    if (isAmountMode.value) return dailyAmount.value > 0 ? dailyAmount.value : null
-    if (!(start.value > 0) || (target.value == null && !hasTiers.value)) return null
-    // Through the same resolver the projection uses, so a stepped plan sizes
-    // against the rate that actually applies at the starting balance.
-    const dollars = start.value * tierRateResolver(target.value, tiers.value)(start.value)
+const trade1TargetDollars = computed(() => {
+    if (isAmountMode.value) return tradeAmount.value > 0 ? tradeAmount.value : null
+    if (!(start.value > 0) || (tradePct.value == null && !hasTiers.value)) return null
+    const dollars = start.value * tierRateResolver(tradePct.value, tiers.value)(start.value)
     return dollars > 0 ? dollars : null
 })
 
-/* How far to zoom into the compounding: every trading day, or rolled up. */
-const GRANULARITIES = [
-    { id: 'daily', label: 'Daily' },
-    { id: 'weekly', label: 'Weekly' },
-    { id: 'monthly', label: 'Monthly' },
-]
-const granularity = ref('daily')
-const rows = computed(() => (projection.value
-    ? rollup(withLots(projection.value.days, sizingPips.value, activePlan.value.symbol), granularity.value)
-    : []))
+const trade1PipsNeeded = computed(() => {
+    if (!projection.value || !(lotSize.value > 0)) return null
+    const t1Profit = projection.value.trades[0]?.profit
+    const pips = dollarsToPips(t1Profit, activePlan.value.symbol, lotSize.value)
+    return pips == null ? null : { pips, ...pipsRealismVerdict(pips) }
+})
 
-/* ---- Balance curve (one series per trading day) ----
-   Single series, so no legend — the card title names it. Colors come from the
-   app's own theme tokens; text stays in text tokens, never the series colour. */
+const goalSeekPipsTrade1 = computed(() => {
+    if (!goalSeek.value || !(start.value > 0) || !(lotSize.value > 0)) return null
+    const t1Dollars = start.value * (goalSeek.value.requiredPctPerTrade / 100)
+    const pips = dollarsToPips(t1Dollars, activePlan.value.symbol, lotSize.value)
+    return pips == null ? null : { pips, ...pipsRealismVerdict(pips) }
+})
+
+const rows = computed(() => {
+    if (!projection.value) return []
+    const withLotRows = withLots(projection.value.trades, sizingPips.value, activePlan.value.symbol)
+    return withLotRows.map((r) => ({
+        ...r,
+        lotShort: r.lot != null && r.profit > 0 && r.lotDollars < 0.9 * r.profit,
+    }))
+})
+
+function lotLabel(r) {
+    if (r.lot == null) return '—'
+    return r.lot >= LOT_STEP ? fmt(r.lot, 2) : '<0.01'
+}
+
+function lotTitle(r) {
+    if (r.lotExact == null) return ''
+    return `exact ${fmt(r.lotExact, 4)} lot · at ${r.lot >= LOT_STEP ? fmt(r.lot, 2) : '0.00'} lot this makes ${fmt(r.lotDollars)} of the ${fmt(r.profit)} target`
+}
+
+/* ---- Balance curve (one point per trade) ---- */
 const ACCENT = '#2f9bff'
 const SURFACE = '#1b1f2a'
 const INK_MUTED = 'rgba(237, 240, 247, 0.60)'
@@ -245,17 +150,15 @@ const chartEl = ref(null)
 let chart = null
 
 function renderChart() {
-    if (!chartEl.value || !projection.value) return
-    // Re-init if a prior instance is bound to a replaced/detached DOM node
-    // (v-if recreated the div, or HMR left an orphaned instance) — otherwise
-    // echarts draws into the old node and the visible box stays blank.
+    if (activeTab.value !== 'plan' || !chartEl.value || !projection.value) return
     if (chart && chart.getDom() !== chartEl.value) { chart.dispose(); chart = null }
     if (!chart) chart = echarts.init(chartEl.value)
-    const days = projection.value.days
+    const list = projection.value.trades
+    const hasGoal = goal.value > 0
 
     chart.setOption({
         backgroundColor: 'transparent',
-        grid: { left: 4, right: 12, top: 16, bottom: 4, containLabel: true },
+        grid: { left: 4, right: 16, top: 20, bottom: 4, containLabel: true },
         tooltip: {
             trigger: 'axis',
             axisPointer: { type: 'line', lineStyle: { color: 'rgba(255,255,255,0.25)', width: 1 } },
@@ -263,19 +166,19 @@ function renderChart() {
             borderColor: 'rgba(255,255,255,0.12)',
             textStyle: { color: 'rgba(237,240,247,0.92)', fontSize: 12 },
             formatter: (params) => {
-                const d = days[params[0].dataIndex]
-                if (!d) return ''
-                return `<div style="font-weight:700;margin-bottom:4px">Day ${d.n} · ${d.date} · ${d.weekday}</div>` +
-                    `Opening: ${fmt(d.opening)}<br/>` +
-                    (d.deposit ? `Deposit: +${fmt(d.deposit)}<br/>` : '') +
-                    `Profit: ${fmt(d.profit)}<br/>` +
-                    `<b>Closing: ${fmt(d.closing)}</b><br/>` +
-                    `Cumulative: ${fmt(d.cumulativeReturnPct)}%`
+                const t = list[params[0].dataIndex]
+                if (!t) return ''
+                return `<div style="font-weight:700;margin-bottom:4px">Trade #${t.n}</div>` +
+                    `Opening: ${fmt(t.opening)}<br/>` +
+                    `Profit: +${fmt(t.profit)} (${fmt(t.ratePct, 2)}%)<br/>` +
+                    `<b>Closing: ${fmt(t.closing)}</b><br/>` +
+                    `Cumulative: +${fmt(t.cumulativeReturnPct)}%` +
+                    (t.progressPct != null ? `<br/>To goal: ${fmt(Math.min(t.progressPct, 999), 1)}%` : '')
             },
         },
         xAxis: {
             type: 'category',
-            data: days.map((d) => d.date),
+            data: list.map((t) => `#${t.n}`),
             boundaryGap: false,
             axisLine: { lineStyle: { color: 'rgba(255,255,255,0.12)' } },
             axisTick: { show: false },
@@ -291,11 +194,10 @@ function renderChart() {
         },
         series: [{
             type: 'line',
-            data: days.map((d) => d.closing),
-            showSymbol: false,          // markers appear on hover only
-            symbolSize: 8,
+            data: list.map((t) => t.closing),
+            showSymbol: list.length <= 40,
+            symbolSize: 6,
             lineStyle: { color: ACCENT, width: 2 },
-            // 2px surface ring so the hovered point reads against the line
             itemStyle: { color: ACCENT, borderColor: SURFACE, borderWidth: 2 },
             areaStyle: {
                 color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
@@ -303,10 +205,20 @@ function renderChart() {
                     { offset: 1, color: 'rgba(47,155,255,0.02)' },
                 ]),
             },
+            markLine: hasGoal ? {
+                silent: true,
+                symbol: 'none',
+                lineStyle: { color: '#00CA73', type: 'dashed', width: 1.5 },
+                label: {
+                    formatter: `Goal ${fmtCompact(goal.value, 0)}`,
+                    color: '#00CA73',
+                    fontSize: 11,
+                    position: 'insideEndTop',
+                },
+                data: [{ yAxis: goal.value }],
+            } : undefined,
         }],
     }, true)
-    // Resize after layout settles — a resize while the container is still 0-sized
-    // (mid reactive flush / just-created by v-if) would leave the canvas blank.
     requestAnimationFrame(() => chart && chart.resize())
 }
 
@@ -322,9 +234,8 @@ onBeforeUnmount(() => {
     if (chart) { chart.dispose(); chart = null }
 })
 
-// The chart element only exists once there is a projection, so wait for the DOM.
-watch(projection, async (p) => {
-    if (!p) {
+watch([projection, goal, activeTab], async ([p, , tab]) => {
+    if (tab !== 'plan' || !p) {
         if (chart) { chart.dispose(); chart = null }
         return
     }
@@ -335,392 +246,364 @@ watch(projection, async (p) => {
 
 <template>
     <div class="planPage p-3">
-        <PlanSelector />
-
-        <p class="txt-small text-muted mb-3">
-            Compounds on trading days only — weekends (market closed) are skipped.
-            To compare this plan against what you actually traded, see <a href="/plan-vs-actual">Plan vs Actual</a>.
-        </p>
-
-        <div class="planInputs mb-3">
-            <div>
-                <label class="planLabel">Start date</label>
-                <FpDate mode="date" v-model="activePlan.startDate" />
-            </div>
-            <div>
-                <label class="planLabel">Starting balance</label>
-                <input type="number" min="0" step="100" placeholder="e.g. 1000" class="form-control form-control-sm"
-                    v-model="activePlan.startBalance" />
-            </div>
-            <div>
-                <label class="planLabel">Horizon (months)</label>
-                <input type="number" min="1" max="120" step="1" placeholder="e.g. 3" class="form-control form-control-sm"
-                    v-model="activePlan.horizonMonths" />
-            </div>
-            <div>
-                <label class="planLabel">Symbol</label>
-                <input type="text" placeholder="e.g. XAUUSD" class="form-control form-control-sm"
-                    v-model="activePlan.symbol" />
-            </div>
-            <div>
-                <label class="planLabel">Lot size</label>
-                <input type="number" min="0" step="0.01" placeholder="e.g. 0.01" class="form-control form-control-sm"
-                    v-model="activePlan.lotSize" />
-            </div>
+        <!-- ==================== SUB-TABS ==================== -->
+        <div class="planTabs mb-3" role="tablist" aria-label="Trading Plan views">
+            <button v-for="tab in TABS" :key="tab.id" type="button" role="tab"
+                :aria-selected="activeTab === tab.id"
+                v-bind:class="['planTabBtn', { active: activeTab === tab.id }]"
+                v-on:click="activeTab = tab.id">
+                <i v-bind:class="['uil', tab.icon, 'me-1']"></i>{{ tab.label }}
+            </button>
         </div>
 
-        <!-- ---------- Deposits (ad-hoc, no fixed cadence) ---------- -->
-        <div class="planCard mb-3">
-            <PlanDepositsEditor :plan="activePlan" />
-        </div>
+        <!-- ==================== TAB 1: PER-TRADE PLAN ==================== -->
+        <template v-if="activeTab === 'plan'">
+            <PlanSelector />
 
-        <!-- ---------- Withdrawals (ad-hoc, with a note) ---------- -->
-        <div class="planCard mb-3">
-            <PlanWithdrawalsEditor :plan="activePlan" />
-        </div>
-
-        <!-- ---------- Target projection ---------- -->
-        <div class="planCard mb-3">
-            <!-- Same arrangement as the Goal seek card below: title on the left, a
-                 btn-group toggle and its field grouped on the right. Aligning to the
-                 pattern this page already uses beats inventing a third one. -->
-            <div class="planCardHead">
-                <span class="planCardTitle">Target projection</span>
-                <div class="d-flex align-items-end gap-2">
-                    <div class="btn-group btn-group-sm" role="group" aria-label="Target unit">
-                        <button type="button" v-on:click="targetMode = 'pct'"
-                            v-bind:class="['btn', 'btn-sm', !isAmountMode ? 'btn-primary' : 'btn-outline-secondary']">% / day</button>
-                        <button type="button" v-on:click="targetMode = 'amount'"
-                            v-bind:class="['btn', 'btn-sm', isAmountMode ? 'btn-primary' : 'btn-outline-secondary']">$ / day</button>
-                    </div>
-                    <div class="inlineInput" v-if="!isAmountMode">
-                        <label class="planLabel mb-0">Target % per day</label>
-                        <input type="number" step="0.1" placeholder="e.g. 1" class="form-control form-control-sm"
-                            v-model="activePlan.dailyPct" />
-                    </div>
-                    <div class="inlineInput" v-else>
-                        <label class="planLabel mb-0">Target $ per day</label>
-                        <input type="number" min="0" step="1" placeholder="e.g. 20" class="form-control form-control-sm"
-                            v-model="activePlan.dailyAmount" />
-                    </div>
-                </div>
-            </div>
-
-            <p v-if="isAmountMode" class="txt-small text-muted mb-0 mt-2">
-                A flat sum every trading day. It does not compound, so the curve is a
-                straight line and the balance no longer changes what a day is worth.
+            <p class="txt-small text-muted mb-3">
+                Compounds trade by trade — calculate how many trades it takes to reach your goal.
+                To compare against your actual trading results, see <a href="/plan-vs-actual">Plan vs Actual</a>.
             </p>
 
-            <!-- Optional: step the daily % down as the balance grows -->
-            <div class="tierBlock mt-2" v-if="!isAmountMode">
-                <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-1">
-                    <span class="txt-small text-muted">
-                        <i class="uil uil-layer-group me-1"></i>Step the daily % down as the balance grows
-                        (optional) — start at the Target % above, then e.g. from $5,000 → 3%/day, from $10,000 → 1%/day.
-                    </span>
-                    <button type="button" class="btn btn-sm btn-outline-secondary"
-                        v-on:click="addTier(activePlan)">+ Add step</button>
+            <div class="planInputs mb-3">
+                <div>
+                    <label class="planLabel">Starting balance</label>
+                    <input type="number" min="0" step="100" placeholder="e.g. 1000" class="form-control form-control-sm"
+                        v-model="activePlan.startBalance" />
                 </div>
-                <div v-if="tiers.length" class="tierRows">
-                    <div v-for="t in tiers" :key="t.id" class="tierRow">
-                        <span class="tierLabel">When balance reaches</span>
-                        <input type="number" step="100" placeholder="e.g. 10000"
-                            class="form-control form-control-sm tierNum" v-model="t.from" />
-                        <span class="tierLabel">switch to</span>
-                        <input type="number" step="0.1" placeholder="%/day"
-                            class="form-control form-control-sm tierNum" v-model="t.pct" />
-                        <span class="tierLabel">%/day</span>
-                        <i class="uil uil-trash-alt pointerClass tierDel"
-                            v-on:click="removeTier(activePlan, t.id)"></i>
-                    </div>
-                    <p class="txt-small text-muted mb-0" v-if="hasTiers">
-                        Below the first level the flat "Target % per day" applies; each level switches
-                        the rate once the balance reaches it.
-                    </p>
+                <div>
+                    <label class="planLabel">Goal balance</label>
+                    <input type="number" min="0" step="100" placeholder="e.g. 10000" class="form-control form-control-sm"
+                        v-model="activePlan.goalBalance" />
+                </div>
+                <div>
+                    <label class="planLabel">Trades (optional)</label>
+                    <input type="number" min="1" max="2000" step="1" placeholder="auto to goal"
+                        class="form-control form-control-sm" v-model="activePlan.horizonTrades" />
+                </div>
+                <div>
+                    <label class="planLabel">Symbol</label>
+                    <input type="text" placeholder="e.g. XAUUSD, USA100" class="form-control form-control-sm"
+                        v-model="activePlan.symbol" />
+                </div>
+                <div>
+                    <label class="planLabel">Lot size (optional)</label>
+                    <input type="number" min="0" step="0.01" placeholder="e.g. 0.05" class="form-control form-control-sm"
+                        v-model="activePlan.lotSize" />
                 </div>
             </div>
 
-            <!-- Lot sizing. Outside the projection template on purpose: it needs a
-                 balance and a target, not a horizon, so it works before one is set. -->
-            <PlanLotSizing class="mt-3" :plan="activePlan" :dollars="day1TargetDollars"
-                :basis="!isAmountMode && !hasTiers ? fmt(target, 2) + '% of ' + fmt(start, 0) : ''">
-                Sized on the starting balance — as the balance grows, the same % needs a bigger lot: with a
-                pip distance set, both tables below show the lot for every day on the way.
-            </PlanLotSizing>
-
-            <template v-if="projection">
-                <div class="statGrid my-3">
-                    <div class="statTile">
-                        <div class="statLabel">Principal</div>
-                        <div class="statValue" :title="fmt(start, 0)">{{ fmtCompact(start, 0) }}</div>
-                        <div class="statSub">money you started with</div>
-                    </div>
-                    <div class="statTile">
-                        <div class="statLabel">Trading days</div>
-                        <div class="statValue">{{ projection.tradingDays }}</div>
-                        <div class="statSub">Mon–Fri only</div>
-                    </div>
-                    <div class="statTile" v-if="projection.deposited > 0">
-                        <div class="statLabel">Extra deposits</div>
-                        <div class="statValue" :title="fmt(projection.deposited)">{{ fmtCompact(projection.deposited) }}</div>
-                        <div class="statSub" v-if="projection.ignoredDeposited > 0">
-                            +{{ fmt(projection.ignoredDeposited) }} outside horizon, ignored
+            <!-- ---------- Per-Trade Target Projection ---------- -->
+            <div class="planCard mb-3">
+                <div class="planCardHead">
+                    <span class="planCardTitle">Target per trade</span>
+                    <div class="d-flex align-items-end gap-2">
+                        <div class="btn-group btn-group-sm" role="group" aria-label="Target unit">
+                            <button type="button" v-on:click="targetMode = 'pct'"
+                                v-bind:class="['btn', 'btn-sm', !isAmountMode ? 'btn-primary' : 'btn-outline-secondary']">% / trade</button>
+                            <button type="button" v-on:click="targetMode = 'amount'"
+                                v-bind:class="['btn', 'btn-sm', isAmountMode ? 'btn-primary' : 'btn-outline-secondary']">$ / trade</button>
                         </div>
-                        <div class="statSub" v-else>added on top of principal</div>
-                    </div>
-                    <div class="statTile" v-if="projection.withdrawn > 0">
-                        <div class="statLabel">Withdrawn</div>
-                        <div class="statValue redTrade" :title="fmt(projection.withdrawn)">−{{ fmtCompact(projection.withdrawn) }}</div>
-                        <div class="statSub" v-if="projection.ignoredWithdrawn > 0">
-                            +{{ fmt(projection.ignoredWithdrawn) }} outside horizon, ignored
+                        <div class="inlineInput" v-if="!isAmountMode">
+                            <label class="planLabel mb-0">Target % per trade</label>
+                            <input type="number" min="0" step="0.5" placeholder="e.g. 3"
+                                class="form-control form-control-sm" v-model="activePlan.tradePct" />
                         </div>
-                        <div class="statSub" v-else>taken out along the way</div>
-                    </div>
-                    <div class="statTile">
-                        <div class="statLabel">Projected balance</div>
-                        <div class="statValue" v-bind:class="pnlClass(projection.profit)" :title="fmt(projection.finalBalance)">{{ fmtCompact(projection.finalBalance) }}</div>
-                        <div class="statSub" v-if="projection.deposited > 0">of which contributed: {{ fmt(projection.contributed) }}</div>
-                    </div>
-                    <div class="statTile">
-                        <div class="statLabel">Trading profit</div>
-                        <div class="statValue" v-bind:class="pnlClass(projection.profit)" :title="fmt(projection.profit)">{{ fmtCompact(projection.profit) }}</div>
-                        <div class="statSub" v-if="projection.deposited > 0">excludes deposits</div>
-                    </div>
-                    <div class="statTile">
-                        <div class="statLabel">Total return</div>
-                        <div class="statValue" v-bind:class="pnlClass(projection.totalReturnPct)" :title="fmt(projection.totalReturnPct) + '%'">{{ fmtCompact(projection.totalReturnPct) }}%</div>
-                        <div class="statSub" v-if="projection.deposited > 0">on capital contributed</div>
-                    </div>
-                    <div class="statTile" v-if="targetPipsPerDay">
-                        <div class="statLabel">Pips needed (day 1)</div>
-                        <div class="statValue" v-bind:class="toneClass(targetPipsPerDay.tone)" :title="fmt(targetPipsPerDay.pips, 0)">{{ fmtCompact(targetPipsPerDay.pips, 0) }}</div>
-                        <div class="statSub">{{ activePlan.symbol || 'symbol' }} · {{ fmt(lotSize, 2) }} lot</div>
+                        <div class="inlineInput" v-else>
+                            <label class="planLabel mb-0">Target $ per trade</label>
+                            <input type="number" min="0" step="5" placeholder="e.g. 50"
+                                class="form-control form-control-sm" v-model="activePlan.tradeAmount" />
+                        </div>
                     </div>
                 </div>
 
-                <p v-if="targetPipsPerDay" class="txt-small mb-3" v-bind:class="toneClass(targetPipsPerDay.tone)">
-                    <i class="uil uil-info-circle me-1"></i>{{ targetPipsPerDay.verdict }}
-                    <span class="pipsCalibrationNote">— 500–2000 pips/day calibrated to your own feedback; bands past that (aggressive/unrealistic) are an extrapolated guess, adjust as you see fit.</span>
+                <p v-if="isAmountMode" class="txt-small text-muted mb-0 mt-2">
+                    A flat profit per trade. It does not compound, so each trade adds the same dollar amount.
                 </p>
-                <p v-else-if="lotSize == null" class="hintLine mb-3">Enter a lot size above to see this target in pips/day.</p>
 
-                <!-- Balance curve, one point per trading day -->
-                <div class="chartWrap mb-3">
-                    <div class="chartTitle">Balance per trading day</div>
-                    <div ref="chartEl" class="chartBox"></div>
-                </div>
-
-                <!-- Step-by-step compounding -->
-                <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
-                    <span class="txt-small text-muted">
-                        Each trading day: <code>closing = (opening<span v-if="projection.deposited > 0"> + deposit</span>) × (1 + <span v-if="hasTiers">stepped %/day</span><span v-else>{{ fmt(target, 2) }}%</span>)</code>
-                        — the next day opens on that closing balance.
-                    </span>
-                    <div class="btn-group btn-group-sm" role="group">
-                        <button v-for="g in GRANULARITIES" :key="g.id" type="button"
-                            v-bind:class="['btn', 'btn-sm', granularity === g.id ? 'btn-primary' : 'btn-outline-secondary']"
-                            v-on:click="granularity = g.id">{{ g.label }}</button>
+                <!-- Optional: step the %/trade down as the balance grows -->
+                <div class="tierBlock mt-2" v-if="!isAmountMode">
+                    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-1">
+                        <span class="txt-small text-muted">
+                            <i class="uil uil-layer-group me-1"></i>Step the %/trade down as the balance grows
+                            (optional) — e.g. from $5,000 → 2%/trade, from $10,000 → 1%/trade.
+                        </span>
+                        <button type="button" class="btn btn-sm btn-outline-secondary"
+                            v-on:click="addTradeTier(activePlan)">+ Add step</button>
+                    </div>
+                    <div v-if="tiers.length" class="tierRows">
+                        <div v-for="t in tiers" :key="t.id" class="tierRow">
+                            <span class="tierLabel">When balance reaches</span>
+                            <input type="number" step="100" placeholder="e.g. 5000"
+                                class="form-control form-control-sm tierNum" v-model="t.from" />
+                            <span class="tierLabel">switch to</span>
+                            <input type="number" step="0.5" placeholder="%/trade"
+                                class="form-control form-control-sm tierNum" v-model="t.pct" />
+                            <span class="tierLabel">%/trade</span>
+                            <i class="uil uil-trash-alt pointerClass tierDel"
+                                v-on:click="removeTradeTier(activePlan, t.id)"></i>
+                        </div>
+                        <p class="txt-small text-muted mb-0" v-if="hasTiers">
+                            Below the first level the flat "Target % per trade" applies; each level switches
+                            the rate once the balance reaches it.
+                        </p>
                     </div>
                 </div>
 
-                <div class="tableScroll">
-                    <table class="table table-sm breakTable mb-0">
-                        <thead>
-                            <tr>
-                                <th>{{ granularity === 'daily' ? 'Day' : 'Period' }}</th>
-                                <th class="text-end" v-if="granularity !== 'daily'">Days</th>
-                                <th class="text-end">Opening</th>
-                                <th class="text-end" v-if="projection.deposited > 0">Deposit</th>
-                                <th class="text-end" v-if="projection.withdrawn > 0">Withdraw</th>
-                                <th class="text-end">Profit</th>
-                                <th class="text-end" v-if="lotSize != null">Pips</th>
-                                <th class="text-end" v-if="sizingPips">Lot @ {{ fmt(sizingPips, 0) }} pips</th>
-                                <th class="text-end">Closing</th>
-                                <th class="text-end">Cumulative</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr v-for="r in rows" :key="r.label">
-                                <td>
-                                    <span v-if="granularity === 'daily'" class="dayNum">{{ r.n }}</span>{{ r.label }}
-                                </td>
-                                <td class="text-end" v-if="granularity !== 'daily'">{{ r.tradingDays }}</td>
-                                <td class="text-end">{{ fmt(r.opening) }}</td>
-                                <td class="text-end" v-if="projection.deposited > 0">
-                                    <span v-if="r.deposit">+{{ fmt(r.deposit) }}</span><span v-else class="text-muted">—</span>
-                                </td>
-                                <td class="text-end" v-if="projection.withdrawn > 0">
-                                    <span v-if="r.withdrawal" class="redTrade">−{{ fmt(r.withdrawal) }}</span><span v-else class="text-muted">—</span>
-                                </td>
-                                <td class="text-end" v-bind:class="pnlClass(r.profit)">{{ fmt(r.profit) }}</td>
-                                <td class="text-end" v-if="lotSize != null">{{ fmt(dollarsToPips(r.profit, activePlan.symbol, lotSize), 0) }}</td>
-                                <td class="text-end" v-if="sizingPips" v-bind:class="r.lotShort ? 'warnTrade' : 'lotCell'"
-                                    :title="lotTitle(r)">{{ lotLabel(r) }}</td>
-                                <td class="text-end fw-bold">{{ fmt(r.closing) }}</td>
-                                <td class="text-end" v-bind:class="pnlClass(r.cumulativeReturnPct)">{{ fmt(r.cumulativeReturnPct) }}%</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-                <p class="txt-small text-muted mt-2 mb-0">
-                    {{ rows.length }} rows · weekends skipped (market closed)
-                    <span v-if="sizingPips"> · Lot = that day's profit ÷ ({{ fmt(sizingPips, 0) }} pips ×
+                <!-- Lot sizing for Trade #1 -->
+                <PlanLotSizing class="mt-3" :plan="activePlan" :dollars="trade1TargetDollars"
+                    :basis="!isAmountMode && !hasTiers && tradePct > 0 ? fmt(tradePct, 2) + '% of ' + fmt(start, 0) : ''">
+                    Sized for Trade #1 — as the balance grows, the same % needs a bigger lot: with a pip/point distance
+                    set, the table below shows the lot for every trade on the way.
+                </PlanLotSizing>
+
+                <template v-if="projection">
+                    <div class="statGrid my-3">
+                        <div class="statTile">
+                            <div class="statLabel">Principal</div>
+                            <div class="statValue" :title="fmt(start, 0)">{{ fmtCompact(start, 0) }}</div>
+                            <div class="statSub">starting balance</div>
+                        </div>
+                        <div class="statTile" v-bind:class="{ highlightTile: goal > 0 }">
+                            <div class="statLabel">{{ goal > 0 ? 'Trades to goal' : 'Trades simulated' }}</div>
+                            <div class="statValue greenTrade" v-if="goal > 0 && projection.alreadyAtGoal">0</div>
+                            <div class="statValue greenTrade" v-else-if="goal > 0 && projection.goalTrades != null">
+                                {{ projection.goalTrades }}
+                            </div>
+                            <div class="statValue warnTrade" v-else-if="goal > 0 && projection.hitCap">&gt; 2,000</div>
+                            <div class="statValue" v-else>{{ projection.tradeCount }}</div>
+                            <div class="statSub" v-if="goal > 0 && projection.alreadyAtGoal">already at goal</div>
+                            <div class="statSub" v-else-if="goal > 0 && projection.goalTrades != null">
+                                trades to reach {{ fmtCompact(goal, 0) }}
+                            </div>
+                            <div class="statSub" v-else-if="goal > 0">not reached in 2,000 trades</div>
+                            <div class="statSub" v-else>trade-by-trade count</div>
+                        </div>
+                        <div class="statTile">
+                            <div class="statLabel">Projected balance</div>
+                            <div class="statValue" v-bind:class="pnlClass(projection.profit)"
+                                :title="fmt(projection.finalBalance)">{{ fmtCompact(projection.finalBalance) }}</div>
+                            <div class="statSub">after {{ projection.tradeCount }} trade(s)</div>
+                        </div>
+                        <div class="statTile">
+                            <div class="statLabel">Trading profit</div>
+                            <div class="statValue" v-bind:class="pnlClass(projection.profit)"
+                                :title="fmt(projection.profit)">{{ fmtCompact(projection.profit) }}</div>
+                            <div class="statSub">net gain over principal</div>
+                        </div>
+                        <div class="statTile">
+                            <div class="statLabel">Total return</div>
+                            <div class="statValue" v-bind:class="pnlClass(projection.totalReturnPct)"
+                                :title="fmt(projection.totalReturnPct) + '%'">{{ fmtCompact(projection.totalReturnPct) }}%</div>
+                            <div class="statSub">compounded return</div>
+                        </div>
+                        <div class="statTile" v-if="trade1PipsNeeded">
+                            <div class="statLabel">Pips needed (Trade #1)</div>
+                            <div class="statValue" v-bind:class="toneClass(trade1PipsNeeded.tone)"
+                                :title="fmt(trade1PipsNeeded.pips, 0)">{{ fmtCompact(trade1PipsNeeded.pips, 0) }}</div>
+                            <div class="statSub">{{ activePlan.symbol || 'symbol' }} · {{ fmt(lotSize, 2) }} lot</div>
+                        </div>
+                    </div>
+
+                    <!-- Balance curve, one point per trade -->
+                    <div class="chartWrap mb-3">
+                        <div class="chartTitle">Balance per trade</div>
+                        <div ref="chartEl" class="chartBox"></div>
+                    </div>
+
+                    <!-- Trade-by-trade table -->
+                    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+                        <span class="txt-small text-muted">
+                            Each trade:
+                            <code v-if="!isAmountMode">closing = opening × (1 + <span v-if="hasTiers">stepped %</span><span v-else>{{ fmt(tradePct, 2) }}%</span>)</code>
+                            <code v-else>closing = opening + {{ fmt(tradeAmount) }}</code>
+                            — {{ rows.length }} trade(s) shown.
+                        </span>
+                    </div>
+
+                    <div class="tableScroll">
+                        <table class="table table-sm breakTable mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Trade</th>
+                                    <th class="text-end">Opening</th>
+                                    <th class="text-end" v-if="!isAmountMode">Target %</th>
+                                    <th class="text-end">Profit</th>
+                                    <th class="text-end" v-if="lotSize != null">Pips</th>
+                                    <th class="text-end" v-if="sizingPips">Lot @ {{ fmt(sizingPips, 0) }} pips</th>
+                                    <th class="text-end">Closing</th>
+                                    <th class="text-end">Cumulative</th>
+                                    <th class="text-end" v-if="goal > 0">To goal</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="r in rows" :key="r.n"
+                                    v-bind:class="{ goalHitRow: goal > 0 && r.n === projection.goalTrades }">
+                                    <td><span class="dayNum">#{{ r.n }}</span>Trade {{ r.n }}</td>
+                                    <td class="text-end">{{ fmt(r.opening) }}</td>
+                                    <td class="text-end" v-if="!isAmountMode">{{ fmt(r.ratePct, 2) }}%</td>
+                                    <td class="text-end" v-bind:class="pnlClass(r.profit)">+{{ fmt(r.profit) }}</td>
+                                    <td class="text-end" v-if="lotSize != null">
+                                        {{ fmt(dollarsToPips(r.profit, activePlan.symbol, lotSize), 0) }}
+                                    </td>
+                                    <td class="text-end" v-if="sizingPips"
+                                        v-bind:class="r.lotShort ? 'warnTrade' : 'lotCell'" :title="lotTitle(r)">
+                                        {{ lotLabel(r) }}
+                                    </td>
+                                    <td class="text-end fw-bold">{{ fmt(r.closing) }}</td>
+                                    <td class="text-end" v-bind:class="pnlClass(r.cumulativeReturnPct)">
+                                        +{{ fmt(r.cumulativeReturnPct) }}%
+                                    </td>
+                                    <td class="text-end" v-if="goal > 0"
+                                        v-bind:class="r.progressPct >= 100 ? 'greenTrade fw-bold' : ''">
+                                        {{ fmt(Math.min(r.progressPct, 999), 1) }}%
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p class="txt-small text-muted mt-2 mb-0" v-if="sizingPips">
+                        Lot = that trade's profit ÷ ({{ fmt(sizingPips, 0) }} pips ×
                         {{ fmt(pipValuePerLot(activePlan.symbol), 2) }}/pip/lot), rounded down —
-                        <span class="warnTrade">amber</span> where the tradeable lot makes &gt;10% less than the target (hover for detail)</span>
-                    <span v-else-if="day1TargetDollars"> · enter Pips in the Lot size box above to see the lot to trade each day</span>
-                </p>
-            </template>
-            <!-- Say what is actually missing -- with a balance and a target already
-                 in, the only thing standing between them and the table is a horizon. -->
-            <div v-else class="hintLine">
-                <span v-if="start > 0 && hasAnyTarget">Enter a horizon (months) to see the day-by-day projection.</span>
-                <span v-else>Enter a starting balance, horizon, and target % per day.</span>
-            </div>
-        </div>
-
-        <!-- ---------- Goal seek ---------- -->
-        <div class="planCard mt-3">
-            <div class="planCardHead">
-                <span class="planCardTitle">Goal seek — what % per {{ goalSeekUnit }} do I need?</span>
-                <div class="d-flex align-items-end gap-2">
-                    <div class="btn-group btn-group-sm" role="group">
-                        <button v-for="u in GOAL_SEEK_UNITS" :key="u.id" type="button"
-                            v-bind:class="['btn', 'btn-sm', goalSeekUnit === u.id ? 'btn-primary' : 'btn-outline-secondary']"
-                            v-on:click="goalSeekUnit = u.id">{{ u.label }}</button>
-                    </div>
-                    <div class="inlineInput">
-                        <label class="planLabel mb-0">Goal balance</label>
-                        <input type="number" min="0" step="100" placeholder="e.g. 10000" class="form-control form-control-sm"
-                            v-model="activePlan.goalBalance" />
-                    </div>
-                </div>
-            </div>
-
-            <template v-if="goalSeek">
-                <p class="goalLine mt-3 mb-1">
-                    To reach <strong>{{ fmt(goal, 0) }}</strong> from <strong>{{ fmt(start, 0) }}</strong><span
-                        v-if="deposits.length"> plus your deposits</span>
-                    in <strong>{{ months }}</strong> month(s) — {{ goalSeek.tradingDays }} trading days — you need
-                    <strong v-if="goalSeekUnit === 'week'" v-bind:class="toneClass(goalSeek.tone)">{{ fmt(goalSeek.requiredPctPerWeek, 2) }}% per week</strong>
-                    <strong v-else v-bind:class="toneClass(goalSeek.tone)">{{ fmt(goalSeek.requiredPctPerDay, 3) }}% per day</strong>.
-                </p>
-                <p class="txt-small mb-1" style="opacity: 0.7;">
-                    Same plan, other unit:
-                    <span v-if="goalSeekUnit === 'week'">{{ fmt(goalSeek.requiredPctPerDay, 3) }}% per day</span>
-                    <span v-else>{{ fmt(goalSeek.requiredPctPerWeek, 2) }}% per week</span>
-                    (~{{ fmt(goalSeek.tradingDays / goalSeek.weeks, 1) }} trading days/week over {{ fmt(goalSeek.weeks, 1) }} weeks)
-                </p>
-                <p class="txt-small mb-0" v-bind:class="toneClass(goalSeek.tone)">
-                    <i class="uil uil-info-circle me-1"></i>{{ goalSeek.verdict }}
-                </p>
-
-                <!-- Ties this result back to the Target projection card above -->
-                <div class="targetCompareRow mt-2">
-                    <p v-if="targetVsGoalSeek" class="txt-small mb-0" v-bind:class="targetVsGoalSeek.onTrack ? 'greenTrade' : 'redTrade'">
-                        <i v-bind:class="targetVsGoalSeek.onTrack ? 'uil uil-check-circle' : 'uil uil-arrow-up'" class="me-1"></i>
-                        Your Target above is <strong>{{ fmt(target, 2) }}%/day</strong> —
-                        <span v-if="targetVsGoalSeek.onTrack">{{ fmt(targetVsGoalSeek.gap, 3) }}%/day ahead of what this goal needs.</span>
-                        <span v-else>{{ fmt(-targetVsGoalSeek.gap, 3) }}%/day short of what this goal needs.</span>
+                        <span class="warnTrade">amber</span> where the tradeable lot makes &gt;10% less than the target (hover for detail).
                     </p>
-                    <p v-else class="txt-small mb-0 hintLine" style="margin-top:0">Set a Target % per day above to compare it against this goal.</p>
-                    <button type="button" class="btn btn-outline-primary btn-sm" v-on:click="applyGoalSeekToTarget">
-                        <i class="uil uil-arrow-up me-1"></i>Apply {{ fmt(goalSeek.requiredPctPerDay, 3) }}%/day to Target
-                    </button>
-                </div>
-
-                <p v-if="goalSeekPipsPerDay" class="txt-small mt-2 mb-0" v-bind:class="toneClass(goalSeekPipsPerDay.tone)">
-                    <i class="uil uil-info-circle me-1"></i>≈ <strong>{{ fmt(goalSeekPipsPerDay.pips, 0) }} pips on day 1</strong>
-                    ({{ activePlan.symbol || 'symbol' }}, {{ fmt(lotSize, 2) }} lot) — {{ goalSeekPipsPerDay.verdict }}
-                    <span class="pipsCalibrationNote">Required pips grow as your balance compounds, so this is a starting-point estimate, not a fixed daily target. 500–2000 pips/day calibrated to your own feedback; bands past that are an extrapolated guess.</span>
-                </p>
-                <p v-else-if="lotSize == null" class="hintLine mt-2 mb-0">Enter a lot size above to see this in pips/day.</p>
-            </template>
-            <!-- Time to goal at the target above. Needs no horizon, so it answers
-                 even when the %-needed calculation above cannot. -->
-            <p v-if="goalTime" class="goalLine mt-3 mb-0">
-                <template v-if="goalTime.already">
-                    You're already at or above <strong>{{ fmt(goal, 0) }}</strong>.
                 </template>
-                <template v-else>
-                    At your target
-                    (<strong>{{ isAmountMode ? fmt(dailyAmount) + ' / day' : (hasTiers ? 'stepped % / day' : fmt(target, 2) + '% / day') }}</strong>)
-                    you reach <strong>{{ fmt(goal, 0) }}</strong> from <strong>{{ fmt(start, 0) }}</strong><span
-                        v-if="deposits.length"> plus your deposits</span> in
-                    <strong class="greenTrade">{{ goalTime.tradingDays }} trading days</strong> — around
-                    <strong>{{ goalTime.date }}</strong>.
-                </template>
-            </p>
-            <p v-else-if="start > 0 && goal > 0 && hasAnyTarget" class="hintLine mb-0">
-                At your target this goal isn't reached within 10 years (120 months).
-            </p>
 
-            <!-- Path to the goal, period by period -->
-            <template v-if="goalPathRows.length">
-                <p class="txt-small text-muted mt-3 mb-2">
-                    <i class="uil uil-table me-1"></i>
-                    <span v-if="goalPath.source === 'required'">Path at the required
-                        {{ fmt(goalSeek.requiredPctPerDay, 3) }}%/day over {{ months }} month(s)</span>
-                    <span v-else>Path at your target, up to the day the goal is reached</span>
-                    — {{ goalSeekUnit === 'week' ? 'by week' : 'by trading day' }}.
-                    <span v-if="sizingPips">Lot column sized at {{ fmt(sizingPips, 0) }} pips, same as the Target projection.</span>
-                    <span v-else>Enter Pips in the Lot size box above to see the lot to trade on the way.</span>
-                </p>
-                <div class="tableScroll">
-                    <table class="table table-sm breakTable mb-0">
-                        <thead>
-                            <tr>
-                                <th>{{ goalSeekUnit === 'week' ? 'Week' : 'Day' }}</th>
-                                <th class="text-end" v-if="goalSeekUnit === 'week'">Days</th>
-                                <th class="text-end">Opening</th>
-                                <th class="text-end" v-if="goalPathRows.some((r) => r.deposit)">Deposit</th>
-                                <th class="text-end" v-if="goalPathRows.some((r) => r.withdrawal)">Withdraw</th>
-                                <th class="text-end">Profit</th>
-                                <th class="text-end">% this {{ goalSeekUnit === 'week' ? 'week' : 'day' }}</th>
-                                <th class="text-end" v-if="sizingPips">Lot @ {{ fmt(sizingPips, 0) }} pips</th>
-                                <th class="text-end">Closing</th>
-                                <th class="text-end">To goal</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr v-for="r in goalPathRows" :key="r.label">
-                                <td><span v-if="goalSeekUnit !== 'week'" class="dayNum">{{ r.n }}</span>{{ r.label }}</td>
-                                <td class="text-end" v-if="goalSeekUnit === 'week'">{{ r.tradingDays }}</td>
-                                <td class="text-end">{{ fmt(r.opening) }}</td>
-                                <td class="text-end" v-if="goalPathRows.some((x) => x.deposit)">
-                                    <span v-if="r.deposit">+{{ fmt(r.deposit) }}</span><span v-else class="text-muted">—</span>
-                                </td>
-                                <td class="text-end" v-if="goalPathRows.some((x) => x.withdrawal)">
-                                    <span v-if="r.withdrawal" class="redTrade">−{{ fmt(r.withdrawal) }}</span><span v-else class="text-muted">—</span>
-                                </td>
-                                <td class="text-end" v-bind:class="pnlClass(r.profit)">{{ fmt(r.profit) }}</td>
-                                <td class="text-end" v-bind:class="pnlClass(r.periodPct)">{{ fmt(r.periodPct, 2) }}%</td>
-                                <td class="text-end" v-if="sizingPips" v-bind:class="r.lotShort ? 'warnTrade' : 'lotCell'"
-                                    :title="lotTitle(r)">{{ lotLabel(r) }}</td>
-                                <td class="text-end fw-bold">{{ fmt(r.closing) }}</td>
-                                <td class="text-end" v-bind:class="r.progressPct >= 100 ? 'greenTrade' : ''">
-                                    {{ fmt(Math.min(r.progressPct, 999), 1) }}%
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
+                <div v-else class="hintLine">
+                    <span v-if="start > 0 && hasAnyTarget">
+                        Enter a <strong>Goal balance</strong> or <strong>Trades</strong> count above to see the trade-by-trade table.
+                    </span>
+                    <span v-else>
+                        Enter a starting balance, goal balance (or number of trades), and target % or $ per trade.
+                    </span>
                 </div>
-            </template>
-
-            <div v-if="!goalSeek" class="hintLine">
-                <span v-if="!(start > 0) || !(goal > 0)">Enter a starting balance and a goal balance.</span>
-                <span v-else>Enter a horizon (months) to also see the % per {{ goalSeekUnit }} this goal needs<span
-                        v-if="!hasAnyTarget">, or set a target above to see how long it takes</span>.</span>
             </div>
-        </div>
 
-        <p class="txt-small text-muted mt-3">
-            <i class="uil uil-exclamation-triangle me-1"></i>Projections are hypothetical: they assume a constant daily
-            return with full compounding. Real results vary — use them to set targets, not as a guarantee.
-        </p>
+            <!-- ---------- Goal seek (per trade) ---------- -->
+            <div class="planCard">
+                <div class="planCardHead">
+                    <span class="planCardTitle">Goal seek — how many trades or what % per trade?</span>
+                    <div class="d-flex align-items-end gap-2">
+                        <div class="inlineInput">
+                            <label class="planLabel mb-0">Within trades</label>
+                            <input type="number" min="1" max="2000" step="1" placeholder="e.g. 50"
+                                class="form-control form-control-sm" v-model="activePlan.horizonTrades" />
+                        </div>
+                        <div class="inlineInput">
+                            <label class="planLabel mb-0">Goal balance</label>
+                            <input type="number" min="0" step="100" placeholder="e.g. 10000"
+                                class="form-control form-control-sm" v-model="activePlan.goalBalance" />
+                        </div>
+                    </div>
+                </div>
+
+                <!-- At current target: how many trades to goal -->
+                <p v-if="goalTradesResult" class="goalLine mt-3 mb-0">
+                    <template v-if="goalTradesResult.already">
+                        You're already at or above <strong>{{ fmt(goal, 0) }}</strong>.
+                    </template>
+                    <template v-else>
+                        At your target
+                        (<strong>{{ isAmountMode ? fmt(tradeAmount) + ' / trade' : (hasTiers ? 'stepped % / trade' : fmt(tradePct, 2) + '% / trade') }}</strong>),
+                        you reach <strong>{{ fmt(goal, 0) }}</strong> from <strong>{{ fmt(start, 0) }}</strong> in
+                        <strong class="greenTrade">{{ goalTradesResult.trades }} trade(s)</strong>
+                        (ending at <strong>{{ fmt(goalTradesResult.finalBalance) }}</strong>).
+                    </template>
+                </p>
+                <p v-else-if="start > 0 && goal > 0 && hasAnyTarget" class="hintLine mb-0">
+                    At your target this goal isn't reached within 2,000 trades.
+                </p>
+
+                <!-- Within N trades: what %/trade is needed -->
+                <template v-if="goalSeek">
+                    <p class="goalLine mt-3 mb-1">
+                        To reach <strong>{{ fmt(goal, 0) }}</strong> from <strong>{{ fmt(start, 0) }}</strong>
+                        within <strong>{{ goalSeek.trades }}</strong> trade(s), you need
+                        <strong class="text-blue">{{ fmt(goalSeek.requiredPctPerTrade, 3) }}% per trade</strong>
+                        <span class="text-muted">(compounded)</span>
+                        <span v-if="goalSeek.requiredAmountPerTrade > 0">
+                            or flat <strong>+${{ fmt(goalSeek.requiredAmountPerTrade) }} / trade</strong>
+                        </span>.
+                    </p>
+
+                    <div class="targetCompareRow mt-2">
+                        <p v-if="targetVsGoalSeek" class="txt-small mb-0"
+                            v-bind:class="targetVsGoalSeek.onTrack ? 'greenTrade' : 'redTrade'">
+                            <i v-bind:class="targetVsGoalSeek.onTrack ? 'uil uil-check-circle' : 'uil uil-arrow-up'"
+                                class="me-1"></i>
+                            Your Target above is <strong>{{ fmt(tradePct, 2) }}%/trade</strong> —
+                            <span v-if="targetVsGoalSeek.onTrack">
+                                {{ fmt(targetVsGoalSeek.gap, 3) }}%/trade ahead of what {{ goalSeek.trades }} trades need.
+                            </span>
+                            <span v-else>
+                                {{ fmt(-targetVsGoalSeek.gap, 3) }}%/trade short of reaching the goal in {{ goalSeek.trades }} trades.
+                            </span>
+                        </p>
+                        <p v-else class="txt-small mb-0 hintLine" style="margin-top:0">
+                            Set a Target % per trade above to compare against this pace.
+                        </p>
+                        <button type="button" class="btn btn-outline-primary btn-sm" v-on:click="applyGoalSeekToTarget">
+                            <i class="uil uil-arrow-up me-1"></i>Apply {{ fmt(goalSeek.requiredPctPerTrade, 3) }}%/trade to Target
+                        </button>
+                    </div>
+
+                    <p v-if="goalSeekPipsTrade1" class="txt-small mt-2 mb-0" v-bind:class="toneClass(goalSeekPipsTrade1.tone)">
+                        <i class="uil uil-info-circle me-1"></i>≈ <strong>{{ fmt(goalSeekPipsTrade1.pips, 0) }} pips on Trade #1</strong>
+                        ({{ activePlan.symbol || 'symbol' }}, {{ fmt(lotSize, 2) }} lot).
+                    </p>
+                </template>
+
+                <div v-if="!goalSeek && !goalTradesResult" class="hintLine">
+                    <span v-if="!(start > 0) || !(goal > 0)">Enter a starting balance and a goal balance.</span>
+                    <span v-else>
+                        Enter <strong>Within trades</strong> (to solve %/trade) or set a <strong>Target per trade</strong> above (to count how many trades it takes).
+                    </span>
+                </div>
+            </div>
+
+            <p class="txt-small text-muted mt-3">
+                <i class="uil uil-exclamation-triangle me-1"></i>Projections are hypothetical: they assume consecutive
+                winning trades at your target with full compounding. Use position sizing &amp; risk management on every trade.
+            </p>
+        </template>
+
+        <!-- ==================== TAB 2: RISK & LOT SIZE CALCULATOR ==================== -->
+        <RiskLotCalculator v-else />
     </div>
 </template>
 
 <style scoped>
+.planTabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    padding-bottom: 0.6rem;
+}
+
+.planTabBtn {
+    background-color: var(--black-bg-7);
+    border: 1px solid var(--border-strong);
+    color: var(--white-60);
+    border-radius: var(--radius-sm);
+    padding: 0.4rem 0.85rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.planTabBtn:hover {
+    color: var(--white-87);
+    background-color: var(--surface-hover);
+}
+
+.planTabBtn.active {
+    background-color: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
 .statGrid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -735,6 +618,11 @@ watch(projection, async (p) => {
     min-width: 0;
 }
 
+.highlightTile {
+    border-color: rgba(0, 202, 115, 0.35);
+    background-color: rgba(0, 202, 115, 0.06);
+}
+
 .statLabel {
     font-size: 0.72rem;
     text-transform: uppercase;
@@ -746,8 +634,6 @@ watch(projection, async (p) => {
     font-size: 1.35rem;
     font-weight: 700;
     margin-top: 0.15rem;
-    /* Last resort if a value is still too long for its tile (fmtCompact keeps
-       the usual cases short): wrap inside the box, never paint over the next. */
     overflow-wrap: anywhere;
 }
 
@@ -758,6 +644,10 @@ watch(projection, async (p) => {
 
 .breakTable {
     font-size: 0.85rem;
+}
+
+.goalHitRow {
+    background-color: rgba(0, 202, 115, 0.08);
 }
 
 .chartWrap {
@@ -778,7 +668,6 @@ watch(projection, async (p) => {
     height: 260px;
 }
 
-/* The daily view can run to hundreds of rows — keep the card a sane height. */
 .tableScroll {
     max-height: 420px;
     overflow-y: auto;
@@ -795,8 +684,7 @@ watch(projection, async (p) => {
 
 .dayNum {
     display: inline-block;
-    min-width: 2.2rem;
-    /* 0.45 measured 3.65:1 — below the 4.5:1 minimum. 0.6 lands at 5.5:1. */
+    min-width: 2.6rem;
     opacity: 0.6;
 }
 
@@ -835,22 +723,10 @@ watch(projection, async (p) => {
     font-weight: 700;
 }
 
-
 .inlineInput {
     min-width: 170px;
 }
 
-/* The unit toggles, sized and coloured like the field they sit beside.
- *
- * Bootstrap gave them .25rem/.5rem padding and its own #0d6efd, so they came out
- * 31px tall next to a 39px input and in a blue this theme does not use anywhere.
- * The padding and tokens below are copied from .form-control in style-dark.css --
- * matching how the input derives its height rather than pinning a pixel value, so
- * the two stay level if that rule ever changes.
- *
- * Scoped to .planCardHead so BOTH headers on this page get it (Target projection
- * and Goal seek). Styling only the one being complained about is how a page ends
- * up with three different toggle designs. */
 .planCardHead .btn-group .btn {
     padding: 0.5rem 0.8rem;
     background-color: var(--black-bg-7);
@@ -865,8 +741,6 @@ watch(projection, async (p) => {
     background-color: var(--surface-hover);
 }
 
-/* The selected unit reads as selected without borrowing a colour from outside the
-   palette -- same accent pair the focused input uses. */
 .planCardHead .btn-group .btn.btn-primary {
     background-color: var(--accent-soft);
     border-color: var(--accent);
@@ -877,8 +751,6 @@ watch(projection, async (p) => {
     font-size: 0.92rem;
 }
 
-/* Explicit colour, not opacity: opacity would multiply with the inherited
-   alpha and drop this below the readable threshold. */
 .hintLine {
     font-size: 0.85rem;
     color: var(--white-60);
@@ -897,30 +769,18 @@ watch(projection, async (p) => {
     border-radius: 0.5rem;
 }
 
-/* amber: "aggressive" verdicts sit between the app's green/red */
 .warnTrade {
     color: #e0a800;
 }
 
-/* Disclaimer inline with the pips verdict — de-emphasized but still readable
-   on its own (explicit colour, not opacity, for the same reason as .hintLine). */
-.pipsCalibrationNote {
-    display: block;
-    margin-top: 0.25rem;
-    color: var(--white-60);
-}
-
-/* Stepped daily-% editor */
 .tierBlock {
     border-top: 1px solid rgba(255, 255, 255, 0.06);
     padding-top: 0.6rem;
 }
 
-/* Lot cells read as the actionable column without shouting -- accent, not bold. */
 .lotCell {
     color: var(--accent);
 }
-
 
 .tierRows {
     display: flex;
