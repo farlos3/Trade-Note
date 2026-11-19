@@ -119,31 +119,31 @@ function useBalance(val) {
         <div class="planCard mb-3">
             <div class="calcGrid">
                 <!-- Account Balance -->
-                <div>
-                    <div class="d-flex align-items-center justify-content-between mb-1">
+                <div class="calcField">
+                    <div class="fieldHead">
                         <label class="planLabel mb-0">Account balance ($)</label>
-                        <div class="d-flex gap-1">
-                            <button v-if="mt5Balance > 0" type="button" class="miniChip"
-                                v-on:click="useBalance(mt5Balance)"
-                                title="Fill from active MT5 account balance">
-                                MT5: {{ fmtCompact(mt5Balance, 0) }}
-                            </button>
-                            <button v-if="planStartBalance > 0" type="button" class="miniChip"
-                                v-on:click="useBalance(planStartBalance)"
-                                title="Fill from active plan starting balance">
-                                Plan: {{ fmtCompact(planStartBalance, 0) }}
-                            </button>
-                        </div>
                     </div>
                     <input type="number" min="0" step="100" placeholder="e.g. 1000"
                         class="form-control form-control-sm" v-model="form.balance" />
+                    <div class="presetRow mt-1" v-if="mt5Balance > 0 || planStartBalance > 0">
+                        <button v-if="mt5Balance > 0" type="button" class="miniChip"
+                            v-on:click="useBalance(mt5Balance)"
+                            title="Fill from active MT5 account balance">
+                            MT5: {{ fmtCompact(mt5Balance, 0) }}
+                        </button>
+                        <button v-if="planStartBalance > 0" type="button" class="miniChip"
+                            v-on:click="useBalance(planStartBalance)"
+                            title="Fill from active plan starting balance">
+                            Plan: {{ fmtCompact(planStartBalance, 0) }}
+                        </button>
+                    </div>
                 </div>
 
                 <!-- Risk Tolerance -->
-                <div>
-                    <div class="d-flex align-items-center justify-content-between mb-1">
+                <div class="calcField">
+                    <div class="fieldHead">
                         <label class="planLabel mb-0">
-                            {{ isAmountMode ? 'Max risk ($)' : 'Max risk (% of balance)' }}
+                            {{ isAmountMode ? 'Max risk ($)' : 'Max risk (%)' }}
                         </label>
                         <div class="btn-group btn-group-xs modeSwitch" role="group" aria-label="Risk unit">
                             <button type="button" class="btn btn-xs"
@@ -175,8 +175,10 @@ function useBalance(val) {
                 </div>
 
                 <!-- Symbol -->
-                <div>
-                    <label class="planLabel mb-1">Symbol</label>
+                <div class="calcField">
+                    <div class="fieldHead">
+                        <label class="planLabel mb-0">Symbol</label>
+                    </div>
                     <input type="text" placeholder="e.g. XAUUSD, USA100"
                         class="form-control form-control-sm" v-model="form.symbol" />
                     <div class="presetRow mt-1">
@@ -188,10 +190,12 @@ function useBalance(val) {
                 </div>
 
                 <!-- Stop-Loss Distance -->
-                <div>
-                    <label class="planLabel mb-1">
-                        Stop-loss ({{ detectedPipSize >= 1 ? 'points' : 'pips' }})
-                    </label>
+                <div class="calcField">
+                    <div class="fieldHead">
+                        <label class="planLabel mb-0">
+                            Stop-loss ({{ detectedPipSize >= 1 ? 'points' : 'pips' }})
+                        </label>
+                    </div>
                     <input type="number" min="0" step="1" placeholder="e.g. 300"
                         class="form-control form-control-sm" v-model="form.slPips" />
                     <div class="presetRow mt-1">
@@ -367,8 +371,36 @@ function useBalance(val) {
 <style scoped>
 .calcGrid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 0.9rem;
+    align-items: start;
+}
+
+@media (max-width: 992px) {
+    .calcGrid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 576px) {
+    .calcGrid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.calcField {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.fieldHead {
+    min-height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.4rem;
+    margin-bottom: 0.35rem;
 }
 
 .planCard {
@@ -388,6 +420,7 @@ function useBalance(val) {
     letter-spacing: 0.04em;
     opacity: 0.6;
     display: block;
+    line-height: 1.2;
 }
 
 .presetRow {
@@ -403,6 +436,7 @@ function useBalance(val) {
     border-radius: 0.35rem;
     padding: 0.12rem 0.45rem;
     font-size: 0.72rem;
+    line-height: 1.3;
     cursor: pointer;
     transition: all 0.12s ease;
 }
@@ -419,9 +453,9 @@ function useBalance(val) {
 }
 
 .modeSwitch .btn-xs {
-    padding: 0.08rem 0.45rem;
+    padding: 0.1rem 0.48rem;
     font-size: 0.72rem;
-    line-height: 1.3;
+    line-height: 1.2;
     background-color: var(--black-bg-7);
     border-color: var(--border-strong);
     color: var(--white-60);
@@ -447,6 +481,7 @@ function useBalance(val) {
     display: flex;
     align-items: center;
     gap: 0.45rem;
+    white-space: nowrap;
 }
 
 .customPipInput {
