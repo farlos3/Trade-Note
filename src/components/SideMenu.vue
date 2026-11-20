@@ -31,9 +31,6 @@ const weeklyPlanDue = computed(() => weeklyGate.value === 'review' || weeklyGate
                 <a id="step3b" v-bind:class="[pageId === 'live' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
                     href="/live">
                     <i class="uil uil-signal me-2"></i>Live</a>
-                <a id="step3c" v-bind:class="[pageId === 'trade' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
-                    href="/trade">
-                    <i class="uil uil-exchange me-2"></i>Trade</a>
                 <a id="step4" v-bind:class="[pageId === 'daily' ? 'activeNavCss' : '', 'nav-link', 'mb-1']" href="/daily">
                     <i class="uil uil-signal-alt-3 me-2"></i>History
                 </a>
