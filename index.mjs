@@ -12,6 +12,7 @@ import Proxy from 'http-proxy'
 import { useImportTrades, useGetExistingTradesArray, useUploadTrades, useSaveSheetTrade, useEnsureAccountRegistered, useStagedImportAccounts, useDiscardStagedImport } from './src/utils/addTrades.js';
 import { useEnsureTechniqueTag, useAssignTag } from './src/utils/daily.js';
 import { orderError, changeError } from './src/utils/orderRules.js';
+import { nextLockState, LOCK_PCT } from './src/utils/riskLock.js';
 import { currentUser, uploadMfePrices } from './src/stores/globals.js';
 import { useGetTimeZone } from './src/utils/utils.js';
 import { fetchDayDocs, fetchNotes, fetchTradesFingerprint, fetchDiaries, fetchEntryReviews } from './mcp-server/db.mjs';
@@ -1396,6 +1397,7 @@ const setupApiRoutes = (app) => {
                 ...(b.stops && typeof b.stops === 'object' ? b.stops : {}),
             },
             ticks: b.ticks && typeof b.ticks === 'object' ? b.ticks : {},
+            lock: b.lock ?? null,   // set by the server only (see trackRisk)
             agentTime: Number(b.t) || null,
             receivedAt: Date.now(),
         }
@@ -1427,7 +1429,7 @@ const setupApiRoutes = (app) => {
         if (!allowedSyncAccounts(currentUser.value).includes(label)) return refuseAccount(res, label)
         liveAgentSeenAt = Date.now()
         liveAgentReason = null
-        applyLiveSnapshot(body)
+        applyLiveSnapshot({ ...body, lock: trackRisk(currentUser.value.objectId, label, Number(body.equity)) })
         // Orders placed in the app ride back on the agent's own once-a-second POST:
         // no second connection, and delivered at most once (see takeOrdersFor).
         res.send({ ok: true, clients: liveClients.size, orders: takeOrdersFor(currentUser.value.objectId, label) })
@@ -1457,6 +1459,62 @@ const setupApiRoutes = (app) => {
      * Pending orders live in memory (they expire in seconds anyway); every request
      * and its outcome is also kept in the `orderRequests` class.
      **********************************************/
+    /* Drawdown lock (src/utils/riskLock.js): equity LOCK_PCT% under its peak blocks
+       NEW entries for an hour. modify/cancel stay open so risk can still be cut.
+       Peak and lock live in the `riskLocks` class (one row per account) so a
+       restart cannot be used to dodge a lock. The peak is learned from live frames,
+       i.e. it starts at the equity seen when this first runs. Deposits and
+       withdrawals move the peak by the same amount (peak = old peak + gains), so
+       only trading results count as drawdown; the net flow comes from /api/account.
+       shortcut: direct MT5 clicks are not blocked, only orders sent from TradeNote;
+       a withdrawal shows as a drop until the next account sync (about a minute). */
+    const riskFlows = new Map()    // account label -> deposits - withdrawals, from /api/account
+    const riskStates = new Map()   // account label -> { objId, peak, armed, lockedUntil, savedAt }
+    const riskLoading = new Set()
+    const riskClass = ParseNode.Object.extend('riskLocks')
+    const loadRisk = async (userId, label) => {
+        const q = new ParseNode.Query('riskLocks')
+        q.equalTo('user', { __type: 'Pointer', className: '_User', objectId: userId })
+        q.equalTo('account', label)
+        let o = await q.first({ useMasterKey: true })
+        if (!o) {
+            o = new riskClass()
+            const ACL = new ParseNode.ACL()
+            ACL.setReadAccess(userId, true)
+            o.setACL(ACL)
+            o.set('user', { __type: 'Pointer', className: '_User', objectId: userId })
+            o.set('account', label)
+            await o.save(null, { useMasterKey: true })
+        }
+        return { objId: o.id, peak: o.get('peak') || 0, armed: o.get('armed') !== false, lockedUntil: o.get('lockedUntil') || 0, flow: o.get('flow') ?? null, savedAt: Date.now() }
+    }
+    function trackRisk(userId, label, equity) {
+        const st = riskStates.get(label)
+        if (!st) {
+            if (!riskLoading.has(label)) {
+                riskLoading.add(label)
+                loadRisk(userId, label).then((s) => riskStates.set(label, s))
+                    .catch((e) => console.error(' -> risk lock load error', e.message))
+                    .finally(() => riskLoading.delete(label))
+            }
+            return null
+        }
+        // Money moved since last frame shifts the peak with it.
+        const flow = riskFlows.get(label)
+        const base = flow == null ? st : { ...st, peak: st.flow == null ? st.peak : st.peak + (flow - st.flow) }
+        const next = nextLockState(base, equity, Date.now())
+        next.flow = flow ?? st.flow
+        // Persist a new lock at once; a rising peak at most once a minute.
+        const lockChanged = next.lockedUntil !== st.lockedUntil
+        const savedAt = (lockChanged || next.flow !== st.flow || Date.now() - st.savedAt > 60000) && (lockChanged || next.flow !== st.flow || next.peak !== st.peak) ? Date.now() : st.savedAt
+        riskStates.set(label, { objId: st.objId, peak: next.peak, armed: next.armed, lockedUntil: next.lockedUntil, flow: next.flow, savedAt })
+        if (savedAt !== st.savedAt) {
+            riskClass.createWithoutData(st.objId).save({ peak: next.peak, armed: next.armed, lockedUntil: next.lockedUntil, flow: next.flow ?? null }, { useMasterKey: true })
+                .catch((e) => console.error(' -> risk lock save error', e.message))
+        }
+        return { until: next.lockedUntil > Date.now() ? next.lockedUntil : 0, ddPct: next.ddPct, peak: next.peak, limitPct: LOCK_PCT }
+    }
+
     const ORDER_TTL_MS = 15000
     const pendingOrders = new Map()   // id -> { userId, account, payload, createdAt, status }
     const userPtr = (id) => ({ __type: 'Pointer', className: '_User', objectId: id })
@@ -1517,6 +1575,14 @@ const setupApiRoutes = (app) => {
             }
             if (!allowedSyncAccounts(user).includes(b.account)) return res.status(403).send({ error: 'This account is not allowed to sync/trade (Settings).' })
             const action = b.action || 'open'
+            if (action === 'open') {
+                // Fail closed: no lock state yet (first seconds after a restart) = no new entries.
+                const st = riskStates.get(b.account)
+                if (!st) return res.status(409).send({ error: 'Risk lock is still loading; try again in a few seconds.' })
+                if (st.lockedUntil > Date.now()) {
+                    return res.status(423).send({ error: `Trading is locked after a ${LOCK_PCT}% drawdown until ${new Date(st.lockedUntil).toISOString().slice(11, 16)} UTC.`, until: st.lockedUntil })
+                }
+            }
             const tpOf = (v) => (v === '' || v == null ? 0 : Number(v))
             let payload, extra = {}
             if (action === 'open') {
@@ -1688,6 +1754,7 @@ const setupApiRoutes = (app) => {
             const user = await query.first({ useMasterKey: true })
             if (!user) return res.status(404).send({ error: 'user not found' })
 
+            riskFlows.set(label, (Number(b.deposit) || 0) - (Number(b.withdrawal) || 0))
             let arr = user.get('mt5Accounts')
             if (!Array.isArray(arr)) arr = []
             const rec = {

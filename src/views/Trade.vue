@@ -24,6 +24,7 @@ const order = ref(null)   // { id, status, message, price }
 const editing = ref(null) // a position/pending order being changed: { ticket, symbol, side, kind, price, sl, tp, cancel }
 let stopLive = null
 let pollTimer = null
+let clockTimer = null
 
 const symbols = computed(() => Object.keys((snapshot.value && snapshot.value.ticks) || {}).sort())
 const tick = computed(() => snapshot.value && snapshot.value.ticks ? snapshot.value.ticks[form.value.symbol] : null)
@@ -61,7 +62,11 @@ const missing = computed(() => {
     if (!f.symbol) out.push('symbol')
     return out
 })
-const canReview = computed(() => !missing.value.length && accountMatches.value && price.value != null && !busy.value)
+// Drawdown lock set by the server (riskLock.js); `now` ticks so the countdown runs.
+const now = ref(Date.now())
+const lock = computed(() => (snapshot.value && snapshot.value.lock) || null)
+const lockLeftMin = computed(() => lock.value && lock.value.until > now.value ? Math.ceil((lock.value.until - now.value) / 60000) : 0)
+const canReview = computed(() => !missing.value.length && accountMatches.value && price.value != null && !busy.value && !lockLeftMin.value)
 
 function onSnapshot(s) {
     if (!s) return
@@ -121,6 +126,7 @@ function pollOrder() {
 }
 
 onMounted(async () => {
+    clockTimer = setInterval(() => { now.value = Date.now() }, 1000)
     try {
         const res = await fetch('/api/live', { headers: useAuthHeaders() })
         const j = await res.json()
@@ -129,7 +135,7 @@ onMounted(async () => {
     stopLive = useLiveSnapshots(onSnapshot)
     try { setups.value = await useGetSetups() } catch (e) { error.value = 'Could not load setups: ' + e.message }
 })
-onUnmounted(() => { if (stopLive) stopLive(); clearInterval(pollTimer) })
+onUnmounted(() => { if (stopLive) stopLive(); clearInterval(pollTimer); clearInterval(clockTimer) })
 
 const stopLimit = (item) => /stop limit/i.test(item.kind || '')
 const fmt = (n, d = 2) => (n == null || !Number.isFinite(Number(n)) ? '-' : Number(n).toFixed(d))
@@ -142,6 +148,13 @@ const fmt = (n, d = 2) => (n == null || !Number.isFinite(Number(n)) ? '-' : Numb
             The terminal is logged into <strong>{{ terminalAccount }}</strong>, but the account selected in the top bar is
             <strong>{{ activeAccount || 'none' }}</strong>. Switch one of them so they match before trading.
         </div>
+
+        <div v-if="lockLeftMin" class="alert alert-danger">
+            <strong>Trading locked for {{ lockLeftMin }} more min.</strong>
+            Equity is {{ fmt(lock.ddPct, 1) }}% below its peak ({{ fmt(lock.peak) }}); the limit is {{ lock.limitPct }}%.
+            New entries are blocked; you can still change SL/TP or cancel pending orders.
+        </div>
+        <p v-else-if="lock" class="riskLine mb-2">Drawdown {{ fmt(lock.ddPct, 1) }}% of peak · lock at {{ lock.limitPct }}%</p>
 
         <div class="tradeCard">
             <label class="tLabel">Symbol</label>
