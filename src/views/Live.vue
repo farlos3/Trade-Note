@@ -109,6 +109,14 @@ const order = ref(null)   // { id, status, message, price }
 const editing = ref(null) // { ticket, symbol, side, kind, volume, price, sl, tp, cancel }
 
 const symbols = computed(() => Object.keys((snapshot.value && snapshot.value.ticks) || {}).sort())
+// Pairs the user cares about: starred, listed first in the symbol picker. Per-browser only.
+const favs = ref([])
+try { favs.value = JSON.parse(localStorage.getItem('liveFavSymbols') || '[]') } catch (e) { /* storage blocked: no favourites */ }
+const favFirst = computed(() => [...symbols.value.filter((s) => favs.value.includes(s)), ...symbols.value.filter((s) => !favs.value.includes(s))])
+function toggleFav(sym) {
+    favs.value = favs.value.includes(sym) ? favs.value.filter((s) => s !== sym) : [...favs.value, sym]
+    try { localStorage.setItem('liveFavSymbols', JSON.stringify(favs.value)) } catch (e) { /* not persisted */ }
+}
 const tick = computed(() => snapshot.value && snapshot.value.ticks ? snapshot.value.ticks[form.value.symbol] : null)
 const price = computed(() => tick.value ? (form.value.side === 'buy' ? tick.value.ask : tick.value.bid) : null)
 const isPending = computed(() => form.value.type !== 'market')
@@ -144,6 +152,9 @@ const missing = computed(() => {
 
 const lock = computed(() => (snapshot.value && snapshot.value.lock) || null)
 const lockLeftMin = computed(() => lock.value && lock.value.until > now.value ? Math.ceil((lock.value.until - now.value) / 60000) : 0)
+// crypto.randomUUID exists only in secure contexts (https/localhost); the VM is served over
+// plain http, where it is undefined. getRandomValues works everywhere.
+const newClientId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')
 const canReview = computed(() => !missing.value.length && accountMatches.value && price.value != null && !busy.value && !lockLeftMin.value)
 
 const DONE = ['filled', 'placed', 'modified', 'cancelled', 'rejected', 'expired']
@@ -156,7 +167,7 @@ function applySnapshot(s) {
     lastFrameAt.value = Date.now()
     if (!form.value.symbol) {
         const names = Object.keys(s.ticks || {})
-        form.value.symbol = names.find((n) => /XAU/i.test(n)) || names[0] || ''
+        form.value.symbol = names.find((n) => favs.value.includes(n)) || names.find((n) => /XAU/i.test(n)) || names[0] || ''
     }
 }
 
@@ -167,7 +178,7 @@ async function submit(body) {
         const res = await fetch('/api/orders', {
             method: 'POST',
             headers: { ...useAuthHeaders(), 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...body, account: activeAccount.value, clientId: crypto.randomUUID() }),
+            body: JSON.stringify({ ...body, account: activeAccount.value, clientId: newClientId() }),
         })
         const j = await res.json()
         if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`)
@@ -346,16 +357,6 @@ onUnmounted(() => {
                                 </tbody>
                             </table>
                         </div>
-
-                        <div v-if="Object.keys(snapshot.ticks || {}).length" class="tickLine">
-                            <span v-for="(t, sym) in snapshot.ticks" :key="sym"
-                                class="tickItem" :class="{ activeTick: form.symbol === sym }"
-                                title="Click to select symbol in order ticket"
-                                v-on:click="form.symbol = sym">
-                                {{ sym }} <span class="muted">bid</span> {{ t.bid }}
-                                <span class="muted">ask</span> {{ t.ask }}
-                            </span>
-                        </div>
                     </div>
 
                     <div v-if="pending.length" class="dailyCard mt-3">
@@ -437,9 +438,17 @@ onUnmounted(() => {
                     </div>
 
                     <label class="tLabel">Symbol</label>
-                    <select class="form-select" v-model="form.symbol">
-                        <option v-for="s in symbols" :key="s" :value="s">{{ s }}</option>
-                    </select>
+                    <div class="d-flex gap-2">
+                        <select class="form-select" v-model="form.symbol">
+                            <option v-if="!symbols.length" value="" disabled>
+                                {{ snapshot ? 'No symbols — add some to MT5 Market Watch' : 'Waiting for MT5…' }}</option>
+                            <option v-for="s in favFirst" :key="s" :value="s" :class="{ fav: favs.includes(s) }">
+                                {{ favs.includes(s) ? '★ ' : '' }}{{ s }}</option>
+                        </select>
+                        <button type="button" :class="['favBtn', { on: favs.includes(form.symbol) }]" :disabled="!form.symbol"
+                            :title="favs.includes(form.symbol) ? 'Remove from favourites' : 'Mark as favourite'"
+                            v-on:click="toggleFav(form.symbol)">★</button>
+                    </div>
 
                     <div class="sideToggle mt-3" role="group" aria-label="Side">
                         <button type="button" :class="['sideBtn', 'buy', { active: form.side === 'buy' }]" v-on:click="form.side = 'buy'">
@@ -688,24 +697,17 @@ onUnmounted(() => {
 
 .emptyLine { color: var(--white-60); font-size: 0.9rem; }
 
-.tickLine {
-    margin-top: 0.75rem;
-    padding-top: 0.6rem;
-    border-top: 1px solid rgba(255, 255, 255, 0.08);
-    font-size: 0.8rem;
-    font-variant-numeric: tabular-nums;
+.favBtn {
+    flex: none;
+    width: 2.2rem;
+    border: 1px solid var(--border-strong);
+    border-radius: 0.5rem;
+    background: transparent;
+    color: var(--white-60);
 }
 
-.tickItem {
-    display: inline-block;
-    margin-right: 1rem;
-    cursor: pointer;
-    padding: 0.1rem 0.3rem;
-    border-radius: 0.25rem;
-}
-
-.tickItem:hover { background: rgba(255, 255, 255, 0.06); }
-.tickItem.activeTick { background: rgba(47, 155, 255, 0.14); color: #38bdf8; }
+.favBtn.on { color: #f5b301; border-color: #f5b301; background: rgba(245, 179, 1, 0.12); }
+.tradeCard option.fav { color: #f5b301; }
 
 .pendingCount {
     font-size: 0.78rem;
