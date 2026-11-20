@@ -79,6 +79,8 @@ main {
 }
 
 @media (max-width: 575px) {
+    /* Not below ~0.75rem: rows directly in main use Bootstrap's default gutter,
+       whose negative side margins would then push the page sideways. */
     main {
         padding: 0.85rem 0.85rem 2rem !important;
     }
@@ -824,6 +826,50 @@ img.logo {
     display: flex;
     align-items: center;
     gap: 1rem;
+}
+
+/* Phone menu button: a real 44px touch target instead of tapping the page title. */
+.menuBtn {
+    width: 44px;
+    height: 44px;
+    margin-left: -0.5rem;
+    border: 0;
+    background: transparent;
+    color: var(--white-87);
+    font-size: 1.5rem;
+    line-height: 1;
+}
+
+@media (max-width: 991px) {
+    .navbar {
+        padding-left: 0.75rem;
+        padding-right: 0.75rem;
+        flex-wrap: nowrap;
+    }
+
+    .navTitle {
+        min-width: 0;
+        font-size: 1rem;
+    }
+
+    .navActions {
+        gap: 0.5rem;
+        min-width: 0;
+    }
+
+    /* The menu opens over the page; it must sit above the sticky top bar. */
+    .sideMenuMobile {
+        z-index: 1050;
+        height: 100vh;
+        overflow-y: auto;
+    }
+
+    .sideMenuMobileOut {
+        position: fixed !important;
+        inset: 0;
+        z-index: 1040;
+        background: rgba(0, 0, 0, 0.45);
+    }
 }
 
 .profileTrigger {

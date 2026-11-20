@@ -103,12 +103,33 @@ def trigger_journal_sync():
         return False
 
 
+def run_order(backend, session, live_url, headers, order, check_only):
+    """Execute one order queued in TradeNote and report the outcome. Never raises:
+    a failed order is reported as rejected, and the live loop keeps running."""
+    place = getattr(backend, "place_market_order", None)
+    try:
+        result = place(order, check_only) if place else \
+            {"ok": False, "message": f"Orders need the native MetaTrader5 backend, not {backend.name}."}
+    except Exception as e:  # noqa: BLE001 - report it instead of killing the feed
+        result = {"ok": False, "message": f"Agent error: {e}"}
+    log(f"Order {order.get('id')} {order.get('side')} {order.get('lot')} {order.get('symbol')}: {result.get('message')}")
+    try:
+        session.post(live_url.replace("/api/live", f"/api/orders/{order['id']}/result"),
+                     headers=headers, json=result, timeout=10)
+    except requests.RequestException as e:
+        log(f"Could not report order {order.get('id')}: {e}")
+    if result.get("ok"):
+        trigger_journal_sync()   # bring the new position into the journal right away
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--interval", type=float, default=1.0, help="seconds between reads (default 1)")
     ap.add_argument("--once", action="store_true", help="single read then exit")
     ap.add_argument("--no-trigger", action="store_true",
                     help="don't kick mt5_sync.py when a position closes")
+    ap.add_argument("--dry-run-orders", action="store_true",
+                    help="orders from TradeNote are only checked (order_check), never sent")
     args = ap.parse_args()
 
     cfg = load_config()
@@ -179,6 +200,8 @@ def main():
                         if last_err is not None:
                             log("Recovered — feed flowing again.")
                             last_err = None
+                        for order in (r.json().get("orders") or []):
+                            run_order(backend, session, url, headers, order, args.dry_run_orders)
                         n = len(snap["positions"])
                         if n != last_count:
                             log(f"{n} open position(s), equity {snap['equity']:.2f} "

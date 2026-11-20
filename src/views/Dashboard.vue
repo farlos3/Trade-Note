@@ -414,13 +414,13 @@ watch([equitySeries, renderData], () => nextTick(renderEquityChart))
                  zeros ARE the answer for that period, and the layout stays put. -->
                 <!-- Hero stats: the three numbers a trader scans first -->
                 <div class="row g-2 mb-2 text-center">
-                    <div class="col-12 col-md-4">
+                    <div class="col-6 col-md-4 order-2 order-md-1">
                         <div class="dailyCard statCard statCardHero">
                             <h5 class="titleWithDesc heroValue">{{ useThousandFormat(keyStats.trades) }}</h5>
                             <span class="dashInfoTitle">Total Trades</span>
                         </div>
                     </div>
-                    <div class="col-12 col-md-4">
+                    <div class="col-12 col-md-4 order-1 order-md-2">
                         <div class="dailyCard statCard statCardHero">
                             <h5 class="titleWithDesc heroValue"
                                 v-bind:class="keyStats.profit > 0 ? 'acctPos' : keyStats.profit < 0 ? 'acctNeg' : ''">
@@ -428,7 +428,7 @@ watch([equitySeries, renderData], () => nextTick(renderEquityChart))
                             <span class="dashInfoTitle">Profit</span>
                         </div>
                     </div>
-                    <div class="col-12 col-md-4">
+                    <div class="col-6 col-md-4 order-3">
                         <div class="dailyCard statCard statCardHero">
                             <h5 class="titleWithDesc heroValue">{{ keyStats.winRate.toFixed(1) }}%</h5>
                             <span class="dashInfoTitle">Win Rate</span>
@@ -815,6 +815,17 @@ watch([equitySeries, renderData], () => nextTick(renderEquityChart))
     font-size: 0.8rem;
     text-transform: uppercase;
     opacity: 0.85;
+}
+
+@media (max-width: 767px) {
+    .statCardHero {
+        min-height: 5rem;
+        padding: 0.8rem 0.6rem;
+    }
+
+    .statCardHero .heroValue {
+        font-size: 1.6rem;
+    }
 }
 
 /* Secondary stat tiles — quieter than the hero row. */

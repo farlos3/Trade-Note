@@ -1004,6 +1004,20 @@ const narrative = computed(() => {
 
 /* Period toggle in the theme's own tokens (same treatment as the unit toggles in
    Plan.vue) instead of Bootstrap's stock #0d6efd / outline-secondary grey. */
+/* One scrollable row on phones instead of seven squeezed, wrapped labels. */
+@media (max-width: 575px) {
+    .periodGroup {
+        max-width: 100%;
+        overflow-x: auto;
+        scrollbar-width: none;
+    }
+
+    .periodGroup .btn {
+        white-space: nowrap;
+        flex: 0 0 auto;
+    }
+}
+
 .periodGroup .btn {
     background-color: var(--black-bg-7);
     border-color: var(--border-strong);

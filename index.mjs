@@ -11,6 +11,7 @@ import { MongoClient } from "mongodb"
 import Proxy from 'http-proxy'
 import { useImportTrades, useGetExistingTradesArray, useUploadTrades, useSaveSheetTrade, useEnsureAccountRegistered, useStagedImportAccounts, useDiscardStagedImport } from './src/utils/addTrades.js';
 import { useEnsureTechniqueTag, useAssignTag } from './src/utils/daily.js';
+import { orderError } from './src/utils/orderRules.js';
 import { currentUser, uploadMfePrices } from './src/stores/globals.js';
 import { useGetTimeZone } from './src/utils/utils.js';
 import { fetchDayDocs, fetchNotes, fetchTradesFingerprint, fetchDiaries, fetchEntryReviews } from './mcp-server/db.mjs';
@@ -1169,6 +1170,8 @@ const setupApiRoutes = (app) => {
                     return refuseAccount(res, refused[0] || '')
                 }
                 await useUploadTrades("api", ParseNode)
+                // Orders placed from TradeNote: attach their reason/setup now that the trade exists.
+                await linkFilledOrders(currentUser.value.objectId).catch((e) => console.error(' -> order link error', e.message))
 
                 // Tell every open page the journal moved, so they re-fetch now
                 // instead of on their next timer tick.
@@ -1423,8 +1426,189 @@ const setupApiRoutes = (app) => {
         liveAgentSeenAt = Date.now()
         liveAgentReason = null
         applyLiveSnapshot(body)
-        res.send({ ok: true, clients: liveClients.size })
+        // Orders placed in the app ride back on the agent's own once-a-second POST:
+        // no second connection, and delivered at most once (see takeOrdersFor).
+        res.send({ ok: true, clients: liveClients.size, orders: takeOrdersFor(currentUser.value.objectId, label) })
     })
+
+    /**********************************************
+     * ORDERS PLACED FROM TRADENOTE
+     *
+     * The browser queues a market order; the host agent (mt5_live.py, on the
+     * machine running MetaTrader 5) picks it up on its next live POST, sends it
+     * through the terminal and reports the result. A reason and a setup are
+     * REQUIRED before anything is queued -- the point of the feature.
+     *
+     * Safety rails, all server-side:
+     *   - browser session only: an api key (what the sync carries) cannot trade;
+     *   - the account must be an allowed sync account AND the one the terminal is
+     *     logged into right now, and the agent must be live;
+     *   - stop loss required, lot <= OVERTRADE_LOT_CAP, stops on the right side
+     *     of the live price;
+     *   - delivered once, expires after ORDER_TTL_MS if no agent took it (never
+     *     fired late at a stale price), and clientId makes a double-tap one order.
+     * Pending orders live in memory (they expire in seconds anyway); every request
+     * and its outcome is also kept in the `orderRequests` class.
+     **********************************************/
+    const ORDER_TTL_MS = 15000
+    const pendingOrders = new Map()   // id -> { userId, account, payload, createdAt, status }
+    const userPtr = (id) => ({ __type: 'Pointer', className: '_User', objectId: id })
+
+    const saveOrderRecord = async (fields, existing) => {
+        const obj = existing || new (ParseNode.Object.extend('orderRequests'))()
+        for (const [k, v] of Object.entries(fields)) obj.set(k, v)
+        if (!existing) {
+            const ACL = new ParseNode.ACL()
+            ACL.setReadAccess(fields.user.objectId, true)
+            obj.setACL(ACL)
+        }
+        return obj.save(null, { useMasterKey: true })
+    }
+    const setOrderStatus = async (id, fields) => {
+        const q = new ParseNode.Query('orderRequests')
+        const obj = await q.get(id, { useMasterKey: true }).catch(() => null)
+        if (obj) await saveOrderRecord(fields, obj)
+    }
+
+    function takeOrdersFor(userId, account) {
+        const out = []
+        for (const [id, o] of pendingOrders) {
+            if (o.userId !== userId || o.status !== 'queued') continue
+            if (Date.now() - o.createdAt > ORDER_TTL_MS) {
+                o.status = 'expired'
+                setOrderStatus(id, { status: 'expired', message: 'No agent picked it up in time; not sent.' }).catch(() => {})
+                continue
+            }
+            if (o.account !== account) continue
+            o.status = 'dispatched'
+            setOrderStatus(id, { status: 'dispatched' }).catch(() => {})
+            out.push({ id, ...o.payload })
+        }
+        return out
+    }
+    // Forget finished orders after a while; their record stays in the database.
+    setInterval(() => {
+        for (const [id, o] of pendingOrders) if (Date.now() - o.createdAt > 10 * 60000) pendingOrders.delete(id)
+    }, 60000).unref()
+
+
+    app.post('/api/orders', requireAuth, async (req, res) => {
+        // Session only: requireAuth also accepts the sync's api key, which must
+        // never be enough to place a trade.
+        const userId = req.tradenoteUserId
+        if (!userId) return res.status(403).send({ error: 'Log in to place orders.' })
+        const user = currentUser.value
+        const b = req.body || {}
+        try {
+            const clientId = String(b.clientId || '').slice(0, 64)
+            for (const [id, o] of pendingOrders) {
+                if (o.userId === userId && clientId && o.clientId === clientId) return res.send({ id, status: o.status })
+            }
+            const snap = liveSnapshot
+            if (!liveAgentIsUp() || !snap || syncLabel(snap.login, snap.server) !== b.account) {
+                return res.status(409).send({ error: 'MetaTrader 5 is not live on this account right now, so the order was not queued.' })
+            }
+            const sq = new ParseNode.Query('setups')
+            sq.equalTo('user', userPtr(userId))
+            sq.limit(500)
+            const setupNames = (await sq.find({ useMasterKey: true })).map((s) => s.get('name'))
+            const err = orderError(b, {
+                allowedAccounts: allowedSyncAccounts(user), setupNames,
+                lotCap: Number(process.env.OVERTRADE_LOT_CAP) || 0.1,
+                tick: snap.ticks && snap.ticks[b.symbol],
+            })
+            if (err) return res.status(400).send({ error: err })
+
+            const payload = {
+                account: b.account, symbol: b.symbol, side: b.side, lot: Number(b.lot),
+                sl: Number(b.sl), tp: b.tp === '' || b.tp == null ? 0 : Number(b.tp),
+            }
+            const rec = await saveOrderRecord({
+                user: userPtr(userId), ...payload, setup: String(b.setup), reason: String(b.reason).trim(),
+                status: 'queued', clientId, linked: false,
+            })
+            pendingOrders.set(rec.id, { userId, account: b.account, clientId, payload, createdAt: Date.now(), status: 'queued' })
+            res.send({ id: rec.id, status: 'queued' })
+        } catch (error) {
+            console.error(' -> order queue error', error.message)
+            res.status(500).send({ error: 'Could not queue the order.' })
+        }
+    })
+
+    app.get('/api/orders/:id', requireAuth, async (req, res) => {
+        if (!req.tradenoteUserId) return res.status(403).send({ error: 'Log in.' })
+        const q = new ParseNode.Query('orderRequests')
+        q.equalTo('user', userPtr(req.tradenoteUserId))
+        const obj = await q.get(req.params.id, { useMasterKey: true }).catch(() => null)
+        if (!obj) return res.status(404).send({ error: 'Order not found.' })
+        // An order that sat queued past its TTL while no agent came by.
+        const mem = pendingOrders.get(obj.id)
+        if (mem && mem.status === 'queued' && Date.now() - mem.createdAt > ORDER_TTL_MS) takeOrdersFor(mem.userId, '')
+        res.setHeader('Cache-Control', 'no-store')
+        res.send({
+            id: obj.id, status: (mem && mem.status === 'expired') ? 'expired' : obj.get('status'),
+            message: obj.get('message') || null, price: obj.get('price') ?? null, positionId: obj.get('positionId') ?? null,
+        })
+    })
+
+    // The agent's report: filled or rejected, with MT5's own retcode/comment.
+    app.post('/api/orders/:id/result', validateApiKey, async (req, res) => {
+        const mem = pendingOrders.get(req.params.id)
+        if (!mem || mem.userId !== currentUser.value.objectId) return res.status(404).send({ error: 'unknown order' })
+        const b = req.body || {}
+        mem.status = b.ok ? 'filled' : 'rejected'
+        await setOrderStatus(req.params.id, {
+            status: mem.status, message: String(b.message || '').slice(0, 300),
+            retcode: Number(b.retcode) || 0, price: Number(b.price) || null,
+            positionId: b.positionId ? String(b.positionId) : null,
+        })
+        res.send({ ok: true })
+    })
+
+    /* After an import, attach each filled order's reason + setup to the trade it
+       became: a note (reason) and a Techniques tag (setup), the same records the
+       History page and AI Analysis already read. Matched by MT5 position id. */
+    const linkFilledOrders = async (userId) => {
+        const q = new ParseNode.Query('orderRequests')
+        q.equalTo('user', userPtr(userId))
+        q.equalTo('status', 'filled')
+        q.notEqualTo('linked', true)
+        q.limit(50)
+        for (const o of await q.find({ useMasterKey: true })) {
+            const pid = String(o.get('positionId') || '')
+            if (!pid) continue
+            const dq = new ParseNode.Query('trades')
+            dq.equalTo('user', userPtr(userId))
+            dq.equalTo('account', o.get('account'))
+            dq.greaterThanOrEqualTo('dateUnix', Math.floor(o.createdAt.getTime() / 1000) - 2 * 86400)
+            dq.select('trades', 'dateUnix')
+            let hit = null
+            for (const d of await dq.find({ useMasterKey: true })) {
+                const t = (d.get('trades') || []).find((x) => String(x.positionId) === pid)
+                if (t) { hit = { tradeId: t.id, dateUnix: d.get('dateUnix') }; break }
+            }
+            if (!hit) continue   // not imported yet; the next import retries
+            const nq = new ParseNode.Query('notes')
+            nq.equalTo('user', userPtr(userId))
+            nq.equalTo('tradeId', hit.tradeId)
+            const note = (await nq.first({ useMasterKey: true })) || new (ParseNode.Object.extend('notes'))()
+            if (!note.id) {
+                const ACL = new ParseNode.ACL()
+                ACL.setReadAccess(userId, true); ACL.setWriteAccess(userId, true)
+                note.setACL(ACL)
+                note.set('user', userPtr(userId))
+                note.set('tradeId', hit.tradeId)
+                note.set('dateUnix', hit.dateUnix)
+                note.set('account', o.get('account'))
+                note.set('note', `Setup: ${o.get('setup')}`)
+            }
+            note.set('reason', o.get('reason'))
+            await note.save(null, { useMasterKey: true })
+            const tagId = await useEnsureTechniqueTag(ParseNode, o.get('setup'))
+            await useAssignTag(ParseNode, { tradeId: hit.tradeId, dateUnix: hit.dateUnix, account: o.get('account'), tagId })
+            await saveOrderRecord({ linked: true, tradeId: hit.tradeId }, o)
+        }
+    }
 
     // Plain snapshot, for a first paint before the stream delivers its first frame
     // (and as a fallback anywhere EventSource is unavailable).

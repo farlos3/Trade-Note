@@ -837,7 +837,7 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
             <div class="planCard">
                 <div class="planCardHead">
                     <span class="planCardTitle">Goal seek — how many trades or what % per trade?</span>
-                    <div class="d-flex align-items-end gap-2">
+                    <div class="d-flex flex-wrap align-items-end gap-2">
                         <div class="inlineInput">
                             <label class="planLabel mb-0">Within trades</label>
                             <input type="number" min="1" max="2000" step="1" placeholder="e.g. 50"
@@ -1267,7 +1267,7 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
 }
 
 .inlineInput {
-    min-width: 170px;
+    min-width: min(170px, 100%);
 }
 
 .planCardHead .btn-group .btn {

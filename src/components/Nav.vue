@@ -30,6 +30,11 @@ const pages = [{
     icon: "uil uil-signal"
 },
 {
+    id: "trade",
+    name: "Trade",
+    icon: "uil uil-exchange"
+},
+{
     id: "daily",
     name: "History",
     icon: "uil uil-signal-alt-3"
@@ -52,7 +57,7 @@ const pages = [{
 {
     id: "forecast",
     name: "Growth Forecast",
-    icon: "uil uil-arrow-growth"
+    icon: "uil uil-chart-growth"
 },
 {
     id: "screenshots",
@@ -182,7 +187,7 @@ const currentPage = computed(() =>
 // still gets a cache hit instead of a fresh fetch+transform.
 // The chunks are only half of a tab's load -- the other half is the trades query,
 // shared by every tab, so the same idle pass also stores it (see utils/queryCache.js).
-const MAIN_NAV_PATHS = ['/dashboard', '/live', '/daily', '/calendar', '/analysis', '/plan', '/forecast', '/stats', '/weekly-plan', '/mindset', '/diary', '/setups', '/screenshots', '/playbook']
+const MAIN_NAV_PATHS = ['/dashboard', '/live', '/trade', '/daily', '/calendar', '/analysis', '/plan', '/forecast', '/stats', '/weekly-plan', '/mindset', '/diary', '/setups', '/screenshots', '/playbook']
 
 function prefetchOtherPages() {
     // Warm the HTTP cache for every page's lazy chunks once per browser session.
@@ -433,9 +438,10 @@ function getLatestVersion() {
 <template>
     <div class="justify-content-between navbar">
         <div class="navTitle">
-            <span v-if="screenType == 'mobile'">
-                <a v-on:click="useToggleMobileMenu">
-                    <i v-bind:class="currentPage.icon" class="me-2"></i>{{ currentPage.name }}</a>
+            <span v-if="screenType == 'mobile'" class="d-flex align-items-center">
+                <button type="button" class="menuBtn me-2" aria-label="Open menu" v-on:click="useToggleMobileMenu">
+                    <i class="uil uil-bars"></i></button>
+                <span class="text-truncate">{{ currentPage.name }}</span>
             </span>
             <span v-else>
                 <i v-bind:class="currentPage.icon" class="me-2"></i>{{ currentPage.name }}</span>

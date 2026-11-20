@@ -6,7 +6,7 @@ import ReturnToTopButton from '../components/ReturnToTopButton.vue'
 import AddOrderModal from '../components/AddOrderModal.vue'
 import WeeklyGateModal from '../components/WeeklyGateModal.vue'
 import { onBeforeMount, computed } from 'vue'
-import { useInitParse, usePageId, useScreenType, useGetTimeZone, useGetPeriods, useReconcileSelectedDateRange, useInitPostHog, useCreatedDateFormat, useTimeFormat, useHourMinuteFormat } from '../utils/utils.js'
+import { useInitParse, usePageId, useScreenType, useGetTimeZone, useGetPeriods, useReconcileSelectedDateRange, useInitPostHog, useCreatedDateFormat, useTimeFormat, useHourMinuteFormat, useToggleMobileMenu } from '../utils/utils.js'
 import { screenType, sideMenuMobileOut, screenshots, pageId, screenshot, selectedScreenshot, selectedScreenshotIndex, getMore } from '../stores/globals'
 import { useSelectedScreenshotFunction } from '../utils/screenshots'
 
@@ -39,7 +39,7 @@ const hasSelectedScreenshot = computed(() => Object.keys(selectedScreenshot).len
         <SideMenu />
       </div>
       <div class="col-12 col-lg-10 position-relative">
-        <div v-show="sideMenuMobileOut" class="sideMenuMobileOut position-absolute" v-on:click="toggleMobileMenu"></div>
+        <div v-show="sideMenuMobileOut" class="sideMenuMobileOut" v-on:click="useToggleMobileMenu"></div>
         <Nav />
         <main>
           <slot />

@@ -70,6 +70,17 @@ const routes = [{
             import('../views/Live.vue')
     },
     {
+        // Place a market order (setup + reason required) -- see views/Trade.vue.
+        path: '/trade',
+        name: 'trade',
+        meta: {
+            title: "Trade",
+            layout: DashboardLayout
+        },
+        component: () =>
+            import('../views/Trade.vue')
+    },
+    {
         path: '/calendar',
         name: 'calendar',
         meta: {
