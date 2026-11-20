@@ -23,7 +23,38 @@ import { useUploadDayFile, useDeleteDayFile, useGetDayFiles, useDayFilesFor } fr
 import { usePlanTracker } from '../utils/usePlanTracker';
 import { fmt, fmtCompact, lotForDollars, floorLot, LOT_STEP, pnlClass } from '../utils/planMath';
 
-const { plan: activePlan, projection: planProjection, tracker: planTracker, toggleSkipTrade } = usePlanTracker();
+const {
+    plan: activePlan, projection: planProjection, tracker: planTracker,
+    toggleSkipTrade, mergeTrades: mergePlanTrades, unmergeTrades: unmergePlanTrades,
+} = usePlanTracker();
+
+const selectedPlanTradeIds = ref([]);
+const activeSelectedPlanIds = computed(() =>
+    selectedPlanTradeIds.value.filter((id) => planTracker.value.tradeMap[id]?.status === 'tracked'),
+);
+
+function isPlanTradeSelected(tradeId) {
+    return selectedPlanTradeIds.value.includes(String(tradeId));
+}
+
+function togglePlanTradeSelected(tradeId) {
+    const id = String(tradeId);
+    if (selectedPlanTradeIds.value.includes(id)) {
+        selectedPlanTradeIds.value = selectedPlanTradeIds.value.filter((x) => x !== id);
+    } else {
+        selectedPlanTradeIds.value = [...selectedPlanTradeIds.value, id];
+    }
+}
+
+function mergeSelectedPlanTrades() {
+    if (activeSelectedPlanIds.value.length < 2) return;
+    mergePlanTrades(activeSelectedPlanIds.value);
+    selectedPlanTradeIds.value = [];
+}
+
+function clearPlanTradeSelection() {
+    selectedPlanTradeIds.value = [];
+}
 
 function planEntryForTrade(trade) {
     if (!trade || trade.openPosition || trade.tradesCount === 0) return null;
@@ -1293,20 +1324,30 @@ function getOHLC(date, symbol, type) {
                                                                     }}</span>
                                                             </td>
 
-                                                            <!-- Trading Plan step / skip toggle -->
+                                                            <!-- Trading Plan step / merge / skip toggle -->
                                                             <td @click.stop>
                                                                 <template v-if="planEntryForTrade(trade)">
                                                                     <span v-if="planEntryForTrade(trade).status === 'tracked'" class="planBadgeWrap">
+                                                                        <input type="checkbox" class="form-check-input planMergeCheck"
+                                                                            :checked="isPlanTradeSelected(trade.id)"
+                                                                            @click.stop
+                                                                            @change="togglePlanTradeSelected(trade.id)"
+                                                                            title="Select 2+ positions to merge into 1 plan trade" />
                                                                         <a href="/plan" class="planStepBadge"
-                                                                            :class="planEntryForTrade(trade).net >= 0 ? 'planStepPos' : 'planStepNeg'"
+                                                                            :class="(planEntryForTrade(trade).isGroup ? planEntryForTrade(trade).groupNet : planEntryForTrade(trade).net) >= 0 ? 'planStepPos' : 'planStepNeg'"
                                                                             :title="planEntryForTrade(trade).plannedBalance != null
-                                                                                ? `Plan #${planEntryForTrade(trade).n} · Bal ${fmt(planEntryForTrade(trade).actualBalance)} (Plan ${fmt(planEntryForTrade(trade).plannedBalance)}, ${planEntryForTrade(trade).diffFromPlan >= 0 ? '+' : ''}${fmt(planEntryForTrade(trade).diffFromPlan)})`
-                                                                                : `Plan #${planEntryForTrade(trade).n} · Bal ${fmt(planEntryForTrade(trade).actualBalance)}`"
+                                                                                ? `Plan #${planEntryForTrade(trade).n}${planEntryForTrade(trade).isGroup ? ` (merged ${planEntryForTrade(trade).groupCount} pos, net ${fmt(planEntryForTrade(trade).groupNet)})` : ''} · Bal ${fmt(planEntryForTrade(trade).actualBalance)} (Plan ${fmt(planEntryForTrade(trade).plannedBalance)}, ${planEntryForTrade(trade).diffFromPlan >= 0 ? '+' : ''}${fmt(planEntryForTrade(trade).diffFromPlan)})`
+                                                                                : `Plan #${planEntryForTrade(trade).n}${planEntryForTrade(trade).isGroup ? ` (merged ${planEntryForTrade(trade).groupCount} pos, net ${fmt(planEntryForTrade(trade).groupNet)})` : ''} · Bal ${fmt(planEntryForTrade(trade).actualBalance)}`"
                                                                             @click.stop>
-                                                                            #{{ planEntryForTrade(trade).n }}
+                                                                            #{{ planEntryForTrade(trade).n }}<span v-if="planEntryForTrade(trade).isGroup" class="ms-1 opacity-75">×{{ planEntryForTrade(trade).groupCount }}</span>
                                                                         </a>
+                                                                        <button v-if="planEntryForTrade(trade).isGroup" type="button" class="planSplitBtn"
+                                                                            title="Split merged positions"
+                                                                            @click.stop.prevent="unmergePlanTrades(planEntryForTrade(trade).memberIds)">
+                                                                            <i class="uil uil-code-branch"></i>
+                                                                        </button>
                                                                         <button type="button" class="planSkipBtn"
-                                                                            title="Skip this trade from Trading Plan"
+                                                                            title="Skip this position from Trading Plan"
                                                                             @click.stop.prevent="toggleSkipTrade(trade.id)">
                                                                             <i class="uil uil-times"></i>
                                                                         </button>
@@ -1518,6 +1559,21 @@ function getOHLC(date, symbol, type) {
                             From {{ activePlan.startDate || 'all dates' }} ·
                             <strong>{{ planTracker.tradesTaken }}</strong><span v-if="planTracker.plannedTotalTrades">/{{ planTracker.plannedTotalTrades }}</span> trade(s)
                             <span v-if="planTracker.excludedCount"> · {{ planTracker.excludedCount }} skipped</span>
+                        </div>
+
+                        <div v-if="activeSelectedPlanIds.length > 0" class="planSideMerge mt-2">
+                            <span class="txt-small">{{ activeSelectedPlanIds.length }} pos selected</span>
+                            <div class="d-flex align-items-center gap-1">
+                                <button type="button" class="btn btn-sm btn-primary py-0 px-2"
+                                    :disabled="activeSelectedPlanIds.length < 2"
+                                    @click="mergeSelectedPlanTrades">
+                                    <i class="uil uil-link-h me-1"></i>Merge
+                                </button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2"
+                                    @click="clearPlanTradeSelection">
+                                    Clear
+                                </button>
+                            </div>
                         </div>
 
                         <template v-if="planTracker.currentBalance != null">
@@ -2215,6 +2271,13 @@ function getOHLC(date, symbol, type) {
     border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
+.planMergeCheck {
+    margin: 0;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.planSplitBtn,
 .planSkipBtn {
     border: 0;
     background: transparent;
@@ -2223,6 +2286,10 @@ function getOHLC(date, symbol, type) {
     line-height: 1;
     cursor: pointer;
     font-size: 0.85rem;
+}
+
+.planSplitBtn:hover {
+    color: #38bdf8;
 }
 
 .planSkipBtn:hover {
@@ -2236,6 +2303,17 @@ function getOHLC(date, symbol, type) {
 /* Sidebar Trading Plan Tracker card */
 .planTrackerCard {
     padding: 0.75rem 1rem;
+}
+
+.planSideMerge {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.4rem;
+    padding: 0.35rem 0.5rem;
+    border-radius: 0.4rem;
+    background: rgba(47, 155, 255, 0.1);
+    border: 1px solid rgba(47, 155, 255, 0.28);
 }
 
 .planSideRow {

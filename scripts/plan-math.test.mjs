@@ -224,5 +224,61 @@ check('liveSteps chains each row Opening from previous actual balance and re-pro
     trackedLosses.liveGoalStep === 15 &&
     ls[14].closing >= 500)
 
+// 11. Merging multiple positions into 1 trade step (tradeGroups)
+const groupDocs = [{
+    dateUnix: 1777680000,
+    trades: [
+        { id: 'p1', symbol: 'XAUUSD', buyQuantity: 0.02, netProceeds: -10, entryTime: 1777681000, exitTime: 1777681200, tradesCount: 1 },
+        { id: 'p2', symbol: 'XAUUSD', buyQuantity: 0.03, netProceeds: 35, entryTime: 1777681050, exitTime: 1777681500, tradesCount: 1 },
+        { id: 'p3', symbol: 'EURUSD', buyQuantity: 0.05, netProceeds: 15, entryTime: 1777682000, exitTime: 1777682500, tradesCount: 1 },
+    ],
+}]
+const projGroup = buildTradeProjection({ start: 200, pctPerTrade: 10, goalBalance: 300 })
+const trackedMerged = trackTradesAgainstPlan({
+    startBalance: 200,
+    goalBalance: 300,
+    pctPerTrade: 10,
+    dayDocs: groupDocs,
+    tradeGroups: [['p1', 'p2']],
+    projection: projGroup,
+    tz: 'UTC',
+})
+check('tradeGroups merges positions into 1 step, sums net/lot, and maps all legs',
+    trackedMerged.tradesTaken === 2 &&
+    trackedMerged.wins === 2 &&
+    trackedMerged.losses === 0 &&
+    trackedMerged.winRatePct === 100 &&
+    trackedMerged.trackedTrades[0].isGroup === true &&
+    trackedMerged.trackedTrades[0].groupCount === 2 &&
+    approx(trackedMerged.trackedTrades[0].net, 25) &&
+    approx(trackedMerged.trackedTrades[0].lot, 0.05) &&
+    approx(trackedMerged.trackedTrades[0].actualBalance, 225) &&
+    trackedMerged.trackedTrades[1].n === 2 &&
+    approx(trackedMerged.trackedTrades[1].openingBalance, 225) &&
+    approx(trackedMerged.trackedTrades[1].actualBalance, 240) &&
+    trackedMerged.tradeMap.p1.n === 1 &&
+    trackedMerged.tradeMap.p2.n === 1 &&
+    trackedMerged.tradeMap.p1.isGroup === true &&
+    trackedMerged.tradeMap.p2.groupNet === 25 &&
+    trackedMerged.tradeMap.p3.n === 2 &&
+    trackedMerged.tradeMap.p3.isGroup === false)
+
+// When one leg of a 2-leg group is excluded, remaining leg becomes standalone
+const trackedFallback = trackTradesAgainstPlan({
+    startBalance: 200,
+    goalBalance: 300,
+    pctPerTrade: 10,
+    dayDocs: groupDocs,
+    excludedTradeIds: ['p1'],
+    tradeGroups: [['p1', 'p2']],
+    projection: projGroup,
+    tz: 'UTC',
+})
+check('excluding 1 leg of a 2-leg group dissolves the unit back to standalone',
+    trackedFallback.tradesTaken === 2 &&
+    trackedFallback.trackedTrades[0].isGroup === false &&
+    trackedFallback.trackedTrades[0].id === 'p2' &&
+    approx(trackedFallback.currentBalance, 250))
+
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILED'}`)
 process.exit(failures === 0 ? 0 : 1)

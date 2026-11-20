@@ -24,7 +24,59 @@ const activeTab = ref(TABS.some((t) => t.id === storedTab) ? storedTab : 'plan')
 watch(activeTab, (v) => localStorage.setItem('tradenote_plan_tab', v))
 
 /* ---- Shared plan projection + live History tracker ---- */
-const { projection, tracker, loading: trackerLoading, refresh: refreshTracker, toggleSkipTrade } = usePlanTracker()
+const {
+    projection, tracker, loading: trackerLoading,
+    refresh: refreshTracker, toggleSkipTrade, skipTrades, mergeTrades, unmergeTrades,
+} = usePlanTracker()
+
+/* ---- Multi-position merge selection ---- */
+const selectedTradeIds = ref([])
+
+function isRowSelected(actual) {
+    if (!actual || !Array.isArray(actual.memberIds) || !actual.memberIds.length) return false
+    return actual.memberIds.every((id) => selectedTradeIds.value.includes(id))
+}
+
+function toggleRowSelected(actual) {
+    if (!actual || !Array.isArray(actual.memberIds)) return
+    const ids = actual.memberIds
+    if (isRowSelected(actual)) {
+        selectedTradeIds.value = selectedTradeIds.value.filter((id) => !ids.includes(id))
+    } else {
+        const next = new Set(selectedTradeIds.value)
+        for (const id of ids) next.add(id)
+        selectedTradeIds.value = [...next]
+    }
+}
+
+const selectedRowCount = computed(() =>
+    tracker.value.trackedTrades.filter((tr) => isRowSelected(tr)).length,
+)
+
+function mergeSelectedTrades() {
+    if (selectedRowCount.value < 2 || selectedTradeIds.value.length < 2) return
+    mergeTrades(selectedTradeIds.value)
+    selectedTradeIds.value = []
+}
+
+function clearSelection() {
+    selectedTradeIds.value = []
+}
+
+function groupBreakdownTitle(actual) {
+    if (!actual?.isGroup || !Array.isArray(actual.members)) return ''
+    return actual.members
+        .map((m) => `${m.symbol}${m.lot ? ` ${fmt(m.lot, 2)}L` : ''}: ${m.net >= 0 ? '+' : ''}${fmt(m.net)}`)
+        .join(' | ')
+}
+
+watch(() => activePlan.value.id, () => { selectedTradeIds.value = [] })
+watch(() => tracker.value.trackedTrades, (list) => {
+    if (!selectedTradeIds.value.length) return
+    const valid = new Set(list.flatMap((tr) => tr.memberIds || [tr.id]))
+    const filtered = selectedTradeIds.value.filter((id) => valid.has(id))
+    if (filtered.length !== selectedTradeIds.value.length) selectedTradeIds.value = filtered
+})
 
 /* ---- Per-trade plan inputs ---- */
 const start = computed(() => numOrNull(activePlan.value.startBalance))
@@ -284,7 +336,7 @@ function renderChart() {
                     const netColor = a.net >= 0 ? ACTUAL_GREEN : '#F6465D'
                     lines.push(
                         `<div style="margin-top:4px;padding-top:4px;border-top:1px solid rgba(255,255,255,0.12)">` +
-                        `Actual (${a.symbol} · ${a.dateIso}): <span style="color:${netColor};font-weight:600">${netSign}${fmt(a.net)}</span><br/>` +
+                        `Actual (${a.symbol}${a.isGroup ? ` ×${a.groupCount}` : ''} · ${a.dateIso}): <span style="color:${netColor};font-weight:600">${netSign}${fmt(a.net)}</span><br/>` +
                         `<b>Actual Bal: ${fmt(a.actualBalance)}</b>` +
                         (a.diffFromPlan != null ? ` (${a.diffFromPlan >= 0 ? '+' : ''}${fmt(a.diffFromPlan)} vs baseline)` : '') +
                         `</div>`,
@@ -635,6 +687,20 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
                             </template>
                             — {{ rows.length }} step(s) shown<span v-if="hasActualTrades"> · {{ tracker.tradesTaken }} checked off</span>.
                         </span>
+                        <div v-if="selectedTradeIds.length > 0" class="mergeBar">
+                            <span class="txt-small text-muted">
+                                {{ selectedRowCount }} row(s) · {{ selectedTradeIds.length }} pos selected
+                            </span>
+                            <button type="button" class="btn btn-sm btn-primary py-0 px-2"
+                                :disabled="selectedRowCount < 2"
+                                v-on:click="mergeSelectedTrades">
+                                <i class="uil uil-link-h me-1"></i>Merge as 1 trade
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2"
+                                v-on:click="clearSelection">
+                                Clear
+                            </button>
+                        </div>
                     </div>
 
                     <div class="tableScroll">
@@ -686,13 +752,27 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
                                     <td class="text-end fw-bold">{{ r.targetClosing != null ? fmt(r.targetClosing) : '—' }}</td>
                                     <td>
                                         <div v-if="r.actual" class="actualCell">
-                                            <span class="actualMeta">{{ r.actual.symbol }}</span>
+                                            <input type="checkbox" class="form-check-input mergeCheck"
+                                                :checked="isRowSelected(r.actual)"
+                                                v-on:change="toggleRowSelected(r.actual)"
+                                                title="Select 2+ positions to merge into 1 trade step" />
+                                            <span class="actualMeta" :title="r.actual.symbolsDetail || r.actual.symbol">{{ r.actual.symbol }}</span>
+                                            <span v-if="r.actual.isGroup" class="groupBadge"
+                                                :title="groupBreakdownTitle(r.actual)">
+                                                ×{{ r.actual.groupCount }}
+                                            </span>
                                             <span class="actualDate">{{ r.actual.dateIso }}</span>
                                             <span v-bind:class="pnlClass(r.actual.net)" class="fw-semibold">
                                                 {{ r.actual.net >= 0 ? '+' : '' }}{{ fmt(r.actual.net) }}
                                             </span>
-                                            <button type="button" class="skipMiniBtn" title="Skip this trade from plan count"
-                                                v-on:click="toggleSkipTrade(r.actual.id)">
+                                            <button v-if="r.actual.isGroup" type="button" class="unmergeMiniBtn"
+                                                title="Split merged positions back into separate trades"
+                                                v-on:click="unmergeTrades(r.actual.memberIds)">
+                                                <i class="uil uil-code-branch"></i>
+                                            </button>
+                                            <button type="button" class="skipMiniBtn"
+                                                :title="r.actual.isGroup ? 'Skip all positions in this merged trade' : 'Skip this trade from plan count'"
+                                                v-on:click="r.actual.isGroup ? skipTrades(r.actual.memberIds) : toggleSkipTrade(r.actual.id)">
                                                 <i class="uil uil-times"></i>
                                             </button>
                                         </div>
@@ -1079,11 +1159,39 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
     background-color: rgba(47, 155, 255, 0.12);
 }
 
+.mergeBar {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.25rem 0.6rem;
+    border-radius: 0.4rem;
+    background-color: rgba(47, 155, 255, 0.1);
+    border: 1px solid rgba(47, 155, 255, 0.28);
+}
+
 .actualCell {
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
     white-space: nowrap;
+}
+
+.mergeCheck {
+    margin: 0;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.groupBadge {
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 0.05rem 0.36rem;
+    border-radius: 999px;
+    color: #38bdf8;
+    background-color: rgba(56, 189, 248, 0.14);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    cursor: help;
 }
 
 .actualMeta {
@@ -1099,6 +1207,7 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
     font-size: 0.74rem;
 }
 
+.unmergeMiniBtn,
 .skipMiniBtn {
     border: 0;
     background: transparent;
@@ -1106,7 +1215,12 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
     padding: 0 0.15rem;
     line-height: 1;
     cursor: pointer;
-    opacity: 0.55;
+    opacity: 0.6;
+}
+
+.unmergeMiniBtn:hover {
+    color: #38bdf8;
+    opacity: 1;
 }
 
 .skipMiniBtn:hover {

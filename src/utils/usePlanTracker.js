@@ -10,7 +10,10 @@ import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import Parse from 'parse/dist/parse.min.js'
 import { currentUser, queryLimit, timeZoneTrade } from '../stores/globals.js'
 import { activeAccount } from './mt5Accounts.js'
-import { activePlan, toggleTradeExcluded } from './planStore.js'
+import {
+    activePlan, toggleTradeExcluded, excludeTradeIds,
+    mergeTradesInPlan, unmergeTradeGroup,
+} from './planStore.js'
 import { numOrNull, buildTradeProjection, trackTradesAgainstPlan } from './planMath.js'
 import { useCachedFind } from './queryCache.js'
 import { useJournalUpdates } from './journalStream.js'
@@ -86,6 +89,7 @@ export function usePlanTracker() {
         dayDocs: dayDocs.value,
         account: activeAccount.value,
         excludedTradeIds: activePlan.value.excludedTradeIds || [],
+        tradeGroups: activePlan.value.tradeGroups || [],
         projection: projection.value,
         tz: timeZoneTrade.value || 'UTC',
     }))
@@ -107,6 +111,18 @@ export function usePlanTracker() {
         toggleTradeExcluded(activePlan.value, tradeId)
     }
 
+    function skipTrades(tradeIds) {
+        excludeTradeIds(activePlan.value, tradeIds)
+    }
+
+    function mergeTrades(tradeIds) {
+        mergeTradesInPlan(activePlan.value, tradeIds)
+    }
+
+    function unmergeTrades(memberIds) {
+        unmergeTradeGroup(activePlan.value, memberIds)
+    }
+
     return {
         plan: activePlan,
         projection,
@@ -115,5 +131,8 @@ export function usePlanTracker() {
         loaded,
         refresh: refreshPlanTrackerTrades,
         toggleSkipTrade,
+        skipTrades,
+        mergeTrades,
+        unmergeTrades,
     }
 }

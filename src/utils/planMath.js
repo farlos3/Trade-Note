@@ -718,6 +718,7 @@ export function trackTradesAgainstPlan({
     dayDocs = [],
     account = '',
     excludedTradeIds = [],
+    tradeGroups = [],
     projection = null,
     tz = 'UTC',
 } = {}) {
@@ -781,6 +782,74 @@ export function trackTradesAgainstPlan({
     const trackedTrades = []
     const excludedTrades = []
     const tradeMap = {}
+    const activeById = new Map()
+
+    for (const tr of eligible) {
+        if (tr.excluded) {
+            excludedTrades.push(tr)
+            tradeMap[tr.id] = { status: 'excluded', trade: tr }
+        } else {
+            activeById.set(tr.id, tr)
+        }
+    }
+
+    // Build execution units: merged multi-position groups + remaining standalone trades
+    const units = []
+    const assignedIds = new Set()
+
+    for (const rawGroup of tradeGroups || []) {
+        if (!Array.isArray(rawGroup)) continue
+        const members = []
+        const seenInGroup = new Set()
+        for (const rawId of rawGroup) {
+            const id = String(rawId)
+            if (seenInGroup.has(id) || assignedIds.has(id)) continue
+            const tr = activeById.get(id)
+            if (!tr) continue
+            seenInGroup.add(id)
+            members.push(tr)
+        }
+        if (members.length < 2) continue
+        members.sort((a, b) => (a.exitTime - b.exitTime) || (a.entryTime - b.entryTime))
+        for (const m of members) assignedIds.add(m.id)
+
+        const net = members.reduce((s, m) => s + m.net, 0)
+        const lotSum = members.reduce((s, m) => s + (m.lot || 0), 0)
+        const uniqSymbols = [...new Set(members.map((m) => m.symbol).filter(Boolean))]
+        const symbol = uniqSymbols.length === 1
+            ? uniqSymbols[0]
+            : (uniqSymbols.length ? `${uniqSymbols[0]} +${uniqSymbols.length - 1}` : 'UNKNOWN')
+
+        units.push({
+            id: `group:${members.map((m) => m.id).join(',')}`,
+            symbol,
+            symbolsDetail: uniqSymbols.join(', '),
+            direction: '',
+            lot: lotSum > 0 ? lotSum : null,
+            entryTime: Math.min(...members.map((m) => m.entryTime || m.exitTime || 0)),
+            exitTime: Math.max(...members.map((m) => m.exitTime || 0)),
+            dateIso: members[members.length - 1].dateIso,
+            net,
+            excluded: false,
+            isGroup: true,
+            groupCount: members.length,
+            memberIds: members.map((m) => m.id),
+            members,
+        })
+    }
+
+    for (const tr of eligible) {
+        if (tr.excluded || assignedIds.has(tr.id)) continue
+        units.push({
+            ...tr,
+            isGroup: false,
+            groupCount: 1,
+            memberIds: [tr.id],
+            members: [tr],
+        })
+    }
+
+    units.sort((a, b) => (a.exitTime - b.exitTime) || (a.entryTime - b.entryTime))
 
     let runningBal = hasStart ? startNum : 0
     let totalNet = 0
@@ -790,13 +859,7 @@ export function trackTradesAgainstPlan({
 
     const planRows = Array.isArray(projection?.trades) ? projection.trades : []
 
-    for (const tr of eligible) {
-        if (tr.excluded) {
-            excludedTrades.push(tr)
-            tradeMap[tr.id] = { status: 'excluded', trade: tr }
-            continue
-        }
-
+    for (const tr of units) {
         const n = trackedTrades.length + 1
         const openingBalance = runningBal
         runningBal = openingBalance + tr.net
@@ -822,14 +885,20 @@ export function trackTradesAgainstPlan({
             beatTradeTarget,
         }
         trackedTrades.push(item)
-        tradeMap[tr.id] = {
-            status: 'tracked',
-            n,
-            actualBalance: item.actualBalance,
-            plannedBalance: item.plannedBalance,
-            diffFromPlan: item.diffFromPlan,
-            beatTradeTarget: item.beatTradeTarget,
-            net: item.net,
+        for (const m of tr.members) {
+            tradeMap[m.id] = {
+                status: 'tracked',
+                n,
+                isGroup: tr.isGroup,
+                groupCount: tr.groupCount,
+                memberIds: tr.memberIds,
+                groupNet: tr.net,
+                actualBalance: item.actualBalance,
+                plannedBalance: item.plannedBalance,
+                diffFromPlan: item.diffFromPlan,
+                beatTradeTarget: item.beatTradeTarget,
+                net: m.net,
+            }
         }
     }
 

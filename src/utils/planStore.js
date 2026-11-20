@@ -65,6 +65,8 @@ function blankPlan(id) {
         targetPips: '',
         // Trades explicitly skipped from this plan's History tracker (array of trade.id).
         excludedTradeIds: [],
+        // Groups of position IDs merged into a single plan trade step (array of string[]).
+        tradeGroups: [],
     }
 }
 
@@ -104,6 +106,7 @@ function normalize(raw) {
     raw.plans = raw.plans.map((p) => {
         const plan = { ...template, ...p, id: p.id }
         if (!Array.isArray(plan.excludedTradeIds)) plan.excludedTradeIds = []
+        if (!Array.isArray(plan.tradeGroups)) plan.tradeGroups = []
         // A plan written before fixedCosts existed carries a single
         // fixedCostMonthly. Promote it to one row so the number the trader typed
         // survives the change instead of quietly reading as zero.
@@ -204,13 +207,67 @@ export function isTradeExcluded(plan, tradeId) {
     return plan.excludedTradeIds.includes(String(tradeId))
 }
 
+export function removeTradeFromGroup(plan, tradeId) {
+    if (!plan || !tradeId || !Array.isArray(plan.tradeGroups)) return
+    const id = String(tradeId)
+    plan.tradeGroups = plan.tradeGroups
+        .map((g) => (Array.isArray(g) ? g.map(String).filter((x) => x !== id) : []))
+        .filter((g) => g.length >= 2)
+}
+
 export function toggleTradeExcluded(plan, tradeId) {
     if (!plan || !tradeId) return
     if (!Array.isArray(plan.excludedTradeIds)) plan.excludedTradeIds = []
     const id = String(tradeId)
     const idx = plan.excludedTradeIds.indexOf(id)
-    if (idx === -1) plan.excludedTradeIds.push(id)
-    else plan.excludedTradeIds.splice(idx, 1)
+    if (idx === -1) {
+        plan.excludedTradeIds.push(id)
+        removeTradeFromGroup(plan, id)
+    } else {
+        plan.excludedTradeIds.splice(idx, 1)
+    }
+}
+
+export function excludeTradeIds(plan, tradeIds) {
+    if (!plan || !Array.isArray(tradeIds)) return
+    if (!Array.isArray(plan.excludedTradeIds)) plan.excludedTradeIds = []
+    for (const rawId of tradeIds) {
+        const id = String(rawId)
+        if (!plan.excludedTradeIds.includes(id)) plan.excludedTradeIds.push(id)
+        removeTradeFromGroup(plan, id)
+    }
+}
+
+export function mergeTradesInPlan(plan, tradeIds) {
+    if (!plan || !Array.isArray(tradeIds)) return
+    const incoming = [...new Set(tradeIds.map(String).filter(Boolean))]
+    if (incoming.length < 2) return
+    if (!Array.isArray(plan.tradeGroups)) plan.tradeGroups = []
+    if (!Array.isArray(plan.excludedTradeIds)) plan.excludedTradeIds = []
+
+    const combined = new Set(incoming)
+    const kept = []
+    for (const g of plan.tradeGroups) {
+        if (!Array.isArray(g)) continue
+        const norm = g.map(String).filter(Boolean)
+        if (norm.some((id) => combined.has(id))) {
+            for (const id of norm) combined.add(id)
+        } else if (norm.length >= 2) {
+            kept.push(norm)
+        }
+    }
+    kept.push([...combined])
+    plan.tradeGroups = kept
+    plan.excludedTradeIds = plan.excludedTradeIds.filter((id) => !combined.has(String(id)))
+}
+
+export function unmergeTradeGroup(plan, memberIds) {
+    if (!plan || !Array.isArray(plan.tradeGroups) || !Array.isArray(memberIds)) return
+    const target = new Set(memberIds.map(String))
+    plan.tradeGroups = plan.tradeGroups.filter((g) => {
+        if (!Array.isArray(g)) return false
+        return !g.some((id) => target.has(String(id)))
+    })
 }
 
 watch(state, () => {
