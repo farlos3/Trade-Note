@@ -20,6 +20,38 @@ import { useCandlestickChart } from '../utils/charts';
 import { useGetMFEPrices } from '../utils/addTrades';
 import { dayFiles } from '../stores/globals';
 import { useUploadDayFile, useDeleteDayFile, useGetDayFiles, useDayFilesFor } from '../utils/dayFiles';
+import { usePlanTracker } from '../utils/usePlanTracker';
+import { fmt, fmtCompact, lotForDollars, floorLot, LOT_STEP, pnlClass } from '../utils/planMath';
+
+const { plan: activePlan, projection: planProjection, tracker: planTracker, toggleSkipTrade } = usePlanTracker();
+
+function planEntryForTrade(trade) {
+    if (!trade || trade.openPosition || trade.tradesCount === 0) return null;
+    return planTracker.value.tradeMap[String(trade.id)] || null;
+}
+
+const planGoalAmount = computed(() => {
+    const g = Number(activePlan.value?.goalBalance);
+    return Number.isFinite(g) && g > 0 ? g : null;
+});
+
+const planProgressBarPct = computed(() => {
+    const p = planTracker.value.progressToGoalPct;
+    if (p == null || !Number.isFinite(p)) return 0;
+    return Math.max(0, Math.min(100, p));
+});
+
+const nextPlanLotHint = computed(() => {
+    const nextDollars = planTracker.value.nextTrade?.targetDollars;
+    const pips = Number(activePlan.value?.targetPips);
+    if (!(nextDollars > 0) || !(pips > 0)) return null;
+    const lot = floorLot(lotForDollars(nextDollars, pips, activePlan.value?.symbol));
+    return {
+        pips,
+        lot: lot >= LOT_STEP ? lot : null,
+        symbol: activePlan.value?.symbol || 'symbol',
+    };
+});
 
 // Day-summary file (whole-day PDF): read the picked file and upload it for the day.
 async function onDayFileChange(event, dateUnixDay) {
@@ -1202,6 +1234,7 @@ function getOHLC(date, symbol, type) {
                                                             <th scope="col">Position</th>
                                                             <th scope="col">Entry</th>
                                                             <th scope="col">P&L(n)</th>
+                                                            <th scope="col">Plan</th>
                                                             <th scope="col">Tags</th>
                                                             <th scope="col">Note</th>
                                                             <th scope="col"></th>
@@ -1258,6 +1291,36 @@ function getOHLC(date, symbol, type) {
                                                                     v-bind:class="[trade.netProceeds > 0 ? 'greenTrade' : 'redTrade']">
                                                                     {{ useTwoDecCurrencyFormat(trade.netProceeds)
                                                                     }}</span>
+                                                            </td>
+
+                                                            <!-- Trading Plan step / skip toggle -->
+                                                            <td @click.stop>
+                                                                <template v-if="planEntryForTrade(trade)">
+                                                                    <span v-if="planEntryForTrade(trade).status === 'tracked'" class="planBadgeWrap">
+                                                                        <a href="/plan" class="planStepBadge"
+                                                                            :class="planEntryForTrade(trade).net >= 0 ? 'planStepPos' : 'planStepNeg'"
+                                                                            :title="planEntryForTrade(trade).plannedBalance != null
+                                                                                ? `Plan #${planEntryForTrade(trade).n} · Bal ${fmt(planEntryForTrade(trade).actualBalance)} (Plan ${fmt(planEntryForTrade(trade).plannedBalance)}, ${planEntryForTrade(trade).diffFromPlan >= 0 ? '+' : ''}${fmt(planEntryForTrade(trade).diffFromPlan)})`
+                                                                                : `Plan #${planEntryForTrade(trade).n} · Bal ${fmt(planEntryForTrade(trade).actualBalance)}`"
+                                                                            @click.stop>
+                                                                            #{{ planEntryForTrade(trade).n }}
+                                                                        </a>
+                                                                        <button type="button" class="planSkipBtn"
+                                                                            title="Skip this trade from Trading Plan"
+                                                                            @click.stop.prevent="toggleSkipTrade(trade.id)">
+                                                                            <i class="uil uil-times"></i>
+                                                                        </button>
+                                                                    </span>
+                                                                    <span v-else-if="planEntryForTrade(trade).status === 'excluded'" class="planBadgeWrap">
+                                                                        <span class="planSkippedBadge" title="Skipped from Trading Plan">Skipped</span>
+                                                                        <button type="button" class="planSkipBtn restore"
+                                                                            title="Include this trade back in Trading Plan"
+                                                                            @click.stop.prevent="toggleSkipTrade(trade.id)">
+                                                                            <i class="uil uil-redo"></i>
+                                                                        </button>
+                                                                    </span>
+                                                                </template>
+                                                                <span v-else class="text-muted opacity-50">—</span>
                                                             </td>
 
                                                             <!--TAGS -->
@@ -1440,6 +1503,79 @@ function getOHLC(date, symbol, type) {
                         </div>
                         <p class="txt-small mb-0 mt-2 weekNoteText" v-if="weekNoteHasContent" v-html="weekNoteHighlighted"></p>
                         <p class="txt-small mb-0 mt-2 text-secondary" v-else>No note yet for this week.</p>
+                    </div>
+
+                    <!-- Trading Plan Tracker: live progress from History against the active plan -->
+                    <div class="dailyCard planTrackerCard mt-2 text-start">
+                        <div class="d-flex align-items-center justify-content-between gap-2">
+                            <label class="dashInfoTitle mb-0">
+                                <i class="uil uil-chart-growth me-1"></i>{{ activePlan.name || 'Trading Plan' }}
+                            </label>
+                            <a href="/plan" class="txt-small text-decoration-none">Open Plan <i class="uil uil-arrow-right"></i></a>
+                        </div>
+
+                        <div class="txt-small text-secondary mt-1">
+                            From {{ activePlan.startDate || 'all dates' }} ·
+                            <strong>{{ planTracker.tradesTaken }}</strong><span v-if="planTracker.plannedTotalTrades">/{{ planTracker.plannedTotalTrades }}</span> trade(s)
+                            <span v-if="planTracker.excludedCount"> · {{ planTracker.excludedCount }} skipped</span>
+                        </div>
+
+                        <template v-if="planTracker.currentBalance != null">
+                            <div class="planSideRow mt-2">
+                                <span>Balance</span>
+                                <span class="fw-bold" v-bind:class="pnlClass(planTracker.actualNet)">
+                                    {{ fmt(planTracker.currentBalance) }}
+                                </span>
+                            </div>
+
+                            <div v-if="planTracker.progressToGoalPct != null" class="planSideProgress mt-1">
+                                <div class="planSideTrack">
+                                    <div class="planSideFill" :style="{ width: planProgressBarPct + '%' }"></div>
+                                </div>
+                                <span class="planSidePct">
+                                    {{ fmt(Math.max(0, planTracker.progressToGoalPct), 0) }}%
+                                    <span v-if="planGoalAmount">of {{ fmtCompact(planGoalAmount, 0) }}</span>
+                                </span>
+                            </div>
+
+                            <div class="planSideRow mt-2" v-if="planProjection">
+                                <span>Ladder step</span>
+                                <span class="fw-semibold">
+                                    #{{ planTracker.milestoneStep }}
+                                    <span v-if="planTracker.varianceAtStep != null" class="ms-1"
+                                        v-bind:class="pnlClass(planTracker.varianceAtStep)">
+                                        ({{ planTracker.varianceAtStep >= 0 ? '+' : '' }}{{ fmtCompact(planTracker.varianceAtStep) }})
+                                    </span>
+                                </span>
+                            </div>
+
+                            <div class="planSideNext mt-2" v-if="planTracker.nextTrade?.targetDollars != null">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span class="txt-small text-secondary">Next (#{{ planTracker.nextTrade.n }})</span>
+                                    <span class="fw-bold text-blue">+{{ fmt(planTracker.nextTrade.targetDollars) }}</span>
+                                </div>
+                                <div class="txt-small text-secondary d-flex justify-content-between" v-if="nextPlanLotHint?.lot">
+                                    <span>Lot @ {{ fmt(nextPlanLotHint.pips, 0) }}p ({{ nextPlanLotHint.symbol }})</span>
+                                    <span class="fw-semibold text-white">{{ fmt(nextPlanLotHint.lot, 2) }} lot</span>
+                                </div>
+                            </div>
+
+                            <div class="txt-small mt-2" v-if="planGoalAmount">
+                                <span v-if="planTracker.goalReached" class="greenTrade fw-semibold">
+                                    <i class="uil uil-check-circle me-1"></i>Goal reached!
+                                </span>
+                                <span v-else class="text-secondary">
+                                    Remaining: <strong>{{ fmt(planTracker.remainingToGoalDollars) }}</strong>
+                                    <span v-if="planTracker.tradesLeftAtPlanRate != null">
+                                        (~{{ planTracker.tradesLeftAtPlanRate }} trades)
+                                    </span>
+                                </span>
+                            </div>
+                        </template>
+
+                        <p v-else class="txt-small text-secondary mb-0 mt-2">
+                            Set Starting Balance &amp; Target in <a href="/plan">Trading Plan</a> to track each trade.
+                        </p>
                     </div>
                 </div>
             </div>
@@ -2038,5 +2174,108 @@ function getOHLC(date, symbol, type) {
     background: rgba(255, 255, 255, 0.08);
     color: rgba(255, 255, 255, 0.65);
     white-space: nowrap;
+}
+
+/* Trading Plan step badge + skip/restore control in Trades table */
+.planBadgeWrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    white-space: nowrap;
+}
+
+.planStepBadge {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 0.08rem 0.42rem;
+    border-radius: 999px;
+    text-decoration: none;
+    border: 1px solid transparent;
+}
+
+.planStepPos {
+    color: #00CA73;
+    background: rgba(0, 202, 115, 0.12);
+    border-color: rgba(0, 202, 115, 0.35);
+}
+
+.planStepNeg {
+    color: #f59e0b;
+    background: rgba(245, 158, 11, 0.12);
+    border-color: rgba(245, 158, 11, 0.35);
+}
+
+.planSkippedBadge {
+    font-size: 0.7rem;
+    padding: 0.06rem 0.38rem;
+    border-radius: 999px;
+    color: rgba(255, 255, 255, 0.55);
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.planSkipBtn {
+    border: 0;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.5);
+    padding: 0 0.15rem;
+    line-height: 1;
+    cursor: pointer;
+    font-size: 0.85rem;
+}
+
+.planSkipBtn:hover {
+    color: #ef4444;
+}
+
+.planSkipBtn.restore:hover {
+    color: #2f9bff;
+}
+
+/* Sidebar Trading Plan Tracker card */
+.planTrackerCard {
+    padding: 0.75rem 1rem;
+}
+
+.planSideRow {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    font-size: 0.84rem;
+}
+
+.planSideProgress {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.planSideTrack {
+    flex: 1;
+    height: 6px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+}
+
+.planSideFill {
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #2f9bff, #00CA73);
+    transition: width 0.25s ease;
+}
+
+.planSidePct {
+    font-size: 0.74rem;
+    color: rgba(255, 255, 255, 0.75);
+    white-space: nowrap;
+}
+
+.planSideNext {
+    padding: 0.4rem 0.55rem;
+    border-radius: 0.4rem;
+    background: rgba(47, 155, 255, 0.08);
+    border: 1px solid rgba(47, 155, 255, 0.22);
 }
 </style>

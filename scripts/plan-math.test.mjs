@@ -12,6 +12,7 @@ import {
     requiredAmountPerTrade,
     tradesToGoal,
     calculateRiskLot,
+    trackTradesAgainstPlan,
 } from '../src/utils/planMath.js'
 
 let failures = 0
@@ -108,6 +109,88 @@ check('custom pipValueOverride overrides symbol spec',
 const r2 = rXau.rrTable.find((x) => x.rr === 2)
 check('R:R 1:2 table row computes TP=400 pips, Profit=$40, NewBalance=1040',
     r2 && approx(r2.tpPips, 400) && approx(r2.profitDollars, 40) && approx(r2.projectedBalance, 1040))
+
+// 9. History-to-Plan tracking (trackTradesAgainstPlan)
+const projTrack = buildTradeProjection({ start: 1000, pctPerTrade: 10, goalBalance: 1400 })
+// 2026-05-01 00:00Z = 1777593600, 2026-05-02 10:00Z = 1777716000, 2026-05-03 10:00Z = 1777802400
+const sampleDocs = [
+    {
+        dateUnix: 1777593600, // 2026-05-01 (before startDate 2026-05-02)
+        account: 'MT5_A',
+        trades: [
+            { id: 'old1', symbol: 'XAUUSD', netProceeds: 50, exitTime: 1777597200, tradesCount: 1 },
+        ],
+    },
+    {
+        dateUnix: 1777766400, // 2026-05-03 (unsorted day order in test)
+        account: 'MT5_A',
+        trades: [
+            { id: 't3', symbol: 'XAUUSD', netProceeds: 120, exitTime: 1777806000, tradesCount: 1 },
+            { id: 'open1', symbol: 'XAUUSD', netProceeds: 999, exitTime: 1777809600, openPosition: true, tradesCount: 0 },
+            { id: 'otherAcc', symbol: 'XAUUSD', netProceeds: 500, exitTime: 1777807000, account: 'MT5_B', tradesCount: 1 },
+        ],
+    },
+    {
+        dateUnix: 1777680000, // 2026-05-02
+        account: 'MT5_A',
+        trades: [
+            { id: 't2', symbol: 'USA100', netProceeds: -30, exitTime: 1777720000, tradesCount: 1 },
+            { id: 't1', symbol: 'XAUUSD', netProceeds: 110, exitTime: 1777716000, tradesCount: 1 },
+        ],
+    },
+]
+
+const trackedA = trackTradesAgainstPlan({
+    startBalance: 1000,
+    goalBalance: 1400,
+    startDate: '2026-05-02',
+    pctPerTrade: 10,
+    dayDocs: sampleDocs,
+    account: 'MT5_A',
+    excludedTradeIds: ['t2'],
+    projection: projTrack,
+    tz: 'UTC',
+})
+
+// Eligible on MT5_A from 2026-05-02: t1 (+110), t2 (-30, skipped), t3 (+120)
+// Tracked: #1 t1 (1000 -> 1110, plan #1 = 1100), #2 t3 (1110 -> 1230, plan #2 = 1210)
+check('tracker filters by startDate/account/openPosition, sorts chronologically, and handles skipped trades',
+    trackedA.eligibleCount === 3 &&
+    trackedA.tradesTaken === 2 &&
+    trackedA.excludedCount === 1 &&
+    trackedA.trackedTrades[0].id === 't1' &&
+    trackedA.trackedTrades[1].id === 't3' &&
+    trackedA.tradeMap.t1?.n === 1 &&
+    trackedA.tradeMap.t2?.status === 'excluded' &&
+    trackedA.tradeMap.old1 == null &&
+    trackedA.tradeMap.open1 == null &&
+    trackedA.tradeMap.otherAcc == null)
+
+check('tracker computes currentBalance=1230, milestoneStep=2 (cleared 1210), variance=+20, nextTrade=#3 at 10% ($123)',
+    approx(trackedA.currentBalance, 1230) &&
+    trackedA.milestoneStep === 2 &&
+    approx(trackedA.varianceAtStep, 20) &&
+    trackedA.nextTrade.n === 3 &&
+    approx(trackedA.nextTrade.targetDollars, 123) &&
+    approx(trackedA.remainingToGoalDollars, 170) &&
+    trackedA.tradesLeftAtPlanRate === 2 &&
+    trackedA.goalReached === false)
+
+const trackedGoalHit = trackTradesAgainstPlan({
+    startBalance: 1000,
+    goalBalance: 1200,
+    startDate: '2026-05-02',
+    pctPerTrade: 10,
+    dayDocs: sampleDocs,
+    account: 'MT5_A',
+    excludedTradeIds: ['t2'],
+    projection: projTrack,
+    tz: 'UTC',
+})
+check('tracker flags goalReached=true when currentBalance exceeds goal',
+    trackedGoalHit.goalReached === true &&
+    trackedGoalHit.remainingToGoalDollars === 0 &&
+    trackedGoalHit.tradesLeftAtPlanRate === 0)
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILED'}`)
 process.exit(failures === 0 ? 0 : 1)

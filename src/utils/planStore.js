@@ -63,6 +63,8 @@ function blankPlan(id) {
         // target (e.g. 10% of the account) over this many pips". Blank means
         // "show me the options" rather than "no sizing".
         targetPips: '',
+        // Trades explicitly skipped from this plan's History tracker (array of trade.id).
+        excludedTradeIds: [],
     }
 }
 
@@ -101,6 +103,7 @@ function normalize(raw) {
     const template = blankPlan(0)
     raw.plans = raw.plans.map((p) => {
         const plan = { ...template, ...p, id: p.id }
+        if (!Array.isArray(plan.excludedTradeIds)) plan.excludedTradeIds = []
         // A plan written before fixedCosts existed carries a single
         // fixedCostMonthly. Promote it to one row so the number the trader typed
         // survives the change instead of quietly reading as zero.
@@ -194,6 +197,20 @@ export function addTradeTier(plan) {
 export function removeTradeTier(plan, tierId) {
     const idx = plan.tradeTiers.findIndex((t) => t.id === tierId)
     if (idx !== -1) plan.tradeTiers.splice(idx, 1)
+}
+
+export function isTradeExcluded(plan, tradeId) {
+    if (!plan || !tradeId || !Array.isArray(plan.excludedTradeIds)) return false
+    return plan.excludedTradeIds.includes(String(tradeId))
+}
+
+export function toggleTradeExcluded(plan, tradeId) {
+    if (!plan || !tradeId) return
+    if (!Array.isArray(plan.excludedTradeIds)) plan.excludedTradeIds = []
+    const id = String(tradeId)
+    const idx = plan.excludedTradeIds.indexOf(id)
+    if (idx === -1) plan.excludedTradeIds.push(id)
+    else plan.excludedTradeIds.splice(idx, 1)
 }
 
 watch(state, () => {

@@ -100,14 +100,18 @@ const routes = [{
             import('../views/Plan.vue')
     },
     {
-        path: '/plan-vs-actual',
-        name: 'planVsActual',
+        path: '/forecast',
+        name: 'forecast',
         meta: {
-            title: "Plan vs Actual",
+            title: "Growth Forecast",
             layout: DashboardLayout
         },
         component: () =>
             import('../views/PlanVsActual.vue')
+    },
+    {
+        path: '/plan-vs-actual',
+        redirect: '/forecast'
     },
     {
         path: '/daily',

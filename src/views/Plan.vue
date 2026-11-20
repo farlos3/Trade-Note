@@ -4,9 +4,12 @@ import * as echarts from 'echarts'
 import PlanSelector from '../components/PlanSelector.vue'
 import PlanLotSizing from '../components/PlanLotSizing.vue'
 import RiskLotCalculator from '../components/RiskLotCalculator.vue'
+import FpDate from '../components/FpDate.vue'
 import { activePlan, addTradeTier, removeTradeTier } from '../utils/planStore'
+import { activeAccount } from '../utils/mt5Accounts'
+import { usePlanTracker } from '../utils/usePlanTracker'
 import {
-    numOrNull, buildTradeProjection, requiredPctPerTrade, requiredAmountPerTrade,
+    numOrNull, requiredPctPerTrade, requiredAmountPerTrade,
     tradesToGoal, dollarsToPips, pipsRealismVerdict, pipValuePerLot,
     tierRateResolver, LOT_STEP, withLots, fmt, fmtCompact, pnlClass, toneClass,
 } from '../utils/planMath'
@@ -19,6 +22,9 @@ const TABS = [
 const storedTab = localStorage.getItem('tradenote_plan_tab')
 const activeTab = ref(TABS.some((t) => t.id === storedTab) ? storedTab : 'plan')
 watch(activeTab, (v) => localStorage.setItem('tradenote_plan_tab', v))
+
+/* ---- Shared plan projection + live History tracker ---- */
+const { projection, tracker, loading: trackerLoading, refresh: refreshTracker, toggleSkipTrade } = usePlanTracker()
 
 /* ---- Per-trade plan inputs ---- */
 const start = computed(() => numOrNull(activePlan.value.startBalance))
@@ -43,18 +49,6 @@ const hasTiers = computed(() =>
 const hasAnyTarget = computed(() =>
     isAmountMode.value ? tradeAmount.value > 0 : (tradePct.value > 0 || hasTiers.value),
 )
-
-const projection = computed(() => {
-    if (!(start.value > 0) || !hasAnyTarget.value) return null
-    return buildTradeProjection({
-        start: start.value,
-        pctPerTrade: tradePct.value == null ? 0 : tradePct.value,
-        tradeAmount: isAmountMode.value ? tradeAmount.value : null,
-        numTrades: horizonTrades.value,
-        goalBalance: goal.value,
-        tiers: isAmountMode.value ? [] : tiers.value,
-    })
-})
 
 /* Exact trade count to reach goal at the current target (even when horizonTrades differs) */
 const goalTradesResult = computed(() => {
@@ -108,6 +102,15 @@ const trade1TargetDollars = computed(() => {
     return dollars > 0 ? dollars : null
 })
 
+/* Size the next trade on current live balance once trades have started */
+const nextTradeDollars = computed(() => tracker.value.nextTrade?.targetDollars ?? trade1TargetDollars.value)
+const nextTradeBasis = computed(() => {
+    if (isAmountMode.value || hasTiers.value) return ''
+    const bal = tracker.value.nextTrade?.baseBalance ?? start.value
+    if (!(bal > 0) || !(tradePct.value > 0)) return ''
+    return `${fmt(tradePct.value, 2)}% of ${fmt(bal, 0)}`
+})
+
 const trade1PipsNeeded = computed(() => {
     if (!projection.value || !(lotSize.value > 0)) return null
     const t1Profit = projection.value.trades[0]?.profit
@@ -122,13 +125,53 @@ const goalSeekPipsTrade1 = computed(() => {
     return pips == null ? null : { pips, ...pipsRealismVerdict(pips) }
 })
 
+const hasActualTrades = computed(() => tracker.value.trackedTrades.length > 0)
+
 const rows = computed(() => {
     if (!projection.value) return []
     const withLotRows = withLots(projection.value.trades, sizingPips.value, activePlan.value.symbol)
-    return withLotRows.map((r) => ({
-        ...r,
-        lotShort: r.lot != null && r.profit > 0 && r.lotDollars < 0.9 * r.profit,
-    }))
+    const tracked = tracker.value.trackedTrades
+    const maxLen = Math.max(withLotRows.length, tracked.length)
+    const nextN = tracker.value.nextTrade?.n
+    const out = []
+
+    for (let i = 0; i < maxLen; i++) {
+        const planRow = withLotRows[i]
+        const actual = tracked[i] || null
+        if (planRow) {
+            out.push({
+                ...planRow,
+                lotShort: planRow.lot != null && planRow.profit > 0 && planRow.lotDollars < 0.9 * planRow.profit,
+                actual,
+                isNext: (i + 1) === nextN,
+                isGoalHit: goal.value > 0 && planRow.n === projection.value.goalTrades,
+            })
+        } else if (actual) {
+            out.push({
+                n: actual.n,
+                opening: null,
+                ratePct: null,
+                profit: null,
+                closing: null,
+                cumulativeReturnPct: null,
+                progressPct: null,
+                lot: null,
+                lotExact: null,
+                lotDollars: null,
+                lotShort: false,
+                actual,
+                isNext: false,
+                isGoalHit: false,
+            })
+        }
+    }
+    return out
+})
+
+const progressBarPct = computed(() => {
+    const p = tracker.value.progressToGoalPct
+    if (p == null || !Number.isFinite(p)) return 0
+    return Math.max(0, Math.min(100, p))
 })
 
 function lotLabel(r) {
@@ -141,8 +184,9 @@ function lotTitle(r) {
     return `exact ${fmt(r.lotExact, 4)} lot · at ${r.lot >= LOT_STEP ? fmt(r.lot, 2) : '0.00'} lot this makes ${fmt(r.lotDollars)} of the ${fmt(r.profit)} target`
 }
 
-/* ---- Balance curve (one point per trade) ---- */
+/* ---- Balance curve (Plan vs Actual per trade) ---- */
 const ACCENT = '#2f9bff'
+const ACTUAL_GREEN = '#00CA73'
 const SURFACE = '#1b1f2a'
 const INK_MUTED = 'rgba(237, 240, 247, 0.60)'
 
@@ -154,11 +198,65 @@ function renderChart() {
     if (chart && chart.getDom() !== chartEl.value) { chart.dispose(); chart = null }
     if (!chart) chart = echarts.init(chartEl.value)
     const list = projection.value.trades
+    const actualList = tracker.value.trackedTrades
     const hasGoal = goal.value > 0
+    const maxLen = Math.max(list.length, actualList.length)
+    const categories = Array.from({ length: maxLen }, (_, i) => `#${i + 1}`)
+    const planSeriesData = Array.from({ length: maxLen }, (_, i) => list[i]?.closing ?? null)
+    const actualSeriesData = actualList.length
+        ? Array.from({ length: maxLen }, (_, i) => actualList[i]?.actualBalance ?? null)
+        : []
+
+    const series = [{
+        name: 'Plan',
+        type: 'line',
+        data: planSeriesData,
+        showSymbol: maxLen <= 40,
+        symbolSize: 6,
+        lineStyle: { color: ACCENT, width: 2 },
+        itemStyle: { color: ACCENT, borderColor: SURFACE, borderWidth: 2 },
+        areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                { offset: 0, color: 'rgba(47,155,255,0.22)' },
+                { offset: 1, color: 'rgba(47,155,255,0.02)' },
+            ]),
+        },
+        markLine: hasGoal ? {
+            silent: true,
+            symbol: 'none',
+            lineStyle: { color: ACTUAL_GREEN, type: 'dashed', width: 1.5 },
+            label: {
+                formatter: `Goal ${fmtCompact(goal.value, 0)}`,
+                color: ACTUAL_GREEN,
+                fontSize: 11,
+                position: 'insideEndTop',
+            },
+            data: [{ yAxis: goal.value }],
+        } : undefined,
+    }]
+
+    if (actualSeriesData.length) {
+        series.push({
+            name: 'Actual',
+            type: 'line',
+            data: actualSeriesData,
+            connectNulls: false,
+            showSymbol: true,
+            symbol: 'circle',
+            symbolSize: 7,
+            lineStyle: { color: ACTUAL_GREEN, width: 2.5 },
+            itemStyle: { color: ACTUAL_GREEN, borderColor: SURFACE, borderWidth: 2 },
+        })
+    }
 
     chart.setOption({
         backgroundColor: 'transparent',
-        grid: { left: 4, right: 16, top: 20, bottom: 4, containLabel: true },
+        legend: actualSeriesData.length ? {
+            top: 0,
+            right: 12,
+            textStyle: { color: INK_MUTED, fontSize: 11 },
+        } : undefined,
+        grid: { left: 4, right: 16, top: actualSeriesData.length ? 28 : 20, bottom: 4, containLabel: true },
         tooltip: {
             trigger: 'axis',
             axisPointer: { type: 'line', lineStyle: { color: 'rgba(255,255,255,0.25)', width: 1 } },
@@ -166,19 +264,34 @@ function renderChart() {
             borderColor: 'rgba(255,255,255,0.12)',
             textStyle: { color: 'rgba(237,240,247,0.92)', fontSize: 12 },
             formatter: (params) => {
-                const t = list[params[0].dataIndex]
-                if (!t) return ''
-                return `<div style="font-weight:700;margin-bottom:4px">Trade #${t.n}</div>` +
-                    `Opening: ${fmt(t.opening)}<br/>` +
-                    `Profit: +${fmt(t.profit)} (${fmt(t.ratePct, 2)}%)<br/>` +
-                    `<b>Closing: ${fmt(t.closing)}</b><br/>` +
-                    `Cumulative: +${fmt(t.cumulativeReturnPct)}%` +
-                    (t.progressPct != null ? `<br/>To goal: ${fmt(Math.min(t.progressPct, 999), 1)}%` : '')
+                const idx = params[0]?.dataIndex
+                if (idx == null) return ''
+                const t = list[idx]
+                const a = actualList[idx]
+                const lines = [`<div style="font-weight:700;margin-bottom:4px">Trade #${idx + 1}</div>`]
+                if (t) {
+                    lines.push(
+                        `Plan: ${fmt(t.opening)} → <b>${fmt(t.closing)}</b> (+${fmt(t.profit)} · ${fmt(t.ratePct, 2)}%)`,
+                    )
+                    if (t.progressPct != null) lines.push(`Plan to goal: ${fmt(Math.min(t.progressPct, 999), 1)}%`)
+                }
+                if (a) {
+                    const netSign = a.net >= 0 ? '+' : ''
+                    const netColor = a.net >= 0 ? ACTUAL_GREEN : '#F6465D'
+                    lines.push(
+                        `<div style="margin-top:4px;padding-top:4px;border-top:1px solid rgba(255,255,255,0.12)">` +
+                        `Actual (${a.symbol} · ${a.dateIso}): <span style="color:${netColor};font-weight:600">${netSign}${fmt(a.net)}</span><br/>` +
+                        `<b>Actual Bal: ${fmt(a.actualBalance)}</b>` +
+                        (a.diffFromPlan != null ? ` (${a.diffFromPlan >= 0 ? '+' : ''}${fmt(a.diffFromPlan)} vs plan)` : '') +
+                        `</div>`,
+                    )
+                }
+                return lines.join('<br/>')
             },
         },
         xAxis: {
             type: 'category',
-            data: list.map((t) => `#${t.n}`),
+            data: categories,
             boundaryGap: false,
             axisLine: { lineStyle: { color: 'rgba(255,255,255,0.12)' } },
             axisTick: { show: false },
@@ -192,32 +305,7 @@ function renderChart() {
             splitLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
             axisLabel: { color: INK_MUTED, fontSize: 10, formatter: (v) => Number(v).toLocaleString() },
         },
-        series: [{
-            type: 'line',
-            data: list.map((t) => t.closing),
-            showSymbol: list.length <= 40,
-            symbolSize: 6,
-            lineStyle: { color: ACCENT, width: 2 },
-            itemStyle: { color: ACCENT, borderColor: SURFACE, borderWidth: 2 },
-            areaStyle: {
-                color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                    { offset: 0, color: 'rgba(47,155,255,0.28)' },
-                    { offset: 1, color: 'rgba(47,155,255,0.02)' },
-                ]),
-            },
-            markLine: hasGoal ? {
-                silent: true,
-                symbol: 'none',
-                lineStyle: { color: '#00CA73', type: 'dashed', width: 1.5 },
-                label: {
-                    formatter: `Goal ${fmtCompact(goal.value, 0)}`,
-                    color: '#00CA73',
-                    fontSize: 11,
-                    position: 'insideEndTop',
-                },
-                data: [{ yAxis: goal.value }],
-            } : undefined,
-        }],
+        series,
     }, true)
     requestAnimationFrame(() => chart && chart.resize())
 }
@@ -234,7 +322,7 @@ onBeforeUnmount(() => {
     if (chart) { chart.dispose(); chart = null }
 })
 
-watch([projection, goal, activeTab], async ([p, , tab]) => {
+watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
     if (tab !== 'plan' || !p) {
         if (chart) { chart.dispose(); chart = null }
         return
@@ -261,11 +349,16 @@ watch([projection, goal, activeTab], async ([p, , tab]) => {
             <PlanSelector />
 
             <p class="txt-small text-muted mb-3">
-                Compounds trade by trade — calculate how many trades it takes to reach your goal.
-                To compare against your actual trading results, see <a href="/plan-vs-actual">Plan vs Actual</a>.
+                Compounds trade by trade and checks off each closed trade from <a href="/daily">History</a>
+                <span v-if="activeAccount"> (account: <strong>{{ activeAccount }}</strong>)</span>.
+                To project future growth from your actual daily pace, see <a href="/forecast">Growth Forecast</a>.
             </p>
 
             <div class="planInputs mb-3">
+                <div>
+                    <label class="planLabel">Plan start date</label>
+                    <FpDate mode="date" class="form-control-sm" placeholder="YYYY-MM-DD" v-model="activePlan.startDate" />
+                </div>
                 <div>
                     <label class="planLabel">Starting balance</label>
                     <input type="number" min="0" step="100" placeholder="e.g. 1000" class="form-control form-control-sm"
@@ -290,6 +383,112 @@ watch([projection, goal, activeTab], async ([p, , tab]) => {
                     <label class="planLabel">Lot size (optional)</label>
                     <input type="number" min="0" step="0.01" placeholder="e.g. 0.05" class="form-control form-control-sm"
                         v-model="activePlan.lotSize" />
+                </div>
+            </div>
+
+            <!-- ---------- Live Progress from History ---------- -->
+            <div class="planCard trackerCard mb-3" v-if="start > 0">
+                <div class="trackerHead">
+                    <div class="d-flex flex-wrap align-items-center gap-2">
+                        <span class="planCardTitle">
+                            <i class="uil uil-check-circle me-1 text-success"></i>Live Progress from History
+                        </span>
+                        <span class="trackerStatusBadge"
+                            :class="tracker.goalReached ? 'done' : (tracker.tradesTaken > 0 ? 'active' : 'idle')">
+                            <template v-if="tracker.goalReached">Goal reached</template>
+                            <template v-else-if="tracker.tradesTaken > 0">
+                                Trade #{{ tracker.tradesTaken }} done · Next: #{{ tracker.nextTrade.n }}
+                            </template>
+                            <template v-else>Waiting for Trade #1 (from {{ activePlan.startDate || 'start' }})</template>
+                        </span>
+                    </div>
+                    <div class="d-flex align-items-center gap-2">
+                        <button type="button" class="btn btn-sm btn-outline-secondary" :disabled="trackerLoading"
+                            v-on:click="refreshTracker" title="Refresh closed trades">
+                            <i class="uil uil-sync me-1"></i>{{ trackerLoading ? 'Syncing…' : 'Sync' }}
+                        </button>
+                        <a href="/daily" class="btn btn-sm btn-outline-secondary">
+                            History <i class="uil uil-arrow-right ms-1"></i>
+                        </a>
+                    </div>
+                </div>
+
+                <div v-if="tracker.progressToGoalPct != null" class="trackerProgressWrap mt-2">
+                    <div class="trackerProgressTrack">
+                        <div class="trackerProgressFill" :style="{ width: progressBarPct + '%' }"></div>
+                    </div>
+                    <span class="trackerProgressText">
+                        {{ fmt(Math.max(0, tracker.progressToGoalPct), 1) }}%
+                        <span v-if="goal > 0">to {{ fmtCompact(goal, 0) }}</span>
+                        <span v-else>of plan</span>
+                    </span>
+                </div>
+
+                <div class="statGrid mt-2">
+                    <div class="statTile">
+                        <div class="statLabel">Trades tracked</div>
+                        <div class="statValue">
+                            {{ tracker.tradesTaken }}<span v-if="tracker.plannedTotalTrades" class="statDenom"> / {{ tracker.plannedTotalTrades }}</span>
+                        </div>
+                        <div class="statSub">
+                            {{ tracker.wins }}W · {{ tracker.losses }}L
+                            <span v-if="tracker.winRatePct != null"> ({{ fmt(tracker.winRatePct, 0) }}%)</span>
+                            <span v-if="tracker.excludedCount"> · {{ tracker.excludedCount }} skipped</span>
+                        </div>
+                    </div>
+                    <div class="statTile">
+                        <div class="statLabel">Actual balance</div>
+                        <div class="statValue" v-bind:class="pnlClass(tracker.actualNet)"
+                            :title="fmt(tracker.currentBalance)">
+                            {{ fmtCompact(tracker.currentBalance) }}
+                        </div>
+                        <div class="statSub">
+                            Net {{ tracker.actualNet >= 0 ? '+' : '' }}{{ fmt(tracker.actualNet) }}
+                            <span v-if="tracker.actualReturnPct != null">
+                                ({{ tracker.actualReturnPct >= 0 ? '+' : '' }}{{ fmt(tracker.actualReturnPct, 1) }}%)
+                            </span>
+                        </div>
+                    </div>
+                    <div class="statTile">
+                        <div class="statLabel">Plan ladder</div>
+                        <div class="statValue" v-if="tracker.tradesTaken > 0 && tracker.varianceAtStep != null"
+                            v-bind:class="pnlClass(tracker.varianceAtStep)"
+                            :title="fmt(tracker.varianceAtStep)">
+                            {{ tracker.varianceAtStep >= 0 ? '+' : '' }}{{ fmtCompact(tracker.varianceAtStep) }}
+                        </div>
+                        <div class="statValue" v-else>Step #{{ tracker.milestoneStep }}</div>
+                        <div class="statSub" v-if="tracker.tradesTaken > 0 && tracker.plannedAtStep != null">
+                            Step #{{ tracker.milestoneStep }} cleared · Plan #{{ tracker.tradesTaken }} = {{ fmt(tracker.plannedAtStep) }}
+                        </div>
+                        <div class="statSub" v-else-if="tracker.nextMilestoneRow">
+                            Next step #{{ tracker.nextMilestoneRow.n }} at {{ fmt(tracker.nextMilestoneRow.closing) }}
+                        </div>
+                        <div class="statSub" v-else>No trades yet</div>
+                    </div>
+                    <div class="statTile" v-if="goal > 0">
+                        <div class="statLabel">Remaining to goal</div>
+                        <div class="statValue greenTrade" v-if="tracker.goalReached">Reached!</div>
+                        <div class="statValue" v-else :title="fmt(tracker.remainingToGoalDollars)">
+                            {{ fmtCompact(tracker.remainingToGoalDollars) }}
+                        </div>
+                        <div class="statSub" v-if="tracker.goalReached">
+                            +{{ fmt(tracker.currentBalance - goal) }} above {{ fmtCompact(goal, 0) }}
+                        </div>
+                        <div class="statSub" v-else-if="tracker.tradesLeftAtPlanRate != null">
+                            ~{{ tracker.tradesLeftAtPlanRate }} trade(s) left at plan rate
+                        </div>
+                        <div class="statSub" v-else>from current balance</div>
+                    </div>
+                    <div class="statTile" v-else>
+                        <div class="statLabel">Next trade (#{{ tracker.nextTrade.n }})</div>
+                        <div class="statValue text-blue" v-if="tracker.nextTrade.targetDollars != null">
+                            +{{ fmtCompact(tracker.nextTrade.targetDollars) }}
+                        </div>
+                        <div class="statValue" v-else>—</div>
+                        <div class="statSub" v-if="tracker.nextTrade.targetClosing != null">
+                            Target bal: {{ fmt(tracker.nextTrade.targetClosing) }}
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -350,11 +549,16 @@ watch([projection, goal, activeTab], async ([p, , tab]) => {
                     </div>
                 </div>
 
-                <!-- Lot sizing for Trade #1 -->
-                <PlanLotSizing class="mt-3" :plan="activePlan" :dollars="trade1TargetDollars"
-                    :basis="!isAmountMode && !hasTiers && tradePct > 0 ? fmt(tradePct, 2) + '% of ' + fmt(start, 0) : ''">
-                    Sized for Trade #1 — as the balance grows, the same % needs a bigger lot: with a pip/point distance
-                    set, the table below shows the lot for every trade on the way.
+                <!-- Lot sizing for Next Trade (live balance when trades exist, else Trade #1) -->
+                <PlanLotSizing class="mt-3" :plan="activePlan" :dollars="nextTradeDollars" :basis="nextTradeBasis">
+                    <template v-if="tracker.tradesTaken > 0">
+                        Sized for <strong>Trade #{{ tracker.nextTrade.n }}</strong> on your current balance
+                        (<strong>{{ fmt(tracker.currentBalance) }}</strong>).
+                    </template>
+                    <template v-else>
+                        Sized for Trade #1 — as the balance grows, the same % needs a bigger lot: with a pip/point distance
+                        set, the table below shows the lot for every trade on the way.
+                    </template>
                 </PlanLotSizing>
 
                 <template v-if="projection">
@@ -407,7 +611,7 @@ watch([projection, goal, activeTab], async ([p, , tab]) => {
 
                     <!-- Balance curve, one point per trade -->
                     <div class="chartWrap mb-3">
-                        <div class="chartTitle">Balance per trade</div>
+                        <div class="chartTitle">Balance per trade <span v-if="hasActualTrades" class="text-muted fw-normal">— Plan vs Actual</span></div>
                         <div ref="chartEl" class="chartBox"></div>
                     </div>
 
@@ -417,7 +621,7 @@ watch([projection, goal, activeTab], async ([p, , tab]) => {
                             Each trade:
                             <code v-if="!isAmountMode">closing = opening × (1 + <span v-if="hasTiers">stepped %</span><span v-else>{{ fmt(tradePct, 2) }}%</span>)</code>
                             <code v-else>closing = opening + {{ fmt(tradeAmount) }}</code>
-                            — {{ rows.length }} trade(s) shown.
+                            — {{ rows.length }} step(s) shown<span v-if="hasActualTrades"> · {{ tracker.tradesTaken }} checked off</span>.
                         </span>
                     </div>
 
@@ -425,43 +629,100 @@ watch([projection, goal, activeTab], async ([p, , tab]) => {
                         <table class="table table-sm breakTable mb-0">
                             <thead>
                                 <tr>
+                                    <th class="text-center" style="width:3.6rem">Check</th>
                                     <th>Trade</th>
                                     <th class="text-end">Opening</th>
                                     <th class="text-end" v-if="!isAmountMode">Target %</th>
-                                    <th class="text-end">Profit</th>
+                                    <th class="text-end">Plan Profit</th>
                                     <th class="text-end" v-if="lotSize != null">Pips</th>
                                     <th class="text-end" v-if="sizingPips">Lot @ {{ fmt(sizingPips, 0) }} pips</th>
-                                    <th class="text-end">Closing</th>
+                                    <th class="text-end">Plan Closing</th>
+                                    <th>Actual Trade</th>
+                                    <th class="text-end">Actual Bal</th>
                                     <th class="text-end">Cumulative</th>
                                     <th class="text-end" v-if="goal > 0">To goal</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <tr v-for="r in rows" :key="r.n"
-                                    v-bind:class="{ goalHitRow: goal > 0 && r.n === projection.goalTrades }">
+                                    v-bind:class="{
+                                        goalHitRow: r.isGoalHit,
+                                        doneTradeRow: !!r.actual && !r.isGoalHit,
+                                        nextTradeRow: r.isNext && !r.actual,
+                                    }">
+                                    <td class="text-center">
+                                        <span v-if="r.actual" class="stepCheckDone"
+                                            :title="`Done on ${r.actual.dateIso}`">
+                                            <i class="uil uil-check-circle"></i>
+                                        </span>
+                                        <span v-else-if="r.isNext" class="stepNextBadge">NEXT</span>
+                                        <span v-else class="text-muted opacity-50">·</span>
+                                    </td>
                                     <td><span class="dayNum">#{{ r.n }}</span>Trade {{ r.n }}</td>
-                                    <td class="text-end">{{ fmt(r.opening) }}</td>
-                                    <td class="text-end" v-if="!isAmountMode">{{ fmt(r.ratePct, 2) }}%</td>
-                                    <td class="text-end" v-bind:class="pnlClass(r.profit)">+{{ fmt(r.profit) }}</td>
+                                    <td class="text-end">{{ r.opening != null ? fmt(r.opening) : '—' }}</td>
+                                    <td class="text-end" v-if="!isAmountMode">{{ r.ratePct != null ? fmt(r.ratePct, 2) + '%' : '—' }}</td>
+                                    <td class="text-end" v-bind:class="r.profit != null ? pnlClass(r.profit) : ''">
+                                        {{ r.profit != null ? '+' + fmt(r.profit) : '—' }}
+                                    </td>
                                     <td class="text-end" v-if="lotSize != null">
-                                        {{ fmt(dollarsToPips(r.profit, activePlan.symbol, lotSize), 0) }}
+                                        {{ r.profit != null ? fmt(dollarsToPips(r.profit, activePlan.symbol, lotSize), 0) : '—' }}
                                     </td>
                                     <td class="text-end" v-if="sizingPips"
                                         v-bind:class="r.lotShort ? 'warnTrade' : 'lotCell'" :title="lotTitle(r)">
                                         {{ lotLabel(r) }}
                                     </td>
-                                    <td class="text-end fw-bold">{{ fmt(r.closing) }}</td>
-                                    <td class="text-end" v-bind:class="pnlClass(r.cumulativeReturnPct)">
-                                        +{{ fmt(r.cumulativeReturnPct) }}%
+                                    <td class="text-end fw-bold">{{ r.closing != null ? fmt(r.closing) : '—' }}</td>
+                                    <td>
+                                        <div v-if="r.actual" class="actualCell">
+                                            <span class="actualMeta">{{ r.actual.symbol }}</span>
+                                            <span class="actualDate">{{ r.actual.dateIso }}</span>
+                                            <span v-bind:class="pnlClass(r.actual.net)" class="fw-semibold">
+                                                {{ r.actual.net >= 0 ? '+' : '' }}{{ fmt(r.actual.net) }}
+                                            </span>
+                                            <button type="button" class="skipMiniBtn" title="Skip this trade from plan count"
+                                                v-on:click="toggleSkipTrade(r.actual.id)">
+                                                <i class="uil uil-times"></i>
+                                            </button>
+                                        </div>
+                                        <span v-else class="text-muted opacity-50">—</span>
+                                    </td>
+                                    <td class="text-end">
+                                        <template v-if="r.actual">
+                                            <span class="fw-bold">{{ fmt(r.actual.actualBalance) }}</span>
+                                            <span v-if="r.actual.diffFromPlan != null"
+                                                class="diffTag ms-1"
+                                                v-bind:class="pnlClass(r.actual.diffFromPlan)">
+                                                ({{ r.actual.diffFromPlan >= 0 ? '+' : '' }}{{ fmt(r.actual.diffFromPlan) }})
+                                            </span>
+                                        </template>
+                                        <span v-else class="text-muted opacity-50">—</span>
+                                    </td>
+                                    <td class="text-end" v-bind:class="r.cumulativeReturnPct != null ? pnlClass(r.cumulativeReturnPct) : ''">
+                                        {{ r.cumulativeReturnPct != null ? '+' + fmt(r.cumulativeReturnPct) + '%' : '—' }}
                                     </td>
                                     <td class="text-end" v-if="goal > 0"
                                         v-bind:class="r.progressPct >= 100 ? 'greenTrade fw-bold' : ''">
-                                        {{ fmt(Math.min(r.progressPct, 999), 1) }}%
+                                        {{ r.progressPct != null ? fmt(Math.min(r.progressPct, 999), 1) + '%' : '—' }}
                                     </td>
                                 </tr>
                             </tbody>
                         </table>
                     </div>
+
+                    <!-- Skipped trades restore strip -->
+                    <div v-if="tracker.excludedTrades.length" class="skippedStrip mt-2">
+                        <span class="txt-small text-muted me-2">
+                            <i class="uil uil-filter-slash me-1"></i>Skipped ({{ tracker.excludedTrades.length }}):
+                        </span>
+                        <button v-for="ex in tracker.excludedTrades" :key="ex.id" type="button"
+                            class="skippedChip" title="Click to restore to plan count"
+                            v-on:click="toggleSkipTrade(ex.id)">
+                            {{ ex.dateIso }} · {{ ex.symbol }}
+                            <span v-bind:class="pnlClass(ex.net)">({{ ex.net >= 0 ? '+' : '' }}{{ fmt(ex.net) }})</span>
+                            <i class="uil uil-redo ms-1"></i>
+                        </button>
+                    </div>
+
                     <p class="txt-small text-muted mt-2 mb-0" v-if="sizingPips">
                         Lot = that trade's profit ÷ ({{ fmt(sizingPips, 0) }} pips ×
                         {{ fmt(pipValuePerLot(activePlan.symbol), 2) }}/pip/lot), rounded down —
@@ -690,9 +951,9 @@ watch([projection, goal, activeTab], async ([p, , tab]) => {
 
 .planInputs {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
     gap: 0.75rem;
-    max-width: 860px;
+    max-width: 1040px;
 }
 
 .planLabel {
@@ -709,6 +970,161 @@ watch([projection, goal, activeTab], async ([p, , tab]) => {
     background-color: rgba(255, 255, 255, 0.03);
     border-radius: 0.6rem;
     padding: 0.9rem 1rem;
+}
+
+.trackerCard {
+    border-color: rgba(0, 202, 115, 0.18);
+}
+
+.trackerHead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+}
+
+.trackerStatusBadge {
+    font-size: 0.74rem;
+    font-weight: 600;
+    padding: 0.15rem 0.55rem;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: var(--white-60);
+    background-color: rgba(255, 255, 255, 0.04);
+}
+
+.trackerStatusBadge.active {
+    color: var(--accent);
+    border-color: rgba(47, 155, 255, 0.35);
+    background-color: rgba(47, 155, 255, 0.1);
+}
+
+.trackerStatusBadge.done {
+    color: #00CA73;
+    border-color: rgba(0, 202, 115, 0.4);
+    background-color: rgba(0, 202, 115, 0.12);
+}
+
+.trackerProgressWrap {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.trackerProgressTrack {
+    flex: 1;
+    height: 7px;
+    border-radius: 999px;
+    background-color: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+}
+
+.trackerProgressFill {
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #2f9bff, #00CA73);
+    transition: width 0.25s ease;
+}
+
+.trackerProgressText {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--white-87);
+    white-space: nowrap;
+}
+
+.statDenom {
+    font-size: 0.85rem;
+    font-weight: 500;
+    opacity: 0.55;
+}
+
+.doneTradeRow {
+    background-color: rgba(0, 202, 115, 0.035);
+}
+
+.nextTradeRow {
+    background-color: rgba(47, 155, 255, 0.07);
+}
+
+.stepCheckDone {
+    color: #00CA73;
+    font-size: 1rem;
+    line-height: 1;
+}
+
+.stepNextBadge {
+    display: inline-block;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 0.1rem 0.35rem;
+    border-radius: 0.25rem;
+    color: var(--accent);
+    border: 1px solid rgba(47, 155, 255, 0.45);
+    background-color: rgba(47, 155, 255, 0.12);
+}
+
+.actualCell {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    white-space: nowrap;
+}
+
+.actualMeta {
+    font-weight: 600;
+}
+
+.actualDate {
+    font-size: 0.75rem;
+    color: var(--white-60);
+}
+
+.diffTag {
+    font-size: 0.74rem;
+}
+
+.skipMiniBtn {
+    border: 0;
+    background: transparent;
+    color: var(--white-60);
+    padding: 0 0.15rem;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.55;
+}
+
+.skipMiniBtn:hover {
+    color: #F6465D;
+    opacity: 1;
+}
+
+.skippedStrip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.45rem 0.65rem;
+    border-radius: 0.4rem;
+    background-color: rgba(255, 255, 255, 0.025);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.skippedChip {
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background-color: rgba(255, 255, 255, 0.04);
+    color: var(--white-87);
+    border-radius: 999px;
+    padding: 0.12rem 0.5rem;
+    font-size: 0.74rem;
+    cursor: pointer;
+}
+
+.skippedChip:hover {
+    border-color: var(--accent);
+    color: var(--accent);
 }
 
 .planCardHead {

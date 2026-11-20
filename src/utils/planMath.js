@@ -3,6 +3,10 @@
  * Everything compounds on trading days only — weekends are market-closed.
  */
 import dayjs from 'dayjs'
+import utc from 'dayjs/plugin/utc.js'
+import timezone from 'dayjs/plugin/timezone.js'
+dayjs.extend(utc)
+dayjs.extend(timezone)
 
 /** '' / null / non-numeric -> null, so empty inputs never compute silently. */
 export function numOrNull(v) {
@@ -687,6 +691,247 @@ export function calculateRiskLot({
         minLotRiskPct: hasBalance ? (minLotRiskDollars / bal) * 100 : null,
         maxSlAtMinLot,
         rrTable,
+    }
+}
+
+/**
+ * Match closed trades from History (dayDocs) chronologically against a per-trade
+ * Trading Plan starting from `startDate`.
+ *
+ * Returns:
+ *   - trackedTrades: chronological list of included trades numbered #1..#K with
+ *     actual P&L, running balance, and plan comparison at step #N
+ *   - excludedTrades: eligible trades explicitly skipped by the trader
+ *   - tradeMap: { [tradeId]: { status: 'tracked'|'excluded', n?, ... } } for O(1) lookup in History
+ *   - milestoneStep / nextPlanStep: highest plan ladder step cleared by `currentBalance`
+ *   - nextTrade: target dollars & projected balance for Trade #(K+1) on `currentBalance`
+ *   - remainingToGoalDollars / tradesLeftAtPlanRate: remaining distance to `goalBalance`
+ */
+export function trackTradesAgainstPlan({
+    startBalance = null,
+    goalBalance = null,
+    startDate = null,
+    pctPerTrade = 0,
+    tradeAmount = null,
+    tiers = [],
+    horizonTrades = null,
+    dayDocs = [],
+    account = '',
+    excludedTradeIds = [],
+    projection = null,
+    tz = 'UTC',
+} = {}) {
+    const startNum = Number(startBalance)
+    const hasStart = Number.isFinite(startNum) && startNum > 0
+    const goalNum = Number(goalBalance)
+    const hasGoal = Number.isFinite(goalNum) && goalNum > 0
+    const startIso = typeof startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(startDate.trim())
+        ? startDate.trim()
+        : null
+    const excludedSet = new Set((excludedTradeIds || []).map(String))
+    const zone = tz || 'UTC'
+
+    const eligible = []
+    const seenKeys = new Set()
+
+    for (const day of dayDocs || []) {
+        const arr = Array.isArray(day?.trades) ? day.trades : []
+        for (const t of arr) {
+            if (!t || t.openPosition || t.tradesCount === 0) continue
+            const tradeAcc = t.account || day.account || ''
+            if (account && tradeAcc !== account) continue
+
+            const closeUnix = Number(t.exitTime) || Number(t.closeTd) || Number(t.td) || Number(day.dateUnix) || 0
+            let dateIso = ''
+            if (closeUnix > 0) {
+                try {
+                    dateIso = dayjs.unix(closeUnix).tz(zone).format('YYYY-MM-DD')
+                } catch {
+                    dateIso = dayjs.unix(closeUnix).utc().format('YYYY-MM-DD')
+                }
+            }
+            if (startIso && (!dateIso || dateIso < startIso)) continue
+
+            const id = String(t.id ?? `${closeUnix}_${t.symbol || 'UNK'}_${t.entryTime || 0}`)
+            const dedupeKey = `${id}::${closeUnix}::${t.entryTime || 0}`
+            if (seenKeys.has(dedupeKey)) continue
+            seenKeys.add(dedupeKey)
+
+            const net = t.netProceeds != null
+                ? (Number(t.netProceeds) || 0)
+                : (Number(t.grossProceeds) || 0)
+            const lotRaw = Math.max(Number(t.buyQuantity) || 0, Number(t.sellQuantity) || 0) || Number(t.quantity) || 0
+
+            eligible.push({
+                id,
+                symbol: t.symbol || 'UNKNOWN',
+                direction: t.strategy || t.side || '',
+                lot: lotRaw > 0 ? lotRaw : null,
+                entryTime: Number(t.entryTime) || 0,
+                exitTime: Number(t.exitTime) || closeUnix,
+                dateIso,
+                net,
+                excluded: excludedSet.has(id),
+            })
+        }
+    }
+
+    eligible.sort((a, b) => (a.exitTime - b.exitTime) || (a.entryTime - b.entryTime))
+
+    const trackedTrades = []
+    const excludedTrades = []
+    const tradeMap = {}
+
+    let runningBal = hasStart ? startNum : 0
+    let totalNet = 0
+    let wins = 0
+    let losses = 0
+    let breakEven = 0
+
+    const planRows = Array.isArray(projection?.trades) ? projection.trades : []
+
+    for (const tr of eligible) {
+        if (tr.excluded) {
+            excludedTrades.push(tr)
+            tradeMap[tr.id] = { status: 'excluded', trade: tr }
+            continue
+        }
+
+        const n = trackedTrades.length + 1
+        const openingBalance = runningBal
+        runningBal = openingBalance + tr.net
+        totalNet += tr.net
+        if (tr.net > 0) wins++
+        else if (tr.net < 0) losses++
+        else breakEven++
+
+        const planRow = planRows[n - 1] || null
+        const plannedProfit = planRow ? planRow.profit : null
+        const plannedBalance = planRow ? planRow.closing : null
+        const diffFromPlan = plannedBalance != null && hasStart ? runningBal - plannedBalance : null
+        const beatTradeTarget = plannedProfit != null ? tr.net >= plannedProfit : null
+
+        const item = {
+            ...tr,
+            n,
+            openingBalance,
+            actualBalance: runningBal,
+            plannedProfit,
+            plannedBalance,
+            diffFromPlan,
+            beatTradeTarget,
+        }
+        trackedTrades.push(item)
+        tradeMap[tr.id] = {
+            status: 'tracked',
+            n,
+            actualBalance: item.actualBalance,
+            plannedBalance: item.plannedBalance,
+            diffFromPlan: item.diffFromPlan,
+            beatTradeTarget: item.beatTradeTarget,
+            net: item.net,
+        }
+    }
+
+    const tradesTaken = trackedTrades.length
+    const decided = wins + losses
+    const winRatePct = decided > 0 ? (wins / decided) * 100 : null
+    const currentBalance = hasStart ? runningBal : null
+    const actualReturnPct = hasStart ? (totalNet / startNum) * 100 : null
+
+    const lastTracked = tradesTaken ? trackedTrades[tradesTaken - 1] : null
+    const plannedAtStep = lastTracked?.plannedBalance ?? null
+    const varianceAtStep = lastTracked?.diffFromPlan ?? null
+
+    // Highest plan step whose closing balance has been reached by currentBalance
+    let milestoneStep = 0
+    if (hasStart && planRows.length) {
+        for (const row of planRows) {
+            if (currentBalance + 1e-6 >= row.closing) milestoneStep = row.n
+            else break
+        }
+    }
+    const nextMilestoneRow = planRows.find((r) => r.n === milestoneStep + 1) || null
+
+    // Next trade sizing target based on currentBalance (or startBalance if 0 trades yet)
+    const amt = Number(tradeAmount)
+    const useAmount = Number.isFinite(amt) && amt > 0
+    const pctNum = Number(pctPerTrade)
+    const baseForNext = currentBalance != null ? currentBalance : (hasStart ? startNum : null)
+    const rateAt = tierRateResolver(Number.isFinite(pctNum) ? pctNum : 0, useAmount ? [] : tiers)
+    let nextTargetDollars = null
+    if (useAmount) {
+        nextTargetDollars = amt
+    } else if (baseForNext > 0) {
+        const rate = rateAt(baseForNext)
+        if (rate > 0) nextTargetDollars = baseForNext * rate
+    }
+
+    const nextTrade = {
+        n: tradesTaken + 1,
+        baseBalance: baseForNext,
+        targetDollars: nextTargetDollars,
+        targetClosing: baseForNext != null && nextTargetDollars != null ? baseForNext + nextTargetDollars : null,
+        planRow: planRows[tradesTaken] || null,
+    }
+
+    // Remaining distance & trades to Goal from currentBalance
+    let goalReached = false
+    let remainingToGoalDollars = null
+    let progressToGoalPct = null
+    let tradesLeftAtPlanRate = null
+
+    if (hasGoal && hasStart) {
+        goalReached = currentBalance + 1e-6 >= goalNum
+        remainingToGoalDollars = goalReached ? 0 : Math.max(0, goalNum - currentBalance)
+        if (goalNum > startNum) {
+            progressToGoalPct = ((currentBalance - startNum) / (goalNum - startNum)) * 100
+        } else {
+            progressToGoalPct = currentBalance >= goalNum ? 100 : 0
+        }
+        if (goalReached) {
+            tradesLeftAtPlanRate = 0
+        } else if (currentBalance > 0) {
+            const rem = tradesToGoal({
+                start: currentBalance,
+                goal: goalNum,
+                pctPerTrade: Number.isFinite(pctNum) ? pctNum : 0,
+                tradeAmount: useAmount ? amt : null,
+                tiers: useAmount ? [] : tiers,
+            })
+            tradesLeftAtPlanRate = rem ? rem.trades : null
+        }
+    } else if (horizonTrades > 0) {
+        progressToGoalPct = (tradesTaken / horizonTrades) * 100
+    }
+
+    const plannedTotalTrades = projection ? projection.tradeCount : (horizonTrades > 0 ? horizonTrades : null)
+
+    return {
+        startDate: startIso,
+        eligibleCount: eligible.length,
+        tradesTaken,
+        excludedCount: excludedTrades.length,
+        wins,
+        losses,
+        breakEven,
+        winRatePct,
+        actualNet: totalNet,
+        actualReturnPct,
+        currentBalance,
+        plannedAtStep,
+        varianceAtStep,
+        milestoneStep,
+        nextMilestoneRow,
+        plannedTotalTrades,
+        goalReached,
+        remainingToGoalDollars,
+        progressToGoalPct,
+        tradesLeftAtPlanRate,
+        nextTrade,
+        trackedTrades,
+        excludedTrades,
+        tradeMap,
     }
 }
 

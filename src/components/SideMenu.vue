@@ -43,9 +43,9 @@ const weeklyPlanDue = computed(() => weeklyGate.value === 'review' || weeklyGate
                 <a id="step5c" v-bind:class="[pageId === 'plan' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
                     href="/plan">
                     <i class="uil uil-calculator-alt me-2"></i>Trading Plan</a>
-                <a id="step5d" v-bind:class="[pageId === 'planVsActual' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
-                    href="/plan-vs-actual">
-                    <i class="uil uil-balance-scale me-2"></i>Plan vs Actual</a>
+                <a id="step5d" v-bind:class="[pageId === 'forecast' ? 'activeNavCss' : '', 'nav-link', 'mb-1']"
+                    href="/forecast">
+                    <i class="uil uil-arrow-growth me-2"></i>Growth Forecast</a>
                 <!-- Stats is hidden from the menu on request, same as Mindset/
                      Screenshots below. Route, view and the underlying trade/tag
                      data are untouched, so this is reversible by restoring the

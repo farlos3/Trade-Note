@@ -50,9 +50,9 @@ const pages = [{
     icon: "uil uil-calculator-alt"
 },
 {
-    id: "planVsActual",
-    name: "Plan vs Actual",
-    icon: "uil uil-balance-scale"
+    id: "forecast",
+    name: "Growth Forecast",
+    icon: "uil uil-arrow-growth"
 },
 {
     id: "screenshots",
@@ -182,7 +182,7 @@ const currentPage = computed(() =>
 // still gets a cache hit instead of a fresh fetch+transform.
 // The chunks are only half of a tab's load -- the other half is the trades query,
 // shared by every tab, so the same idle pass also stores it (see utils/queryCache.js).
-const MAIN_NAV_PATHS = ['/dashboard', '/live', '/daily', '/calendar', '/analysis', '/plan', '/plan-vs-actual', '/stats', '/weekly-plan', '/mindset', '/diary', '/setups', '/screenshots', '/playbook']
+const MAIN_NAV_PATHS = ['/dashboard', '/live', '/daily', '/calendar', '/analysis', '/plan', '/forecast', '/stats', '/weekly-plan', '/mindset', '/diary', '/setups', '/screenshots', '/playbook']
 
 function prefetchOtherPages() {
     // Warm the HTTP cache for every page's lazy chunks once per browser session.
