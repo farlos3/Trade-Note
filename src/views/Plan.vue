@@ -128,44 +128,18 @@ const goalSeekPipsTrade1 = computed(() => {
 const hasActualTrades = computed(() => tracker.value.trackedTrades.length > 0)
 
 const rows = computed(() => {
-    if (!projection.value) return []
-    const withLotRows = withLots(projection.value.trades, sizingPips.value, activePlan.value.symbol)
-    const tracked = tracker.value.trackedTrades
-    const maxLen = Math.max(withLotRows.length, tracked.length)
+    const liveSteps = tracker.value.liveSteps || []
+    if (!liveSteps.length) return []
+    const withLotRows = withLots(liveSteps, sizingPips.value, activePlan.value.symbol)
     const nextN = tracker.value.nextTrade?.n
-    const out = []
+    const goalHitN = tracker.value.liveGoalStep
 
-    for (let i = 0; i < maxLen; i++) {
-        const planRow = withLotRows[i]
-        const actual = tracked[i] || null
-        if (planRow) {
-            out.push({
-                ...planRow,
-                lotShort: planRow.lot != null && planRow.profit > 0 && planRow.lotDollars < 0.9 * planRow.profit,
-                actual,
-                isNext: (i + 1) === nextN,
-                isGoalHit: goal.value > 0 && planRow.n === projection.value.goalTrades,
-            })
-        } else if (actual) {
-            out.push({
-                n: actual.n,
-                opening: null,
-                ratePct: null,
-                profit: null,
-                closing: null,
-                cumulativeReturnPct: null,
-                progressPct: null,
-                lot: null,
-                lotExact: null,
-                lotDollars: null,
-                lotShort: false,
-                actual,
-                isNext: false,
-                isGoalHit: false,
-            })
-        }
-    }
-    return out
+    return withLotRows.map((r) => ({
+        ...r,
+        lotShort: r.lot != null && r.profit > 0 && r.lotDollars < 0.9 * r.profit,
+        isNext: r.n === nextN,
+        isGoalHit: goal.value > 0 && r.n === goalHitN,
+    }))
 })
 
 const progressBarPct = computed(() => {
@@ -184,9 +158,10 @@ function lotTitle(r) {
     return `exact ${fmt(r.lotExact, 4)} lot · at ${r.lot >= LOT_STEP ? fmt(r.lot, 2) : '0.00'} lot this makes ${fmt(r.lotDollars)} of the ${fmt(r.profit)} target`
 }
 
-/* ---- Balance curve (Plan vs Actual per trade) ---- */
+/* ---- Balance curve (Baseline Plan vs Actual vs Live Path per trade) ---- */
 const ACCENT = '#2f9bff'
 const ACTUAL_GREEN = '#00CA73'
+const LIVE_CYAN = '#38bdf8'
 const SURFACE = '#1b1f2a'
 const INK_MUTED = 'rgba(237, 240, 247, 0.60)'
 
@@ -199,23 +174,32 @@ function renderChart() {
     if (!chart) chart = echarts.init(chartEl.value)
     const list = projection.value.trades
     const actualList = tracker.value.trackedTrades
+    const liveSteps = tracker.value.liveSteps || []
     const hasGoal = goal.value > 0
-    const maxLen = Math.max(list.length, actualList.length)
+    const hasActual = actualList.length > 0
+    const maxLen = Math.max(list.length, actualList.length, liveSteps.length)
     const categories = Array.from({ length: maxLen }, (_, i) => `#${i + 1}`)
     const planSeriesData = Array.from({ length: maxLen }, (_, i) => list[i]?.closing ?? null)
-    const actualSeriesData = actualList.length
+    const actualSeriesData = hasActual
         ? Array.from({ length: maxLen }, (_, i) => actualList[i]?.actualBalance ?? null)
+        : []
+    const livePathData = hasActual && liveSteps.length > actualList.length
+        ? Array.from({ length: maxLen }, (_, i) => {
+            if (i === actualList.length - 1) return actualList[i].actualBalance
+            if (i >= actualList.length && liveSteps[i]?.isProjected) return liveSteps[i].closing
+            return null
+        })
         : []
 
     const series = [{
-        name: 'Plan',
+        name: hasActual ? 'Baseline Plan' : 'Plan',
         type: 'line',
         data: planSeriesData,
-        showSymbol: maxLen <= 40,
+        showSymbol: !hasActual && maxLen <= 40,
         symbolSize: 6,
-        lineStyle: { color: ACCENT, width: 2 },
+        lineStyle: { color: ACCENT, width: hasActual ? 1.5 : 2, type: hasActual ? 'dashed' : 'solid' },
         itemStyle: { color: ACCENT, borderColor: SURFACE, borderWidth: 2 },
-        areaStyle: {
+        areaStyle: hasActual ? undefined : {
             color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
                 { offset: 0, color: 'rgba(47,155,255,0.22)' },
                 { offset: 1, color: 'rgba(47,155,255,0.02)' },
@@ -249,14 +233,27 @@ function renderChart() {
         })
     }
 
+    if (livePathData.length) {
+        series.push({
+            name: 'Live Path',
+            type: 'line',
+            data: livePathData,
+            connectNulls: false,
+            showSymbol: maxLen <= 40,
+            symbolSize: 5,
+            lineStyle: { color: LIVE_CYAN, width: 2, type: 'dotted' },
+            itemStyle: { color: LIVE_CYAN, borderColor: SURFACE, borderWidth: 1.5 },
+        })
+    }
+
     chart.setOption({
         backgroundColor: 'transparent',
-        legend: actualSeriesData.length ? {
+        legend: hasActual ? {
             top: 0,
             right: 12,
             textStyle: { color: INK_MUTED, fontSize: 11 },
         } : undefined,
-        grid: { left: 4, right: 16, top: actualSeriesData.length ? 28 : 20, bottom: 4, containLabel: true },
+        grid: { left: 4, right: 16, top: hasActual ? 28 : 20, bottom: 4, containLabel: true },
         tooltip: {
             trigger: 'axis',
             axisPointer: { type: 'line', lineStyle: { color: 'rgba(255,255,255,0.25)', width: 1 } },
@@ -267,13 +264,20 @@ function renderChart() {
                 const idx = params[0]?.dataIndex
                 if (idx == null) return ''
                 const t = list[idx]
+                const ls = liveSteps[idx]
                 const a = actualList[idx]
                 const lines = [`<div style="font-weight:700;margin-bottom:4px">Trade #${idx + 1}</div>`]
+                if (ls && hasActual && ls.isProjected) {
+                    lines.push(
+                        `Live target: ${fmt(ls.opening)} → <b>${fmt(ls.targetClosing)}</b> (+${fmt(ls.profit)} · ${fmt(ls.ratePct, 2)}%)`,
+                    )
+                    if (ls.progressPct != null) lines.push(`To goal: ${fmt(Math.min(ls.progressPct, 999), 1)}%`)
+                }
                 if (t) {
                     lines.push(
-                        `Plan: ${fmt(t.opening)} → <b>${fmt(t.closing)}</b> (+${fmt(t.profit)} · ${fmt(t.ratePct, 2)}%)`,
+                        `${hasActual ? 'Baseline Plan' : 'Plan'}: ${fmt(t.opening)} → <b>${fmt(t.closing)}</b> (+${fmt(t.profit)} · ${fmt(t.ratePct, 2)}%)`,
                     )
-                    if (t.progressPct != null) lines.push(`Plan to goal: ${fmt(Math.min(t.progressPct, 999), 1)}%`)
+                    if (!hasActual && t.progressPct != null) lines.push(`To goal: ${fmt(Math.min(t.progressPct, 999), 1)}%`)
                 }
                 if (a) {
                     const netSign = a.net >= 0 ? '+' : ''
@@ -282,7 +286,7 @@ function renderChart() {
                         `<div style="margin-top:4px;padding-top:4px;border-top:1px solid rgba(255,255,255,0.12)">` +
                         `Actual (${a.symbol} · ${a.dateIso}): <span style="color:${netColor};font-weight:600">${netSign}${fmt(a.net)}</span><br/>` +
                         `<b>Actual Bal: ${fmt(a.actualBalance)}</b>` +
-                        (a.diffFromPlan != null ? ` (${a.diffFromPlan >= 0 ? '+' : ''}${fmt(a.diffFromPlan)} vs plan)` : '') +
+                        (a.diffFromPlan != null ? ` (${a.diffFromPlan >= 0 ? '+' : ''}${fmt(a.diffFromPlan)} vs baseline)` : '') +
                         `</div>`,
                     )
                 }
@@ -428,11 +432,14 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
                     <div class="statTile">
                         <div class="statLabel">Trades tracked</div>
                         <div class="statValue">
-                            {{ tracker.tradesTaken }}<span v-if="tracker.plannedTotalTrades" class="statDenom"> / {{ tracker.plannedTotalTrades }}</span>
+                            {{ tracker.tradesTaken }}<span v-if="tracker.liveTotalTrades" class="statDenom"> / {{ tracker.liveTotalTrades }}</span>
                         </div>
                         <div class="statSub">
                             {{ tracker.wins }}W · {{ tracker.losses }}L
                             <span v-if="tracker.winRatePct != null"> ({{ fmt(tracker.winRatePct, 0) }}%)</span>
+                            <span v-if="tracker.plannedTotalTrades && tracker.liveTotalTrades !== tracker.plannedTotalTrades">
+                                · baseline {{ tracker.plannedTotalTrades }}
+                            </span>
                             <span v-if="tracker.excludedCount"> · {{ tracker.excludedCount }} skipped</span>
                         </div>
                     </div>
@@ -611,16 +618,21 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
 
                     <!-- Balance curve, one point per trade -->
                     <div class="chartWrap mb-3">
-                        <div class="chartTitle">Balance per trade <span v-if="hasActualTrades" class="text-muted fw-normal">— Plan vs Actual</span></div>
+                        <div class="chartTitle">Balance per trade <span v-if="hasActualTrades" class="text-muted fw-normal">— Baseline Plan vs Actual &amp; Live Path</span></div>
                         <div ref="chartEl" class="chartBox"></div>
                     </div>
 
                     <!-- Trade-by-trade table -->
                     <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
                         <span class="txt-small text-muted">
-                            Each trade:
-                            <code v-if="!isAmountMode">closing = opening × (1 + <span v-if="hasTiers">stepped %</span><span v-else>{{ fmt(tradePct, 2) }}%</span>)</code>
-                            <code v-else>closing = opening + {{ fmt(tradeAmount) }}</code>
+                            <template v-if="hasActualTrades">
+                                Opening compounds from previous balance (actual when closed, target from Trade #{{ tracker.nextTrade.n }} onward)
+                            </template>
+                            <template v-else>
+                                Each trade:
+                                <code v-if="!isAmountMode">closing = opening × (1 + <span v-if="hasTiers">stepped %</span><span v-else>{{ fmt(tradePct, 2) }}%</span>)</code>
+                                <code v-else>closing = opening + {{ fmt(tradeAmount) }}</code>
+                            </template>
                             — {{ rows.length }} step(s) shown<span v-if="hasActualTrades"> · {{ tracker.tradesTaken }} checked off</span>.
                         </span>
                     </div>
@@ -633,10 +645,10 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
                                     <th>Trade</th>
                                     <th class="text-end">Opening</th>
                                     <th class="text-end" v-if="!isAmountMode">Target %</th>
-                                    <th class="text-end">Plan Profit</th>
+                                    <th class="text-end">Target Profit</th>
                                     <th class="text-end" v-if="lotSize != null">Pips</th>
                                     <th class="text-end" v-if="sizingPips">Lot @ {{ fmt(sizingPips, 0) }} pips</th>
-                                    <th class="text-end">Plan Closing</th>
+                                    <th class="text-end">Target Closing</th>
                                     <th>Actual Trade</th>
                                     <th class="text-end">Actual Bal</th>
                                     <th class="text-end">Cumulative</th>
@@ -671,7 +683,7 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
                                         v-bind:class="r.lotShort ? 'warnTrade' : 'lotCell'" :title="lotTitle(r)">
                                         {{ lotLabel(r) }}
                                     </td>
-                                    <td class="text-end fw-bold">{{ r.closing != null ? fmt(r.closing) : '—' }}</td>
+                                    <td class="text-end fw-bold">{{ r.targetClosing != null ? fmt(r.targetClosing) : '—' }}</td>
                                     <td>
                                         <div v-if="r.actual" class="actualCell">
                                             <span class="actualMeta">{{ r.actual.symbol }}</span>
@@ -691,14 +703,15 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
                                             <span class="fw-bold">{{ fmt(r.actual.actualBalance) }}</span>
                                             <span v-if="r.actual.diffFromPlan != null"
                                                 class="diffTag ms-1"
-                                                v-bind:class="pnlClass(r.actual.diffFromPlan)">
+                                                v-bind:class="pnlClass(r.actual.diffFromPlan)"
+                                                :title="`vs baseline plan (${fmt(r.actual.plannedBalance)})`">
                                                 ({{ r.actual.diffFromPlan >= 0 ? '+' : '' }}{{ fmt(r.actual.diffFromPlan) }})
                                             </span>
                                         </template>
                                         <span v-else class="text-muted opacity-50">—</span>
                                     </td>
                                     <td class="text-end" v-bind:class="r.cumulativeReturnPct != null ? pnlClass(r.cumulativeReturnPct) : ''">
-                                        {{ r.cumulativeReturnPct != null ? '+' + fmt(r.cumulativeReturnPct) + '%' : '—' }}
+                                        {{ r.cumulativeReturnPct != null ? (r.cumulativeReturnPct >= 0 ? '+' : '') + fmt(r.cumulativeReturnPct) + '%' : '—' }}
                                     </td>
                                     <td class="text-end" v-if="goal > 0"
                                         v-bind:class="r.progressPct >= 100 ? 'greenTrade fw-bold' : ''">

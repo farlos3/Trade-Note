@@ -192,5 +192,37 @@ check('tracker flags goalReached=true when currentBalance exceeds goal',
     trackedGoalHit.remainingToGoalDollars === 0 &&
     trackedGoalHit.tradesLeftAtPlanRate === 0)
 
+// 10. Dynamic liveSteps chaining after losing trades
+const proj500 = buildTradeProjection({ start: 163.05, pctPerTrade: 10, goalBalance: 500 })
+const lossDocs = [{
+    dateUnix: 1777680000,
+    trades: [
+        { id: 'l1', symbol: 'XAUUSD', netProceeds: -5.71, exitTime: 1777681000, tradesCount: 1 },
+        { id: 'l2', symbol: 'XAUUSD', netProceeds: -11.03, exitTime: 1777682000, tradesCount: 1 },
+    ],
+}]
+const trackedLosses = trackTradesAgainstPlan({
+    startBalance: 163.05,
+    goalBalance: 500,
+    pctPerTrade: 10,
+    dayDocs: lossDocs,
+    projection: proj500,
+    tz: 'UTC',
+})
+const ls = trackedLosses.liveSteps
+check('liveSteps chains each row Opening from previous actual balance and re-projects to goal',
+    ls.length === 15 &&
+    approx(ls[0].opening, 163.05, 0.01) &&
+    approx(ls[0].closing, 157.34, 0.01) &&
+    approx(ls[1].opening, 157.34, 0.01) &&
+    approx(ls[1].profit, 15.734, 0.01) &&
+    approx(ls[1].closing, 146.31, 0.01) &&
+    approx(ls[2].opening, 146.31, 0.01) &&
+    approx(ls[2].profit, 14.631, 0.01) &&
+    approx(ls[2].targetClosing, 160.941, 0.01) &&
+    ls[2].isProjected === true &&
+    trackedLosses.liveGoalStep === 15 &&
+    ls[14].closing >= 500)
+
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILED'}`)
 process.exit(failures === 0 ? 0 : 1)

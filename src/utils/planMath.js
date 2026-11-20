@@ -907,6 +907,76 @@ export function trackTradesAgainstPlan({
 
     const plannedTotalTrades = projection ? projection.tradeCount : (horizonTrades > 0 ? horizonTrades : null)
 
+    // Dynamic trade-by-trade path: each row's Opening is the previous row's
+    // actual closing balance (for completed trades) or projected closing
+    // balance (for future trades from `currentBalance` forward to goal/horizon).
+    const liveSteps = []
+    if (hasStart) {
+        for (const tr of trackedTrades) {
+            const opening = tr.openingBalance
+            const rate = useAmount
+                ? (opening > 0 ? amt / opening : 0)
+                : (opening > 0 ? rateAt(opening) : 0)
+            const profit = useAmount ? amt : (opening > 0 ? opening * rate : 0)
+            const targetClosing = opening + profit
+            const closing = tr.actualBalance
+            liveSteps.push({
+                n: tr.n,
+                opening,
+                ratePct: rate * 100,
+                profit,
+                targetClosing,
+                closing,
+                cumulativeReturnPct: ((closing - startNum) / startNum) * 100,
+                progressPct: hasGoal ? (closing / goalNum) * 100 : null,
+                isProjected: false,
+                actual: tr,
+                baselineClosing: tr.plannedBalance,
+            })
+        }
+
+        let futBal = lastTracked ? lastTracked.actualBalance : startNum
+        const fixedHorizon = horizonTrades != null && Number(horizonTrades) >= 1
+            ? Math.min(Math.floor(Number(horizonTrades)), 2000)
+            : null
+        const canGrow = futBal > 0 && (useAmount ? amt > 0 : rateAt(futBal) > 0)
+        if (canGrow && (fixedHorizon != null || hasGoal)) {
+            const maxSteps = 2000
+            let n = trackedTrades.length + 1
+            while (n <= maxSteps) {
+                if (fixedHorizon != null) {
+                    if (n > fixedHorizon) break
+                } else if (hasGoal) {
+                    if (futBal + 1e-6 >= goalNum) break
+                }
+                const opening = futBal
+                const rate = useAmount ? (amt / opening) : rateAt(opening)
+                if (!(rate > 0) && !useAmount) break
+                const profit = useAmount ? amt : opening * rate
+                const closing = opening + profit
+                liveSteps.push({
+                    n,
+                    opening,
+                    ratePct: rate * 100,
+                    profit,
+                    targetClosing: closing,
+                    closing,
+                    cumulativeReturnPct: ((closing - startNum) / startNum) * 100,
+                    progressPct: hasGoal ? (closing / goalNum) * 100 : null,
+                    isProjected: true,
+                    actual: null,
+                    baselineClosing: planRows[n - 1]?.closing ?? null,
+                })
+                futBal = closing
+                n++
+            }
+        }
+    }
+
+    const liveGoalRow = hasGoal ? liveSteps.find((s) => s.closing + 1e-6 >= goalNum) : null
+    const liveGoalStep = liveGoalRow ? liveGoalRow.n : null
+    const liveTotalTrades = liveSteps.length || plannedTotalTrades
+
     return {
         startDate: startIso,
         eligibleCount: eligible.length,
@@ -924,11 +994,14 @@ export function trackTradesAgainstPlan({
         milestoneStep,
         nextMilestoneRow,
         plannedTotalTrades,
+        liveTotalTrades,
+        liveGoalStep,
         goalReached,
         remainingToGoalDollars,
         progressToGoalPct,
         tradesLeftAtPlanRate,
         nextTrade,
+        liveSteps,
         trackedTrades,
         excludedTrades,
         tradeMap,
