@@ -106,13 +106,13 @@ def trigger_journal_sync():
 def run_order(backend, session, live_url, headers, order, check_only):
     """Execute one order queued in TradeNote and report the outcome. Never raises:
     a failed order is reported as rejected, and the live loop keeps running."""
-    place = getattr(backend, "place_market_order", None)
+    place = getattr(backend, "execute_order", None)
     try:
         result = place(order, check_only) if place else \
             {"ok": False, "message": f"Orders need the native MetaTrader5 backend, not {backend.name}."}
     except Exception as e:  # noqa: BLE001 - report it instead of killing the feed
         result = {"ok": False, "message": f"Agent error: {e}"}
-    log(f"Order {order.get('id')} {order.get('side')} {order.get('lot')} {order.get('symbol')}: {result.get('message')}")
+    log(f"Order {order.get('id')} {order.get('action', 'open')} {order.get('symbol')}: {result.get('message')}")
     try:
         session.post(live_url.replace("/api/live", f"/api/orders/{order['id']}/result"),
                      headers=headers, json=result, timeout=10)

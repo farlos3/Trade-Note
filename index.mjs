@@ -11,7 +11,7 @@ import { MongoClient } from "mongodb"
 import Proxy from 'http-proxy'
 import { useImportTrades, useGetExistingTradesArray, useUploadTrades, useSaveSheetTrade, useEnsureAccountRegistered, useStagedImportAccounts, useDiscardStagedImport } from './src/utils/addTrades.js';
 import { useEnsureTechniqueTag, useAssignTag } from './src/utils/daily.js';
-import { orderError } from './src/utils/orderRules.js';
+import { orderError, changeError } from './src/utils/orderRules.js';
 import { currentUser, uploadMfePrices } from './src/stores/globals.js';
 import { useGetTimeZone } from './src/utils/utils.js';
 import { fetchDayDocs, fetchNotes, fetchTradesFingerprint, fetchDiaries, fetchEntryReviews } from './mcp-server/db.mjs';
@@ -1370,8 +1370,10 @@ const setupApiRoutes = (app) => {
            which is deliberately merged across frames (see below) and would
            otherwise carry the previous account's tickets into this one. */
         const sameAccount = liveSnapshot && (liveSnapshot.login ?? null) === (b.login ?? null)
+            && (liveSnapshot.server ?? null) === (b.server ?? null)
         liveSnapshot = {
             login: b.login ?? null,
+            server: b.server ?? null,   // with login: the account orders are checked against
             currency: b.currency ?? 'USD',
             balance: Number(b.balance) || 0,
             equity: Number(b.equity) || 0,
@@ -1434,17 +1436,22 @@ const setupApiRoutes = (app) => {
     /**********************************************
      * ORDERS PLACED FROM TRADENOTE
      *
-     * The browser queues a market order; the host agent (mt5_live.py, on the
-     * machine running MetaTrader 5) picks it up on its next live POST, sends it
-     * through the terminal and reports the result. A reason and a setup are
-     * REQUIRED before anything is queued -- the point of the feature.
+     * The browser queues a request; the host agent (mt5_live.py, on the machine
+     * running MetaTrader 5) picks it up on its next live POST, sends it through
+     * the terminal and reports the result. Actions:
+     *   open   -- market, or a pending limit/stop. A reason and a setup are
+     *             REQUIRED before anything is queued -- the point of the feature;
+     *   modify -- SL/TP of an open position, or price/SL/TP of a pending order;
+     *   cancel -- a pending order.
      *
      * Safety rails, all server-side:
      *   - browser session only: an api key (what the sync carries) cannot trade;
      *   - the account must be an allowed sync account AND the one the terminal is
      *     logged into right now, and the agent must be live;
-     *   - stop loss required, lot <= OVERTRADE_LOT_CAP, stops on the right side
-     *     of the live price;
+     *   - stop loss required (also on a modify), lot <= OVERTRADE_LOT_CAP, entry
+     *     and stops on the right side of the live price;
+     *   - modify/cancel only reach a ticket the live snapshot shows open on that
+     *     account right now;
      *   - delivered once, expires after ORDER_TTL_MS if no agent took it (never
      *     fired late at a stale price), and clientId makes a double-tap one order.
      * Pending orders live in memory (they expire in seconds anyway); every request
@@ -1508,25 +1515,37 @@ const setupApiRoutes = (app) => {
             if (!liveAgentIsUp() || !snap || syncLabel(snap.login, snap.server) !== b.account) {
                 return res.status(409).send({ error: 'MetaTrader 5 is not live on this account right now, so the order was not queued.' })
             }
-            const sq = new ParseNode.Query('setups')
-            sq.equalTo('user', userPtr(userId))
-            sq.limit(500)
-            const setupNames = (await sq.find({ useMasterKey: true })).map((s) => s.get('name'))
-            const err = orderError(b, {
-                allowedAccounts: allowedSyncAccounts(user), setupNames,
-                lotCap: Number(process.env.OVERTRADE_LOT_CAP) || 0.1,
-                tick: snap.ticks && snap.ticks[b.symbol],
-            })
-            if (err) return res.status(400).send({ error: err })
-
-            const payload = {
-                account: b.account, symbol: b.symbol, side: b.side, lot: Number(b.lot),
-                sl: Number(b.sl), tp: b.tp === '' || b.tp == null ? 0 : Number(b.tp),
+            if (!allowedSyncAccounts(user).includes(b.account)) return res.status(403).send({ error: 'This account is not allowed to sync/trade (Settings).' })
+            const action = b.action || 'open'
+            const tpOf = (v) => (v === '' || v == null ? 0 : Number(v))
+            let payload, extra = {}
+            if (action === 'open') {
+                const sq = new ParseNode.Query('setups')
+                sq.equalTo('user', userPtr(userId))
+                sq.limit(500)
+                const setupNames = (await sq.find({ useMasterKey: true })).map((s) => s.get('name'))
+                const err = orderError(b, {
+                    allowedAccounts: allowedSyncAccounts(user), setupNames,
+                    lotCap: Number(process.env.OVERTRADE_LOT_CAP) || 0.1,
+                    tick: snap.ticks && snap.ticks[b.symbol],
+                })
+                if (err) return res.status(400).send({ error: err })
+                const type = b.type || 'market'
+                payload = {
+                    action, account: b.account, symbol: b.symbol, side: b.side, type, lot: Number(b.lot),
+                    price: type === 'market' ? 0 : Number(b.price), sl: Number(b.sl), tp: tpOf(b.tp),
+                }
+                extra = { setup: String(b.setup), reason: String(b.reason).trim(), linked: false }
+            } else {
+                const ticket = Number(b.ticket)
+                const pending = (snap.pending || []).find((p) => Number(p.ticket) === ticket)
+                const target = pending || (snap.positions || []).find((p) => Number(p.ticket) === ticket)
+                const err = changeError({ ...b, action }, { target, tick: target && snap.ticks && snap.ticks[target.symbol] })
+                if (err) return res.status(400).send({ error: err })
+                payload = { action, account: b.account, ticket, symbol: target.symbol, side: target.side, target: pending ? 'pending' : 'position' }
+                if (action === 'modify') Object.assign(payload, { price: pending ? Number(b.price) : 0, sl: Number(b.sl), tp: tpOf(b.tp) })
             }
-            const rec = await saveOrderRecord({
-                user: userPtr(userId), ...payload, setup: String(b.setup), reason: String(b.reason).trim(),
-                status: 'queued', clientId, linked: false,
-            })
+            const rec = await saveOrderRecord({ user: userPtr(userId), ...payload, ...extra, status: 'queued', clientId })
             pendingOrders.set(rec.id, { userId, account: b.account, clientId, payload, createdAt: Date.now(), status: 'queued' })
             res.send({ id: rec.id, status: 'queued' })
         } catch (error) {
@@ -1556,7 +1575,18 @@ const setupApiRoutes = (app) => {
         const mem = pendingOrders.get(req.params.id)
         if (!mem || mem.userId !== currentUser.value.objectId) return res.status(404).send({ error: 'unknown order' })
         const b = req.body || {}
-        mem.status = b.ok ? 'filled' : 'rejected'
+        const p = mem.payload
+        mem.status = !b.ok ? 'rejected'
+            : p.action === 'modify' ? 'modified' : p.action === 'cancel' ? 'cancelled'
+            : p.type && p.type !== 'market' ? 'placed' : 'filled'
+        // A cancelled pending order that came from TradeNote will never become a
+        // trade: close its record so the importer stops trying to link it.
+        if (b.ok && p.action === 'cancel') {
+            const cq = new ParseNode.Query('orderRequests')
+            cq.equalTo('user', userPtr(mem.userId))
+            cq.equalTo('positionId', String(p.ticket))
+            for (const o of await cq.find({ useMasterKey: true })) await saveOrderRecord({ status: 'cancelled', linked: true }, o)
+        }
         await setOrderStatus(req.params.id, {
             status: mem.status, message: String(b.message || '').slice(0, 300),
             retcode: Number(b.retcode) || 0, price: Number(b.price) || null,
@@ -1571,8 +1601,11 @@ const setupApiRoutes = (app) => {
     const linkFilledOrders = async (userId) => {
         const q = new ParseNode.Query('orderRequests')
         q.equalTo('user', userPtr(userId))
-        q.equalTo('status', 'filled')
+        // 'placed' = a pending order: it links once it triggers and is imported
+        // (MT5 gives the position the pending order's ticket as its id).
+        q.containedIn('status', ['filled', 'placed'])
         q.notEqualTo('linked', true)
+        q.greaterThan('createdAt', new Date(Date.now() - 30 * 86400000))
         q.limit(50)
         for (const o of await q.find({ useMasterKey: true })) {
             const pid = String(o.get('positionId') || '')

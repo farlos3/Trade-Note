@@ -351,10 +351,11 @@ class NativeBackend:
     def positions_get(self):
         return mt5.positions_get()
 
-    def place_market_order(self, o, check_only=False):
-        """Send one market order queued in TradeNote. Returns the dict the server's
-        /api/orders/<id>/result expects. check_only runs MT5's own order_check and
-        never sends -- a dry run against the real terminal."""
+    def execute_order(self, o, check_only=False):
+        """Run one request queued in TradeNote: open (market / limit / stop), modify
+        (SL/TP, or a pending order's price) or cancel a pending order. Returns the
+        dict the server's /api/orders/<id>/result expects. check_only runs MT5's
+        own order_check and never sends -- a dry run against the real terminal."""
         ai = mt5.account_info()
         if ai is None or f"{ai.login}@{ai.server}" != o.get("account"):
             return {"ok": False, "message": f"Terminal is logged into {getattr(ai, 'login', '?')}, not {o.get('account')}."}
@@ -362,41 +363,79 @@ class NativeBackend:
         info = mt5.symbol_info(sym)
         if info is None or not mt5.symbol_select(sym, True):
             return {"ok": False, "message": f"Unknown symbol {sym}."}
-        tick = mt5.symbol_info_tick(sym)
-        if tick is None:
-            return {"ok": False, "message": f"No price for {sym}."}
-        step = info.volume_step or 0.01
-        volume = round(round(float(o["lot"]) / step) * step, 2)
-        if not (info.volume_min <= volume <= info.volume_max):
-            return {"ok": False, "message": f"Lot {volume} outside {info.volume_min}-{info.volume_max}."}
-        buy = o["side"] == "buy"
+        px = lambda v: round(float(v or 0), info.digits)
+        action = o.get("action", "open")
+        buy = o.get("side") == "buy"
         # filling_mode is a bitmask of what the symbol allows: 1 = FOK, 2 = IOC.
-        filling = mt5.ORDER_FILLING_FOK if info.filling_mode & 1 else \
-            mt5.ORDER_FILLING_IOC if info.filling_mode & 2 else mt5.ORDER_FILLING_RETURN
-        req = {
-            "action": mt5.TRADE_ACTION_DEAL, "symbol": sym, "volume": volume,
-            "type": mt5.ORDER_TYPE_BUY if buy else mt5.ORDER_TYPE_SELL,
-            "price": tick.ask if buy else tick.bid,
-            "sl": float(o["sl"]), "tp": float(o.get("tp") or 0),
-            "deviation": 50, "magic": 20261121, "comment": "TN " + str(o["id"])[:10],
-            "type_time": mt5.ORDER_TIME_GTC, "type_filling": filling,
-        }
-        chk = mt5.order_check(req)
-        if chk is None or chk.retcode != 0:
-            return {"ok": False, "retcode": getattr(chk, "retcode", 0),
-                    "message": f"Rejected by order_check: {getattr(chk, 'comment', mt5.last_error())}"}
+        fillings = [m for bit, m in ((1, mt5.ORDER_FILLING_FOK), (2, mt5.ORDER_FILLING_IOC))
+                    if info.filling_mode & bit] + [mt5.ORDER_FILLING_RETURN]
+
+        if action == "cancel":
+            req = {"action": mt5.TRADE_ACTION_REMOVE, "order": int(o["ticket"])}
+            what = f"Cancelled order {o['ticket']}."
+        elif action == "modify" and o.get("target") == "pending":
+            req = {"action": mt5.TRADE_ACTION_MODIFY, "order": int(o["ticket"]), "symbol": sym,
+                   "price": px(o["price"]), "sl": px(o["sl"]), "tp": px(o.get("tp")),
+                   "type_time": mt5.ORDER_TIME_GTC}
+            what = f"Order {o['ticket']} now at {req['price']}, SL {req['sl']}, TP {req['tp'] or '-'}."
+        elif action == "modify":
+            req = {"action": mt5.TRADE_ACTION_SLTP, "position": int(o["ticket"]), "symbol": sym,
+                   "sl": px(o["sl"]), "tp": px(o.get("tp"))}
+            what = f"Position {o['ticket']}: SL {req['sl']}, TP {req['tp'] or '-'}."
+        else:
+            step = info.volume_step or 0.01
+            volume = round(round(float(o["lot"]) / step) * step, 2)
+            if not (info.volume_min <= volume <= info.volume_max):
+                return {"ok": False, "message": f"Lot {volume} outside {info.volume_min}-{info.volume_max}."}
+            kind = o.get("type", "market")
+            req = {"symbol": sym, "volume": volume, "sl": px(o["sl"]), "tp": px(o.get("tp")),
+                   "deviation": 50, "magic": 20261121, "comment": "TN " + str(o["id"])[:10],
+                   "type_time": mt5.ORDER_TIME_GTC}
+            if kind == "market":
+                tick = mt5.symbol_info_tick(sym)
+                if tick is None:
+                    return {"ok": False, "message": f"No price for {sym}."}
+                req.update(action=mt5.TRADE_ACTION_DEAL, price=tick.ask if buy else tick.bid,
+                           type=mt5.ORDER_TYPE_BUY if buy else mt5.ORDER_TYPE_SELL)
+                what = f"{o['side']} {volume} {sym} at market."
+            else:
+                req.update(action=mt5.TRADE_ACTION_PENDING, price=px(o["price"]), type={
+                    ("buy", "limit"): mt5.ORDER_TYPE_BUY_LIMIT, ("buy", "stop"): mt5.ORDER_TYPE_BUY_STOP,
+                    ("sell", "limit"): mt5.ORDER_TYPE_SELL_LIMIT, ("sell", "stop"): mt5.ORDER_TYPE_SELL_STOP,
+                }[(o["side"], kind)])
+                # Brokers differ on which filling a resting order accepts; RETURN is the usual one.
+                fillings = [mt5.ORDER_FILLING_RETURN] + fillings[:-1]
+                what = f"Placed {o['side']} {kind} {volume} {sym} at {req['price']}."
+
+        if action != "cancel":
+            # Take the first filling mode the terminal accepts (only openings use it).
+            chk = None
+            for f in (fillings if action == "open" else [None]):
+                if f is not None:
+                    req["type_filling"] = f
+                chk = mt5.order_check(req)
+                if chk is not None and chk.retcode == 0:
+                    break
+            if chk is None or chk.retcode != 0:
+                return {"ok": False, "retcode": getattr(chk, "retcode", 0),
+                        "message": f"Rejected by order_check: {getattr(chk, 'comment', mt5.last_error())}"}
+        elif not mt5.orders_get(ticket=int(o["ticket"])):
+            return {"ok": False, "message": f"Order {o['ticket']} is no longer pending."}
         if check_only:
-            return {"ok": False, "retcode": 0, "message": f"Dry run: order_check passed at {req['price']} (not sent)."}
+            return {"ok": False, "retcode": 0, "message": f"Dry run: passed the check, not sent ({what})"}
         r = mt5.order_send(req)
         if r is None or r.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
             return {"ok": False, "retcode": getattr(r, "retcode", 0),
                     "message": f"Rejected: {getattr(r, 'comment', mt5.last_error())}"}
-        # The position id comes from the deal; for a fresh market position it equals
-        # the order ticket, which is the fallback if the deal is not readable yet.
-        deals = mt5.history_deals_get(ticket=r.deal) if r.deal else None
-        pid = deals[0].position_id if deals else r.order
-        return {"ok": True, "retcode": r.retcode, "price": r.price, "positionId": pid,
-                "message": f"Filled {volume} {sym} at {r.price}."}
+        out = {"ok": True, "retcode": r.retcode, "message": what}
+        if action == "open":
+            # A fill's position id comes from its deal; a pending order's future
+            # position takes the order ticket, which is also the fallback here.
+            deals = mt5.history_deals_get(ticket=r.deal) if r.deal else None
+            out.update(price=r.price or req["price"], positionId=deals[0].position_id if deals else r.order)
+            if o.get("type", "market") == "market":
+                out["message"] = f"Filled {volume} {sym} at {out['price']}."
+        return out
 
     def refresh(self):
         """No-op: every read queries the terminal directly, so the data is never

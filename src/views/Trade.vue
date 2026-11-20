@@ -1,8 +1,10 @@
 <script setup>
 /**
- * Place a market order from TradeNote. The order is only queued once a setup and a
- * reason are filled in; the host agent (mt5_live.py) sends it through MetaTrader 5
- * and reports back. Built mobile-first: one column, large touch targets.
+ * Place an order from TradeNote (market, or a pending limit/stop), and change the
+ * SL/TP of what is already open or cancel a pending order. A new entry is only
+ * queued once a setup and a reason are filled in; the host agent (mt5_live.py)
+ * sends it through MetaTrader 5 and reports back. Built mobile-first: one column,
+ * large touch targets.
  * Server side: POST /api/orders (index.mjs), which re-checks everything here.
  */
 import { ref, computed, onMounted, onUnmounted } from 'vue'
@@ -14,17 +16,24 @@ import { usePipSize, useDefaultContractSize } from '../utils/addOrder'
 
 const snapshot = ref(null)
 const setups = ref([])
-const form = ref({ symbol: '', side: 'buy', lot: '0.01', sl: '', tp: '', setup: '', reason: '' })
+const form = ref({ symbol: '', side: 'buy', type: 'market', price: '', lot: '0.01', sl: '', tp: '', setup: '', reason: '' })
 const confirming = ref(false)
 const busy = ref(false)
 const error = ref('')
 const order = ref(null)   // { id, status, message, price }
+const editing = ref(null) // a position/pending order being changed: { ticket, symbol, side, kind, price, sl, tp, cancel }
 let stopLive = null
 let pollTimer = null
 
 const symbols = computed(() => Object.keys((snapshot.value && snapshot.value.ticks) || {}).sort())
 const tick = computed(() => snapshot.value && snapshot.value.ticks ? snapshot.value.ticks[form.value.symbol] : null)
 const price = computed(() => tick.value ? (form.value.side === 'buy' ? tick.value.ask : tick.value.bid) : null)
+const isPending = computed(() => form.value.type !== 'market')
+// Where the order enters: the live price for a market order, the typed price for a pending one.
+const entry = computed(() => isPending.value ? (Number(form.value.price) > 0 ? Number(form.value.price) : null) : price.value)
+const typeLabel = computed(() => `${form.value.side === 'buy' ? 'Buy' : 'Sell'}${isPending.value ? ' ' + form.value.type : ''}`)
+const positions = computed(() => (snapshot.value && snapshot.value.positions) || [])
+const pendingOrders = computed(() => (snapshot.value && snapshot.value.pending) || [])
 const terminalAccount = computed(() => snapshot.value && snapshot.value.login && snapshot.value.server
     ? `${snapshot.value.login}@${snapshot.value.server}` : null)
 const accountMatches = computed(() => !!terminalAccount.value && terminalAccount.value === activeAccount.value)
@@ -33,11 +42,11 @@ const setupOptions = computed(() => setups.value.filter((s) => s.side === 'any' 
 // Risk of this order in money and pips, so the size is decided with the cost in view.
 const risk = computed(() => {
     const sl = Number(form.value.sl), lot = Number(form.value.lot)
-    if (!price.value || !(sl > 0) || !(lot > 0)) return null
-    const dist = Math.abs(price.value - sl)
+    if (!entry.value || !(sl > 0) || !(lot > 0)) return null
+    const dist = Math.abs(entry.value - sl)
     const money = dist * lot * useDefaultContractSize(form.value.symbol)
     const pips = dist / usePipSize(form.value.symbol)
-    const rr = Number(form.value.tp) > 0 ? Math.abs(Number(form.value.tp) - price.value) / dist : null
+    const rr = Number(form.value.tp) > 0 ? Math.abs(Number(form.value.tp) - entry.value) / dist : null
     return { money, pips, rr }
 })
 
@@ -46,6 +55,7 @@ const missing = computed(() => {
     const out = []
     if (!f.setup) out.push('setup')
     if (f.reason.trim().length < 10) out.push('reason (10+ characters)')
+    if (isPending.value && !(Number(f.price) > 0)) out.push('entry price')
     if (!(Number(f.sl) > 0)) out.push('stop loss')
     if (!(Number(f.lot) > 0)) out.push('lot')
     if (!f.symbol) out.push('symbol')
@@ -62,23 +72,35 @@ function onSnapshot(s) {
     }
 }
 
-async function send() {
+// One endpoint for every request: open (the form), modify or cancel (the list).
+async function submit(body) {
     busy.value = true
     error.value = ''
     try {
         const res = await fetch('/api/orders', {
             method: 'POST',
             headers: { ...useAuthHeaders(), 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...form.value, account: activeAccount.value, clientId: crypto.randomUUID() }),
+            body: JSON.stringify({ ...body, account: activeAccount.value, clientId: crypto.randomUUID() }),
         })
         const j = await res.json()
         if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`)
         order.value = { id: j.id, status: j.status }
         confirming.value = false
+        editing.value = null
         pollOrder()
     } catch (e) {
         error.value = e.message
         busy.value = false
+    }
+}
+
+const DONE = ['filled', 'placed', 'modified', 'cancelled', 'rejected', 'expired']
+
+function startEdit(item, cancel = false) {
+    error.value = ''
+    editing.value = {
+        ticket: item.ticket, symbol: item.symbol, side: item.side, kind: item.kind || null, volume: item.volume,
+        price: item.kind ? String(item.priceOpen) : '', sl: item.sl ? String(item.sl) : '', tp: item.tp ? String(item.tp) : '', cancel,
     }
 }
 
@@ -89,10 +111,10 @@ function pollOrder() {
             const res = await fetch(`/api/orders/${order.value.id}`, { headers: useAuthHeaders() })
             const j = await res.json()
             order.value = j
-            if (['filled', 'rejected', 'expired'].includes(j.status)) {
+            if (DONE.includes(j.status)) {
                 clearInterval(pollTimer)
                 busy.value = false
-                if (j.status === 'filled') form.value = { ...form.value, sl: '', tp: '', reason: '' }
+                if (j.status === 'filled' || j.status === 'placed') form.value = { ...form.value, price: '', sl: '', tp: '', reason: '' }
             }
         } catch { /* keep polling */ }
     }, 1000)
@@ -109,6 +131,7 @@ onMounted(async () => {
 })
 onUnmounted(() => { if (stopLive) stopLive(); clearInterval(pollTimer) })
 
+const stopLimit = (item) => /stop limit/i.test(item.kind || '')
 const fmt = (n, d = 2) => (n == null || !Number.isFinite(Number(n)) ? '-' : Number(n).toFixed(d))
 </script>
 
@@ -131,6 +154,15 @@ const fmt = (n, d = 2) => (n == null || !Number.isFinite(Number(n)) ? '-' : Numb
                     Buy <span class="px">{{ tick ? fmt(tick.ask, 2) : '' }}</span></button>
                 <button type="button" :class="['sideBtn', 'sell', { active: form.side === 'sell' }]" v-on:click="form.side = 'sell'">
                     Sell <span class="px">{{ tick ? fmt(tick.bid, 2) : '' }}</span></button>
+            </div>
+
+            <div class="typeToggle mt-2" role="group" aria-label="Order type">
+                <button v-for="t in ['market', 'limit', 'stop']" :key="t" type="button"
+                    :class="['typeBtn', { active: form.type === t }]" v-on:click="form.type = t">{{ t }}</button>
+            </div>
+            <div v-if="isPending" class="mt-2">
+                <label class="tLabel">Entry price * <span class="tHint">({{ form.side === 'buy' ? (form.type === 'limit' ? 'below' : 'above') : (form.type === 'limit' ? 'above' : 'below') }} {{ fmt(price) }})</span></label>
+                <input class="form-control" type="number" inputmode="decimal" step="any" v-model="form.price" />
             </div>
 
             <div class="grid3 mt-3">
@@ -166,7 +198,7 @@ const fmt = (n, d = 2) => (n == null || !Number.isFinite(Number(n)) ? '-' : Numb
 
             <button type="button" class="btn btn-lg w-100 mt-3" :class="form.side === 'buy' ? 'btn-success' : 'btn-danger'"
                 :disabled="!canReview" v-on:click="confirming = true">
-                Review {{ form.side === 'buy' ? 'Buy' : 'Sell' }} {{ form.lot }} {{ form.symbol }}
+                Review {{ typeLabel }} {{ form.lot }} {{ form.symbol }}
             </button>
         </div>
 
@@ -174,7 +206,8 @@ const fmt = (n, d = 2) => (n == null || !Number.isFinite(Number(n)) ? '-' : Numb
         <div v-if="confirming" class="confirmBackdrop" v-on:click.self="confirming = false">
             <div class="confirmBox">
                 <h5 class="mb-3">Send this order?</h5>
-                <p class="mb-1"><strong>{{ form.side === 'buy' ? 'BUY' : 'SELL' }} {{ form.lot }} {{ form.symbol }}</strong> at market (~{{ fmt(price) }})</p>
+                <p class="mb-1"><strong>{{ typeLabel.toUpperCase() }} {{ form.lot }} {{ form.symbol }}</strong>
+                    <span v-if="isPending"> at {{ form.price }}</span><span v-else> at market (~{{ fmt(price) }})</span></p>
                 <p class="mb-1">SL {{ form.sl }} · TP {{ form.tp || '—' }}<span v-if="risk"> · risk {{ fmt(risk.money) }}</span></p>
                 <p class="mb-1">Setup: {{ form.setup }}</p>
                 <p class="mb-3 reasonEcho">{{ form.reason }}</p>
@@ -182,7 +215,65 @@ const fmt = (n, d = 2) => (n == null || !Number.isFinite(Number(n)) ? '-' : Numb
                 <div class="d-flex gap-2">
                     <button type="button" class="btn btn-outline-secondary flex-fill" v-on:click="confirming = false" :disabled="busy">Cancel</button>
                     <button type="button" class="btn flex-fill" :class="form.side === 'buy' ? 'btn-success' : 'btn-danger'"
-                        v-on:click="send" :disabled="busy">{{ busy ? 'Sending…' : 'Send order' }}</button>
+                        v-on:click="submit(form)" :disabled="busy">{{ busy ? 'Sending…' : 'Send order' }}</button>
+                </div>
+            </div>
+        </div>
+
+        <div v-if="positions.length || pendingOrders.length" class="tradeCard mt-3">
+            <strong>Open in MT5</strong>
+            <div v-for="p in positions" :key="'p' + p.ticket" class="openRow">
+                <div class="openInfo">
+                    <span :class="p.side === 'buy' ? 'text-success' : 'text-danger'">{{ p.side.toUpperCase() }}</span>
+                    {{ p.volume }} {{ p.symbol }} @ {{ p.priceOpen }}
+                    <div class="openSub">SL {{ p.sl || '—' }} · TP {{ p.tp || '—' }} ·
+                        <span :class="p.profit >= 0 ? 'text-success' : 'text-danger'">{{ fmt(p.profit) }}</span></div>
+                </div>
+                <button type="button" class="btn btn-outline-secondary btn-sm rowBtn" :disabled="busy || !accountMatches"
+                    v-on:click="startEdit(p)">SL/TP</button>
+            </div>
+            <div v-for="o in pendingOrders" :key="'o' + o.ticket" class="openRow">
+                <div class="openInfo">
+                    <span :class="o.side === 'buy' ? 'text-success' : 'text-danger'">{{ o.kind }}</span>
+                    {{ o.volume }} {{ o.symbol }} @ {{ o.priceOpen }}
+                    <div class="openSub">SL {{ o.sl || '—' }} · TP {{ o.tp || '—' }} · pending</div>
+                </div>
+                <div class="d-flex gap-1">
+                    <button v-if="!stopLimit(o)" type="button" class="btn btn-outline-secondary btn-sm rowBtn"
+                        :disabled="busy || !accountMatches" v-on:click="startEdit(o)">Edit</button>
+                    <button type="button" class="btn btn-outline-danger btn-sm rowBtn" :disabled="busy || !accountMatches"
+                        v-on:click="startEdit(o, true)">Cancel</button>
+                </div>
+            </div>
+        </div>
+
+        <div v-if="editing" class="confirmBackdrop" v-on:click.self="editing = null">
+            <div class="confirmBox">
+                <h5 class="mb-3">{{ editing.cancel ? 'Cancel this order?' : editing.kind ? 'Edit pending order' : 'Change SL / TP' }}</h5>
+                <p class="mb-3"><strong>{{ editing.kind || editing.side.toUpperCase() }} {{ editing.volume }} {{ editing.symbol }}</strong>
+                    <span class="text-muted"> #{{ editing.ticket }}</span></p>
+                <div v-if="!editing.cancel" :class="[editing.kind ? 'grid3' : 'grid2', 'mb-3']">
+                    <div v-if="editing.kind">
+                        <label class="tLabel">Entry price</label>
+                        <input class="form-control" type="number" inputmode="decimal" step="any" v-model="editing.price" />
+                    </div>
+                    <div>
+                        <label class="tLabel">Stop loss *</label>
+                        <input class="form-control" type="number" inputmode="decimal" step="any" v-model="editing.sl" />
+                    </div>
+                    <div>
+                        <label class="tLabel">Take profit</label>
+                        <input class="form-control" type="number" inputmode="decimal" step="any" v-model="editing.tp" />
+                    </div>
+                </div>
+                <div v-if="error" class="alert alert-danger py-2 mb-3">{{ error }}</div>
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-outline-secondary flex-fill" v-on:click="editing = null" :disabled="busy">Back</button>
+                    <button v-if="editing.cancel" type="button" class="btn btn-danger flex-fill" :disabled="busy"
+                        v-on:click="submit({ action: 'cancel', ticket: editing.ticket })">{{ busy ? 'Sending…' : 'Cancel order' }}</button>
+                    <button v-else type="button" class="btn btn-primary flex-fill" :disabled="busy || !(Number(editing.sl) > 0)"
+                        v-on:click="submit({ action: 'modify', ticket: editing.ticket, price: editing.price, sl: editing.sl, tp: editing.tp })">
+                        {{ busy ? 'Sending…' : 'Save' }}</button>
                 </div>
             </div>
         </div>
@@ -251,6 +342,45 @@ const fmt = (n, d = 2) => (n == null || !Number.isFinite(Number(n)) ? '-' : Numb
 .sideBtn.buy.active { background: #00CA73; border-color: #00CA73; color: #04110a; }
 .sideBtn.sell.active { background: #F6465D; border-color: #F6465D; color: #1a0508; }
 
+.typeToggle {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.35rem;
+}
+
+.typeBtn {
+    min-height: 2.5rem;
+    border-radius: 0.5rem;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: transparent;
+    color: inherit;
+    text-transform: capitalize;
+}
+
+.typeBtn.active { background: rgba(255, 255, 255, 0.12); border-color: rgba(255, 255, 255, 0.35); font-weight: 600; }
+
+.tHint { text-transform: none; letter-spacing: 0; }
+
+.openRow {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.6rem 0 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    margin-top: 0.6rem;
+}
+
+.openInfo { min-width: 0; font-size: 0.9rem; }
+.openSub { font-size: 0.8rem; color: var(--white-60); }
+.rowBtn { min-height: 2.5rem; min-width: 3.5rem; }
+
+.grid2 {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+}
+
 .grid3 {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -301,7 +431,7 @@ const fmt = (n, d = 2) => (n == null || !Number.isFinite(Number(n)) ? '-' : Numb
     text-transform: uppercase;
 }
 
-.statusBadge.filled { color: #00CA73; }
+.statusBadge.filled, .statusBadge.placed, .statusBadge.modified, .statusBadge.cancelled { color: #00CA73; }
 .statusBadge.rejected, .statusBadge.expired { color: #F6465D; }
 .statusBadge.queued, .statusBadge.dispatched { color: #f59e0b; }
 
