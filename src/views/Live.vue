@@ -416,7 +416,7 @@ onUnmounted(() => {
             <div class="col-12 col-xl-4">
                 <div class="tradeCard">
                     <div class="d-flex justify-content-between align-items-center mb-2">
-                        <h6 class="mb-0">Place Order</h6>
+                        <h6 class="mb-0 tradeTitle">Place Order</h6>
                         <span v-if="lock && !lockLeftMin" class="txt-small muted">
                             DD {{ fmtNum(lock.ddPct, 1) }}% · lock {{ lock.limitPct }}%
                         </span>
@@ -481,13 +481,13 @@ onUnmounted(() => {
                     </select>
 
                     <label class="tLabel mt-3">Reason *</label>
-                    <textarea class="form-control" rows="3" v-model="form.reason"
+                    <textarea class="form-control" rows="2" v-model="form.reason"
                         placeholder="What do you see? Which rules of the setup are met?"></textarea>
 
                     <p v-if="missing.length" class="hint mt-2 mb-0">Still needed: {{ missing.join(', ') }}</p>
                     <div v-if="error" class="alert alert-danger py-2 mt-3 mb-0">{{ error }}</div>
 
-                    <button type="button" class="btn btn-lg w-100 mt-3" :class="form.side === 'buy' ? 'btn-success' : 'btn-danger'"
+                    <button type="button" class="btn btn-sm w-100 mt-3" :class="form.side === 'buy' ? 'btn-success' : 'btn-danger'"
                         :disabled="!canReview" v-on:click="confirming = true">
                         Review {{ typeLabel }} {{ form.lot }} {{ form.symbol }}
                     </button>
@@ -698,12 +698,23 @@ onUnmounted(() => {
     border: 1px solid rgba(255, 255, 255, 0.08);
     background: rgba(255, 255, 255, 0.03);
     border-radius: 0.75rem;
-    padding: 1rem;
+    padding: 0.75rem;
+}
+
+/* The ticket is a secondary panel next to the positions, so it is kept compact
+   and quiet: small controls, tinted (not solid) side buttons, tighter spacing. */
+.tradeTitle {
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.tradeCard .mt-3 {
+    margin-top: 0.6rem !important;
 }
 
 .tLabel {
     display: block;
-    font-size: 0.75rem;
+    font-size: 0.68rem;
     text-transform: uppercase;
     letter-spacing: 0.04em;
     color: var(--white-60);
@@ -717,6 +728,17 @@ onUnmounted(() => {
     font-size: 1rem;   /* 16px: stops iOS zooming into the field */
 }
 
+/* Compact fields on desktop only -- phones keep 16px so iOS does not zoom. */
+@media (min-width: 768px) {
+    .tradeCard .form-control,
+    .tradeCard .form-select {
+        min-height: 2rem;
+        padding-top: 0.25rem;
+        padding-bottom: 0.25rem;
+        font-size: 0.85rem;
+    }
+}
+
 .sideToggle {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -724,24 +746,25 @@ onUnmounted(() => {
 }
 
 .sideBtn {
-    min-height: 3.1rem;
-    border-radius: 0.6rem;
+    min-height: 2.4rem;
+    border-radius: 0.5rem;
     border: 1px solid rgba(255, 255, 255, 0.15);
     background: transparent;
     color: inherit;
-    font-weight: 700;
-    font-size: 1rem;
+    font-weight: 600;
+    font-size: 0.85rem;
+    line-height: 1.2;
 }
 
 .sideBtn .px {
     display: block;
     font-weight: 400;
-    font-size: 0.82rem;
+    font-size: 0.75rem;
     opacity: 0.85;
 }
 
-.sideBtn.buy.active { background: #00CA73; border-color: #00CA73; color: #04110a; }
-.sideBtn.sell.active { background: #F6465D; border-color: #F6465D; color: #1a0508; }
+.sideBtn.buy.active { background: rgba(0, 202, 115, 0.16); border-color: #00CA73; color: #00CA73; }
+.sideBtn.sell.active { background: rgba(246, 70, 93, 0.16); border-color: #F6465D; color: #F6465D; }
 
 .typeToggle {
     display: grid;
@@ -750,11 +773,12 @@ onUnmounted(() => {
 }
 
 .typeBtn {
-    min-height: 2.35rem;
+    min-height: 1.9rem;
     border-radius: 0.5rem;
     border: 1px solid rgba(255, 255, 255, 0.15);
     background: transparent;
     color: inherit;
+    font-size: 0.8rem;
     text-transform: capitalize;
 }
 
