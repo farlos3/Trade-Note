@@ -117,6 +117,7 @@ const typeLabel = computed(() => `${form.value.side === 'buy' ? 'Buy' : 'Sell'}$
 const terminalAccount = computed(() => snapshot.value && snapshot.value.login && snapshot.value.server
     ? `${snapshot.value.login}@${snapshot.value.server}` : null)
 const accountMatches = computed(() => !!terminalAccount.value && terminalAccount.value === activeAccount.value)
+const selectedSetup = computed(() => setups.value.find((s) => s.name === form.value.setup) || null)
 const setupOptions = computed(() => setups.value.filter((s) => s.side === 'any' || s.side === form.value.side))
 
 const risk = computed(() => {
@@ -493,6 +494,24 @@ onUnmounted(() => {
                     </button>
                 </div>
 
+                <!-- Rules of the chosen setup, so they are in view while writing the reason. -->
+                <div v-if="selectedSetup" class="tradeCard mt-3">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <strong class="tradeTitle">{{ selectedSetup.name }} · rules</strong>
+                        <a v-if="selectedSetup.imageUrl" :href="selectedSetup.imageUrl" target="_blank" rel="noopener"
+                            class="txt-small"><i class="uil uil-image me-1"></i>View image</a>
+                    </div>
+                    <ol v-if="selectedSetup.rules && selectedSetup.rules.length" class="setupRules txt-small mb-0">
+                        <li v-for="(rule, i) in selectedSetup.rules" :key="i">
+                            {{ rule.text }}
+                            <ol v-if="rule.sub && rule.sub.length" type="a">
+                                <li v-for="(sub, j) in rule.sub" :key="j">{{ sub }}</li>
+                            </ol>
+                        </li>
+                    </ol>
+                    <p v-else class="txt-small muted mb-0">This setup has no rules written yet.</p>
+                </div>
+
                 <div v-if="order" class="tradeCard mt-3" aria-live="polite">
                     <div class="d-flex justify-content-between align-items-center">
                         <strong>Order</strong>
@@ -783,6 +802,16 @@ onUnmounted(() => {
 }
 
 .typeBtn.active { background: rgba(255, 255, 255, 0.12); border-color: rgba(255, 255, 255, 0.35); font-weight: 600; }
+
+.setupRules {
+    padding-left: 1.1rem;
+    color: var(--white-87);
+}
+
+.setupRules ol {
+    margin-top: 0.15rem;
+    color: var(--white-60);
+}
 
 .tHint { text-transform: none; letter-spacing: 0; }
 
