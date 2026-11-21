@@ -154,18 +154,17 @@ const planTarget = computed(() => {
     // Pip distance: the TP the user typed if any, else the plan's own pip distance.
     const tpNum = Number(form.value.tp)
     const typedPips = planTouched.value.tp && tpNum > 0 && entry.value ? Math.abs(tpNum - entry.value) / pipSize : null
-    // Default (nothing typed, no pips in the plan): the minimum lot, with the distance that makes
-    // it earn the target -- so TP/SL always fill in. Pips set in the plan override this.
-    const planPips = numOrNull(tradingPlan.value.targetPips) > 0 ? numOrNull(tradingPlan.value.targetPips) : null
-    const minLotPips = pipValuePerLot(sym) > 0 ? nt.targetDollars / (LOT_STEP * pipValuePerLot(sym)) : null
-    const pips = typedPips || planPips || minLotPips
+    // Nothing typed: size at the plan's Lot size (else the broker minimum) and use the distance
+    // that makes that lot earn the target -- so TP/SL always fill in, RR 1:1.
+    const planLot = numOrNull(tradingPlan.value.lotSize) > 0 ? numOrNull(tradingPlan.value.lotSize) : LOT_STEP
+    const autoPips = pipValuePerLot(sym) > 0 ? nt.targetDollars / (planLot * pipValuePerLot(sym)) : null
+    const pips = typedPips || autoPips
     const exact = pips ? lotForDollars(nt.targetDollars, pips, sym) : null
     const lot = exact != null ? floorLot(exact) : null
     // TP price from the plan distance, at the symbol's precision (pip size / 10).
     const digits = Math.max(0, Math.ceil(-Math.log10(pipSize)) + 1)
     const tp = pips && !typedPips && entry.value ? Number((entry.value + dir * pips * pipSize).toFixed(digits)) : null
-    // RR 1:1 unless the plan sets its own SL distance.
-    const slPips = numOrNull(tradingPlan.value.slPips) > 0 ? numOrNull(tradingPlan.value.slPips) : pips
+    const slPips = pips
     const sl = slPips && entry.value ? Number((entry.value - dir * slPips * pipSize).toFixed(digits)) : null
     return { n: nt.n, dollars: nt.targetDollars, base: nt.baseBalance, pips, lot, belowMin: lot != null && !(lot >= LOT_STEP), tp, slPips, sl }
 })
@@ -521,16 +520,9 @@ onUnmounted(() => {
                                 <button type="button" class="btn btn-link btn-sm p-0 planLinkBtn"
                                     title="Fill lot and take profit from the plan again" v-on:click="applyPlan(true)">Use plan</button>
                             </div>
-                            <div class="planLinkSub">
-                                <template v-if="planTarget.pips && !planTarget.belowMin">
-                                    {{ fmtPlan(planTarget.lot, 2) }} lot over {{ fmtPlan(planTarget.pips, 0) }} pips
-                                    <span v-if="planTarget.tp != null">→ TP {{ planTarget.tp }}</span>
-                                </template>
-                                <span v-else-if="planTarget.belowMin" class="text-warning">
-                                    {{ fmtPlan(planTarget.pips, 0) }} pips needs less than 0.01 lot; use a shorter TP.
-                                </span>
-                                <template v-else>Waiting for a price to place TP/SL.</template>
-                                <span v-if="planTarget.sl != null"> · SL {{ planTarget.sl }} ({{ fmtPlan(planTarget.slPips, 0) }} pips{{ planTarget.slPips === planTarget.pips ? ', RR 1:1' : '' }})</span>
+                            <!-- Lot/TP/SL are already in the fields; only say something when they could not be sized. -->
+                            <div v-if="planTarget.belowMin || planTarget.lot == null" class="planLinkSub text-warning">
+                                {{ planTarget.belowMin ? 'Needs less than 0.01 lot; use a shorter TP.' : 'Waiting for a price to place TP/SL.' }}
                             </div>
                         </template>
                         <template v-else-if="planTracker.goalReached">
