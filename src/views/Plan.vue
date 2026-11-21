@@ -622,6 +622,11 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
                         <input type="number" min="0" step="1" placeholder="optional, e.g. 200"
                             class="form-control form-control-sm" v-model="activePlan.targetPips" />
                     </div>
+                    <div class="inlineInput">
+                        <label class="planLabel mb-0">SL pips</label>
+                        <input type="number" min="0" step="1" placeholder="optional, e.g. 100"
+                            class="form-control form-control-sm" v-model="activePlan.slPips" />
+                    </div>
                     <span class="txt-small text-muted">
                         Next trade #{{ tracker.nextTrade.n }}
                         <strong v-if="nextTradeDollars > 0">+{{ fmt(nextTradeDollars) }}</strong>

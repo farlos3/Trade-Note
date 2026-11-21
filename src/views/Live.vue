@@ -144,7 +144,7 @@ const risk = computed(() => {
    Same tracker as the Trading Plan page, so both show the same "next trade" target.
    Lot and TP are filled from the plan until the user types in them; "Use plan" re-applies. */
 const { plan: tradingPlan, tracker: planTracker } = usePlanTracker()
-const planTouched = ref({ lot: false, tp: false })
+const planTouched = ref({ lot: false, tp: false, sl: false })
 const planTarget = computed(() => {
     const nt = planTracker.value.nextTrade
     if (planTracker.value.goalReached || !(nt && nt.targetDollars > 0)) return null
@@ -160,13 +160,16 @@ const planTarget = computed(() => {
     // TP price from the plan distance, at the symbol's precision (pip size / 10).
     const digits = Math.max(0, Math.ceil(-Math.log10(pipSize)) + 1)
     const tp = pips && !typedPips && entry.value ? Number((entry.value + dir * pips * pipSize).toFixed(digits)) : null
-    return { n: nt.n, dollars: nt.targetDollars, base: nt.baseBalance, pips, lot, belowMin: lot != null && !(lot >= LOT_STEP), tp }
+    const slPips = numOrNull(tradingPlan.value.slPips) > 0 ? numOrNull(tradingPlan.value.slPips) : null
+    const sl = slPips && entry.value ? Number((entry.value - dir * slPips * pipSize).toFixed(digits)) : null
+    return { n: nt.n, dollars: nt.targetDollars, base: nt.baseBalance, pips, lot, belowMin: lot != null && !(lot >= LOT_STEP), tp, slPips, sl }
 })
 function applyPlan(force) {
     const p = planTarget.value
     if (!p) return
-    if (force) planTouched.value = { lot: false, tp: false }
+    if (force) planTouched.value = { lot: false, tp: false, sl: false }
     if (!planTouched.value.tp && p.tp != null) form.value.tp = String(p.tp)
+    if (!planTouched.value.sl && p.sl != null) form.value.sl = String(p.sl)
     if (!planTouched.value.lot && p.lot != null && !p.belowMin) form.value.lot = p.lot.toFixed(2)
 }
 watch(planTarget, () => applyPlan(false))
@@ -521,7 +524,10 @@ onUnmounted(() => {
                                 <span v-else-if="planTarget.belowMin" class="text-warning">
                                     {{ fmtPlan(planTarget.pips, 0) }} pips needs less than 0.01 lot; use a shorter TP.
                                 </span>
-                                <template v-else>Set a TP (or a pip distance in Trading Plan) to size the lot.</template>
+                                <template v-else>Type a TP to size the lot, or set "Pips per trade" in
+                                    <a href="/plan">Trading Plan</a> to fill it.</template>
+                                <span v-if="planTarget.sl != null"> · SL {{ planTarget.sl }} ({{ fmtPlan(planTarget.slPips, 0) }} pips)</span>
+                                <span v-else> · set "SL pips" in <a href="/plan">Trading Plan</a> to fill SL</span>
                             </div>
                         </template>
                         <template v-else-if="planTracker.goalReached">
@@ -540,7 +546,8 @@ onUnmounted(() => {
                         </div>
                         <div>
                             <label class="tLabel">Stop loss *</label>
-                            <input class="form-control" type="number" inputmode="decimal" step="0.01" v-model="form.sl" />
+                            <input class="form-control" type="number" inputmode="decimal" step="0.01" v-model="form.sl"
+                                v-on:input="planTouched.sl = true" />
                         </div>
                         <div>
                             <label class="tLabel">Take profit</label>

@@ -63,6 +63,8 @@ function blankPlan(id) {
         // target (e.g. 10% of the account) over this many pips". Blank means
         // "show me the options" rather than "no sizing".
         targetPips: '',
+        // Stop-loss distance in pips; the Live order ticket fills SL from it.
+        slPips: '',
         // Trades explicitly skipped from this plan's History tracker (array of trade.id).
         excludedTradeIds: [],
         // Groups of position IDs merged into a single plan trade step (array of string[]).
