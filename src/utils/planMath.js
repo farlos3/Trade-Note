@@ -974,6 +974,15 @@ export function trackTradesAgainstPlan({
         progressToGoalPct = (tradesTaken / horizonTrades) * 100
     }
 
+    // Pace, not a quota: how many trades the trader ACTUALLY takes on a day they trade,
+    // from the history so far. Used only to turn "trades left" into a day estimate;
+    // nothing is asked of the trader per day.
+    const tradingDays = new Set(trackedTrades.map((t) => t.dateIso).filter(Boolean)).size
+    const tradesPerTradingDay = tradingDays > 0 ? tradesTaken / tradingDays : null
+    const tradingDaysLeft = tradesLeftAtPlanRate != null && tradesPerTradingDay > 0
+        ? Math.ceil(tradesLeftAtPlanRate / tradesPerTradingDay)
+        : null
+
     const plannedTotalTrades = projection ? projection.tradeCount : (horizonTrades > 0 ? horizonTrades : null)
 
     // Dynamic trade-by-trade path: each row's Opening is the previous row's
@@ -1069,6 +1078,8 @@ export function trackTradesAgainstPlan({
         remainingToGoalDollars,
         progressToGoalPct,
         tradesLeftAtPlanRate,
+        tradesPerTradingDay,
+        tradingDaysLeft,
         nextTrade,
         liveSteps,
         trackedTrades,

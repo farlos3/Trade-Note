@@ -151,7 +151,9 @@ const missing = computed(() => {
 })
 
 const lock = computed(() => (snapshot.value && snapshot.value.lock) || null)
-const lockLeftMin = computed(() => lock.value && lock.value.until > now.value ? Math.ceil((lock.value.until - now.value) / 60000) : 0)
+const streakLeftMin = computed(() => lock.value && lock.value.streakUntil > now.value ? Math.ceil((lock.value.streakUntil - now.value) / 60000) : 0)
+const ddLeftMin = computed(() => lock.value && lock.value.until > now.value ? Math.ceil((lock.value.until - now.value) / 60000) : 0)
+const lockLeftMin = computed(() => Math.max(ddLeftMin.value, streakLeftMin.value))
 // crypto.randomUUID exists only in secure contexts (https/localhost); the VM is served over
 // plain http, where it is undefined. getRandomValues works everywhere.
 const newClientId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')
@@ -433,7 +435,8 @@ onUnmounted(() => {
                     </div>
                     <div v-if="lockLeftMin" class="alert alert-danger py-2 txt-small">
                         <strong>Trading locked for {{ lockLeftMin }} more min.</strong>
-                        Equity is {{ fmtNum(lock.ddPct, 1) }}% below peak ({{ fmtNum(lock.peak) }}); limit {{ lock.limitPct }}%.
+                        <template v-if="ddLeftMin">Equity is {{ fmtNum(lock.ddPct, 1) }}% below peak ({{ fmtNum(lock.peak) }}); limit {{ lock.limitPct }}%.</template>
+                        <template v-else>Cooldown after 2 losing trades in a row.</template>
                         New entries are blocked; you can still change SL/TP or cancel pending orders.
                     </div>
 

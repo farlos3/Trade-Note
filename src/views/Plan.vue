@@ -536,6 +536,11 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
                         <div class="statSub" v-else-if="tracker.tradesLeftAtPlanRate != null">
                             ~{{ tracker.tradesLeftAtPlanRate }} trade(s) left at plan rate
                         </div>
+                        <div class="statSub" v-if="!tracker.goalReached && tracker.tradingDaysLeft != null"
+                            title="Estimated from the trades per trading day you have actually taken so far; it is not a daily target">
+                            ≈ {{ tracker.tradingDaysLeft }} trading day(s) at your pace
+                            ({{ fmt(tracker.tradesPerTradingDay, 1) }} trades/day)
+                        </div>
                         <div class="statSub" v-else>from current balance</div>
                     </div>
                     <div class="statTile" v-else>

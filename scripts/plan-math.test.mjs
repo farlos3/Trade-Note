@@ -176,6 +176,10 @@ check('tracker computes currentBalance=1230, milestoneStep=2 (cleared 1210), var
     trackedA.tradesLeftAtPlanRate === 2 &&
     trackedA.goalReached === false)
 
+// t1 on 05-02, t3 on 05-03: 2 trades over 2 trading days = 1/day; 2 trades left => 2 days
+check('tracker estimates trading days left from the actual trades-per-trading-day pace',
+    approx(trackedA.tradesPerTradingDay, 1) && trackedA.tradingDaysLeft === 2)
+
 const trackedGoalHit = trackTradesAgainstPlan({
     startBalance: 1000,
     goalBalance: 1200,

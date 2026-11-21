@@ -1,5 +1,5 @@
 // Run: node src/utils/riskLock.test.mjs
-import { nextLockState, LOCK_MS } from './riskLock.js'
+import { nextLockState, LOCK_MS, streakLockUntil, STREAK_LOCK_MS } from './riskLock.js'
 let failures = 0
 const check = (n, c) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}`); if (!c) failures++ }
 const T = 1_000_000
@@ -22,4 +22,10 @@ check('recovery under 30% re-arms', s.armed === true)
 s = nextLockState(s, 100, until + 3)
 check('a new peak-relative 30% fall locks again', s.lockedUntil === until + 3 + LOCK_MS)
 check('equity 0 (bad frame) changes nothing', nextLockState({ peak: 100 }, 0, T).peak === 100)
+const L = (exitTime, net) => ({ exitTime, net })
+check('streak: one loss is no lock', streakLockUntil([L(100, -5)]) === 0)
+check('streak: two losses lock 90 min from the last close', streakLockUntil([L(200, -1), L(100, -5)]) === 200_000 + STREAK_LOCK_MS)
+check('streak: a win in between breaks it', streakLockUntil([L(100, -5), L(200, 3), L(300, -1)]) === 0)
+check('streak: only the last two count', streakLockUntil([L(50, 9), L(100, -5), L(200, -1)]) === 200_000 + STREAK_LOCK_MS)
+check('streak: breakeven is not a loss', streakLockUntil([L(100, -5), L(200, 0)]) === 0)
 console.log(failures ? `${failures} FAILED` : 'ALL PASSED'); process.exit(failures ? 1 : 0)

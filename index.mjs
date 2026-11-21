@@ -12,7 +12,7 @@ import Proxy from 'http-proxy'
 import { useImportTrades, useGetExistingTradesArray, useUploadTrades, useSaveSheetTrade, useEnsureAccountRegistered, useStagedImportAccounts, useDiscardStagedImport } from './src/utils/addTrades.js';
 import { useEnsureTechniqueTag, useAssignTag } from './src/utils/daily.js';
 import { orderError, changeError } from './src/utils/orderRules.js';
-import { nextLockState, LOCK_PCT } from './src/utils/riskLock.js';
+import { nextLockState, LOCK_PCT, streakLockUntil } from './src/utils/riskLock.js';
 import { currentUser, uploadMfePrices } from './src/stores/globals.js';
 import { useGetTimeZone } from './src/utils/utils.js';
 import { fetchDayDocs, fetchNotes, fetchTradesFingerprint, fetchDiaries, fetchEntryReviews } from './mcp-server/db.mjs';
@@ -1488,6 +1488,25 @@ const setupApiRoutes = (app) => {
         }
         return { objId: o.id, peak: o.get('peak') || 0, armed: o.get('armed') !== false, lockedUntil: o.get('lockedUntil') || 0, flow: o.get('flow') ?? null, savedAt: Date.now() }
     }
+    /* Loss-streak cooldown (streakLockUntil): read from the stored closed trades, so it
+       is only as fresh as the journal sync (about a minute). Orders check it fresh;
+       the live frame only needs a cached copy to show the countdown. */
+    const streakCache = new Map()   // label -> { until, at, loading }
+    const streakFor = async (userId, label) => {
+        const days = await fetchDayDocs({ fromUnix: Math.floor(Date.now() / 1000) - 2 * 86400, userId, account: label })
+        return streakLockUntil(flattenTrades(days))
+    }
+    function cachedStreak(userId, label) {
+        const c = streakCache.get(label) || { until: 0, at: 0, loading: false }
+        streakCache.set(label, c)
+        if (!c.loading && Date.now() - c.at > 30000) {
+            c.loading = true
+            streakFor(userId, label).then((u) => { c.until = u; c.at = Date.now() })
+                .catch((e) => console.error(' -> streak lock error', e.message))
+                .finally(() => { c.loading = false })
+        }
+        return c.until > Date.now() ? c.until : 0
+    }
     function trackRisk(userId, label, equity) {
         const st = riskStates.get(label)
         if (!st) {
@@ -1512,7 +1531,7 @@ const setupApiRoutes = (app) => {
             riskClass.createWithoutData(st.objId).save({ peak: next.peak, armed: next.armed, lockedUntil: next.lockedUntil, flow: next.flow ?? null }, { useMasterKey: true })
                 .catch((e) => console.error(' -> risk lock save error', e.message))
         }
-        return { until: next.lockedUntil > Date.now() ? next.lockedUntil : 0, ddPct: next.ddPct, peak: next.peak, limitPct: LOCK_PCT }
+        return { until: next.lockedUntil > Date.now() ? next.lockedUntil : 0, ddPct: next.ddPct, peak: next.peak, limitPct: LOCK_PCT, streakUntil: cachedStreak(userId, label) }
     }
 
     const ORDER_TTL_MS = 15000
@@ -1581,6 +1600,15 @@ const setupApiRoutes = (app) => {
                 if (!st) return res.status(409).send({ error: 'Risk lock is still loading; try again in a few seconds.' })
                 if (st.lockedUntil > Date.now()) {
                     return res.status(423).send({ error: `Trading is locked after a ${LOCK_PCT}% drawdown until ${new Date(st.lockedUntil).toISOString().slice(11, 16)} UTC.`, until: st.lockedUntil })
+                }
+                // Fail closed too: if the history cannot be read we cannot know the streak.
+                let streakUntil
+                try { streakUntil = await streakFor(userId, b.account) } catch (e) {
+                    console.error(' -> streak lock check error', e.message)
+                    return res.status(503).send({ error: 'Could not check the loss-streak cooldown; try again.' })
+                }
+                if (streakUntil > Date.now()) {
+                    return res.status(423).send({ error: `Cooldown after 2 losing trades in a row until ${new Date(streakUntil).toISOString().slice(11, 16)} UTC.`, until: streakUntil })
                 }
             }
             const tpOf = (v) => (v === '' || v == null ? 0 : Number(v))
