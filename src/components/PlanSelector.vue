@@ -2,10 +2,6 @@
 import { ref, nextTick } from 'vue'
 import { plans, activePlanId, activePlan, createPlan, renamePlan, deletePlan } from '../utils/planStore'
 
-/* Bootstrap's own dropdown-menu/dropdown-item (already dark-themed app-wide,
-   see Nav.vue) — not a native <select>, whose default styling clashes with
-   this app's inputs. */
-
 const renaming = ref(false)
 const nameDraft = ref('')
 const renameInput = ref(null)
@@ -33,17 +29,11 @@ function onDelete() {
 
 <template>
     <div class="planSelector d-flex flex-wrap align-items-center gap-2 mb-3">
-        <div class="dropdown">
-            <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown"
-                aria-expanded="false">
-                <i class="uil uil-list-ul me-1"></i>#{{ activePlan.id }} — {{ activePlan.name }}
-            </button>
-            <ul class="dropdown-menu">
-                <li v-for="p in plans" :key="p.id">
-                    <a class="dropdown-item" v-bind:class="{ active: p.id === activePlanId }" href="#"
-                        v-on:click.prevent="activePlanId = p.id">#{{ p.id }} — {{ p.name }}</a>
-                </li>
-            </ul>
+        <!-- Plans as tabs, pushed to the right; the plan actions stay on the left. -->
+        <div class="planTabs ms-auto order-last" role="tablist" aria-label="Plans">
+            <button v-for="p in plans" :key="p.id" type="button" role="tab"
+                :aria-selected="p.id === activePlanId" :class="['planTab', { active: p.id === activePlanId }]"
+                v-on:click="activePlanId = p.id">#{{ p.id }} — {{ p.name }}</button>
         </div>
 
         <input v-if="renaming" ref="renameInput" type="text" class="form-control form-control-sm renameInput"
@@ -68,5 +58,33 @@ function onDelete() {
 <style scoped>
 .renameInput {
     max-width: 160px;
+}
+
+.planTabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    justify-content: flex-end;
+}
+
+.planTab {
+    padding: 0.25rem 0.75rem;
+    font-size: 0.8rem;
+    border: 1px solid var(--border-strong);
+    border-radius: 0.5rem;
+    background: var(--black-bg-7);
+    color: var(--white-60);
+    transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.planTab:hover {
+    color: var(--white-87);
+    background: var(--surface-hover);
+}
+
+.planTab.active {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
 }
 </style>

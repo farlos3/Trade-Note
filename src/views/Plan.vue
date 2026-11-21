@@ -2,7 +2,6 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import PlanSelector from '../components/PlanSelector.vue'
-import PlanLotSizing from '../components/PlanLotSizing.vue'
 import RiskLotCalculator from '../components/RiskLotCalculator.vue'
 import FpDate from '../components/FpDate.vue'
 import { activePlan, addTradeTier, removeTradeTier } from '../utils/planStore'
@@ -103,6 +102,7 @@ const hasAnyTarget = computed(() =>
 )
 
 /* Exact trade count to reach goal at the current target (even when horizonTrades differs) */
+const skippedOpen = ref(false)
 const goalTradesResult = computed(() => {
     if (!(start.value > 0) || !(goal.value > 0) || !hasAnyTarget.value) return null
     return tradesToGoal({
@@ -558,9 +558,9 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
 
             <!-- ---------- Per-Trade Target Projection ---------- -->
             <div class="planCard mb-3">
-                <div class="planCardHead">
+                <div class="planCardHead targetHead">
                     <span class="planCardTitle">Target per trade</span>
-                    <div class="d-flex align-items-end gap-2">
+                    <div class="d-flex align-items-center gap-2">
                         <div class="btn-group btn-group-sm" role="group" aria-label="Target unit">
                             <button type="button" v-on:click="targetMode = 'pct'"
                                 v-bind:class="['btn', 'btn-sm', !isAmountMode ? 'btn-primary' : 'btn-outline-secondary']">% / trade</button>
@@ -614,16 +614,21 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
                 </div>
 
                 <!-- Lot sizing for Next Trade (live balance when trades exist, else Trade #1) -->
-                <PlanLotSizing class="mt-3" :plan="activePlan" :dollars="nextTradeDollars" :basis="nextTradeBasis">
-                    <template v-if="tracker.tradesTaken > 0">
-                        Sized for <strong>Trade #{{ tracker.nextTrade.n }}</strong> on your current balance
-                        (<strong>{{ fmt(tracker.currentBalance) }}</strong>).
-                    </template>
-                    <template v-else>
-                        Sized for Trade #1 — as the balance grows, the same % needs a bigger lot: with a pip/point distance
-                        set, the table below shows the lot for every trade on the way.
-                    </template>
-                </PlanLotSizing>
+                <!-- The lot for the next trade is sized where the order is placed (Live -> Place Order);
+                     here only the plan's pip distance is set, which that ticket and the table below use. -->
+                <div class="pipsRow mt-3">
+                    <div class="inlineInput">
+                        <label class="planLabel mb-0">Pips per trade (TP distance)</label>
+                        <input type="number" min="0" step="1" placeholder="optional, e.g. 200"
+                            class="form-control form-control-sm" v-model="activePlan.targetPips" />
+                    </div>
+                    <span class="txt-small text-muted">
+                        Next trade #{{ tracker.nextTrade.n }}
+                        <strong v-if="nextTradeDollars > 0">+{{ fmt(nextTradeDollars) }}</strong>
+                        <span v-if="nextTradeBasis"> ({{ nextTradeBasis }})</span> —
+                        its lot and TP are filled in on <a href="/live">Live → Place Order</a>.
+                    </span>
+                </div>
 
                 <template v-if="projection">
                     <div class="statGrid my-3">
@@ -812,13 +817,19 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
                         <span class="txt-small text-muted me-2">
                             <i class="uil uil-filter-slash me-1"></i>Skipped ({{ tracker.excludedTrades.length }}):
                         </span>
-                        <button v-for="ex in tracker.excludedTrades" :key="ex.id" type="button"
-                            class="skippedChip" title="Click to restore to plan count"
-                            v-on:click="toggleSkipTrade(ex.id)">
-                            {{ ex.dateIso }} · {{ ex.symbol }}
-                            <span v-bind:class="pnlClass(ex.net)">({{ ex.net >= 0 ? '+' : '' }}{{ fmt(ex.net) }})</span>
-                            <i class="uil uil-redo ms-1"></i>
+                        <!-- Collapsed by default: dozens of chips drown the table above. -->
+                        <button type="button" class="btn btn-link btn-sm p-0 txt-small" v-on:click="skippedOpen = !skippedOpen">
+                            {{ skippedOpen ? 'Hide' : 'Show' }}
                         </button>
+                        <div v-if="skippedOpen" class="skippedList">
+                            <button v-for="ex in tracker.excludedTrades" :key="ex.id" type="button"
+                                class="skippedChip" title="Click to restore to plan count"
+                                v-on:click="toggleSkipTrade(ex.id)">
+                                {{ ex.dateIso }} · {{ ex.symbol }}
+                                <span v-bind:class="pnlClass(ex.net)">({{ ex.net >= 0 ? '+' : '' }}{{ fmt(ex.net) }})</span>
+                                <i class="uil uil-redo ms-1"></i>
+                            </button>
+                        </div>
                     </div>
 
                     <p class="txt-small text-muted mt-2 mb-0" v-if="sizingPips">
@@ -840,9 +851,9 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
 
             <!-- ---------- Goal seek (per trade) ---------- -->
             <div class="planCard">
-                <div class="planCardHead">
+                <div class="planCardHead goalSeekHead">
                     <span class="planCardTitle">Goal seek — how many trades or what % per trade?</span>
-                    <div class="d-flex flex-wrap align-items-end gap-2">
+                    <div class="goalSeekInputs">
                         <div class="inlineInput">
                             <label class="planLabel mb-0">Within trades</label>
                             <input type="number" min="1" max="2000" step="1" placeholder="e.g. 50"
@@ -1233,6 +1244,15 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
     opacity: 1;
 }
 
+.skippedList {
+    flex-basis: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    max-height: 7rem;
+    overflow-y: auto;
+}
+
 .skippedStrip {
     display: flex;
     flex-wrap: wrap;
@@ -1293,10 +1313,67 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
     background-color: var(--accent-soft);
     border-color: var(--accent);
     color: var(--accent);
+    /* above its neighbour, whose -1px margin otherwise covers the shared accent edge */
+    z-index: 1;
+}
+
+/* Title and controls centred on one line: the label used to sit above the input, which
+   made the header tall and left empty space above the title. Label now sits beside it. */
+.targetHead {
+    align-items: center;
+}
+
+.targetHead .inlineInput {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.targetHead .inlineInput .planLabel {
+    margin-bottom: 0;
+    white-space: nowrap;
+}
+
+/* Title on its own row, the two inputs side by side beneath it (they used to stack in a
+   column on the right, leaving the title stranded at the bottom-left). */
+.goalSeekHead {
+    flex-direction: column;
+    align-items: stretch;
+}
+
+.goalSeekInputs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 14rem));
+    gap: 0.75rem;
+}
+
+.goalSeekInputs .inlineInput {
+    min-width: 0;
+}
+
+@media (max-width: 480px) {
+    .goalSeekInputs {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* The headline answer reads as a result, not as another paragraph. */
+.goalSeekHead + .goalLine {
+    padding: 0.6rem 0.8rem;
+    border-left: 3px solid var(--accent);
+    border-radius: 0.4rem;
+    background-color: var(--accent-soft);
 }
 
 .goalLine {
     font-size: 0.92rem;
+}
+
+.pipsRow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 0.75rem;
 }
 
 .hintLine {

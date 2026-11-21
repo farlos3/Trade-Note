@@ -7,7 +7,9 @@
  * pending orders, ticks) with guarded order execution (setup + reason + SL
  * required, confirmation step, drawdown lock, inline SL/TP & cancel actions).
  */
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { usePlanTracker } from '../utils/usePlanTracker'
+import { numOrNull, pipSizeFor, lotForDollars, floorLot, LOT_STEP, fmt as fmtPlan } from '../utils/planMath'
 import { useTwoDecCurrencyFormat } from '../utils/utils'
 import { usePipSize, useDefaultContractSize } from '../utils/addOrder'
 import { useAuthHeaders } from '../utils/apiAuth'
@@ -137,6 +139,37 @@ const risk = computed(() => {
     const rr = Number(form.value.tp) > 0 ? Math.abs(Number(form.value.tp) - entry.value) / dist : null
     return { money, pips, rr }
 })
+
+/* ---- Trading Plan link: what the NEXT trade should make, and the lot/TP for it ----
+   Same tracker as the Trading Plan page, so both show the same "next trade" target.
+   Lot and TP are filled from the plan until the user types in them; "Use plan" re-applies. */
+const { plan: tradingPlan, tracker: planTracker } = usePlanTracker()
+const planTouched = ref({ lot: false, tp: false })
+const planTarget = computed(() => {
+    const nt = planTracker.value.nextTrade
+    if (planTracker.value.goalReached || !(nt && nt.targetDollars > 0)) return null
+    const sym = form.value.symbol
+    const pipSize = pipSizeFor(sym)
+    const dir = form.value.side === 'buy' ? 1 : -1
+    // Pip distance: the TP the user typed if any, else the plan's own pip distance.
+    const tpNum = Number(form.value.tp)
+    const typedPips = planTouched.value.tp && tpNum > 0 && entry.value ? Math.abs(tpNum - entry.value) / pipSize : null
+    const pips = typedPips || (numOrNull(tradingPlan.value.targetPips) > 0 ? numOrNull(tradingPlan.value.targetPips) : null)
+    const exact = pips ? lotForDollars(nt.targetDollars, pips, sym) : null
+    const lot = exact != null ? floorLot(exact) : null
+    // TP price from the plan distance, at the symbol's precision (pip size / 10).
+    const digits = Math.max(0, Math.ceil(-Math.log10(pipSize)) + 1)
+    const tp = pips && !typedPips && entry.value ? Number((entry.value + dir * pips * pipSize).toFixed(digits)) : null
+    return { n: nt.n, dollars: nt.targetDollars, base: nt.baseBalance, pips, lot, belowMin: lot != null && !(lot >= LOT_STEP), tp }
+})
+function applyPlan(force) {
+    const p = planTarget.value
+    if (!p) return
+    if (force) planTouched.value = { lot: false, tp: false }
+    if (!planTouched.value.tp && p.tp != null) form.value.tp = String(p.tp)
+    if (!planTouched.value.lot && p.lot != null && !p.belowMin) form.value.lot = p.lot.toFixed(2)
+}
+watch(planTarget, () => applyPlan(false))
 
 const missing = computed(() => {
     const f = form.value
@@ -469,10 +502,41 @@ onUnmounted(() => {
                         <input class="form-control" type="number" inputmode="decimal" step="any" v-model="form.price" />
                     </div>
 
-                    <div class="grid3 mt-3">
+                    <!-- Trading Plan: the next trade's target, sized into lot/TP (editable). -->
+                    <div class="planLink mt-3">
+                        <template v-if="planTarget">
+                            <div class="d-flex justify-content-between align-items-center gap-2">
+                                <span>
+                                    <i class="uil uil-crosshair me-1"></i>Plan · trade #{{ planTarget.n }}
+                                    target <strong class="greenTrade">+{{ fmtPlan(planTarget.dollars) }}</strong>
+                                </span>
+                                <button type="button" class="btn btn-link btn-sm p-0 planLinkBtn"
+                                    title="Fill lot and take profit from the plan again" v-on:click="applyPlan(true)">Use plan</button>
+                            </div>
+                            <div class="planLinkSub">
+                                <template v-if="planTarget.pips && !planTarget.belowMin">
+                                    {{ fmtPlan(planTarget.lot, 2) }} lot over {{ fmtPlan(planTarget.pips, 0) }} pips
+                                    <span v-if="planTarget.tp != null">→ TP {{ planTarget.tp }}</span>
+                                </template>
+                                <span v-else-if="planTarget.belowMin" class="text-warning">
+                                    {{ fmtPlan(planTarget.pips, 0) }} pips needs less than 0.01 lot; use a shorter TP.
+                                </span>
+                                <template v-else>Set a TP (or a pip distance in Trading Plan) to size the lot.</template>
+                            </div>
+                        </template>
+                        <template v-else-if="planTracker.goalReached">
+                            <i class="uil uil-trophy me-1"></i>Plan goal reached.
+                        </template>
+                        <template v-else>
+                            No per-trade target yet. <a href="/plan">Set one in Trading Plan</a>.
+                        </template>
+                    </div>
+
+                    <div class="grid3 mt-2">
                         <div>
                             <label class="tLabel">Lot</label>
-                            <input class="form-control" type="number" inputmode="decimal" step="0.01" min="0.01" v-model="form.lot" />
+                            <input class="form-control" type="number" inputmode="decimal" step="0.01" min="0.01" v-model="form.lot"
+                                v-on:input="planTouched.lot = true" />
                         </div>
                         <div>
                             <label class="tLabel">Stop loss *</label>
@@ -480,7 +544,8 @@ onUnmounted(() => {
                         </div>
                         <div>
                             <label class="tLabel">Take profit</label>
-                            <input class="form-control" type="number" inputmode="decimal" step="0.01" v-model="form.tp" />
+                            <input class="form-control" type="number" inputmode="decimal" step="0.01" v-model="form.tp"
+                                v-on:input="planTouched.tp = true" />
                         </div>
                     </div>
                     <div v-if="risk" class="riskLine">
@@ -830,6 +895,24 @@ onUnmounted(() => {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 0.5rem;
+}
+
+.planLink {
+    font-size: 0.8rem;
+    padding: 0.45rem 0.6rem;
+    border-left: 3px solid var(--accent);
+    border-radius: 0.4rem;
+    background: var(--accent-soft);
+}
+
+.planLinkSub {
+    color: var(--white-60);
+    margin-top: 0.1rem;
+}
+
+.planLinkBtn {
+    font-size: 0.78rem;
+    text-decoration: none;
 }
 
 .riskLine {
