@@ -7,6 +7,8 @@ import {
     pipSizeFor,
     contractSizeFor,
     pipValuePerLot,
+    dollarsToPips,
+    planStepLot,
     buildTradeProjection,
     requiredPctPerTrade,
     requiredAmountPerTrade,
@@ -283,6 +285,31 @@ check('excluding 1 leg of a 2-leg group dissolves the unit back to standalone',
     trackedFallback.trackedTrades[0].isGroup === false &&
     trackedFallback.trackedTrades[0].id === 'p2' &&
     approx(trackedFallback.currentBalance, 250))
+
+// 12. Dynamic step lot sizing (planStepLot)
+const projLot = buildTradeProjection({ start: 102.80, pctPerTrade: 10, goalBalance: 500 })
+const step1 = projLot.trades[0]  // Opening 102.80, profit +10.28
+const step7 = projLot.trades[6]  // Opening 182.12, profit +18.21
+const step8 = projLot.trades[7]  // Opening 200.33, profit +20.03
+const step13 = projLot.trades[12] // Opening 322.63, profit +32.26
+const l1 = planStepLot({ targetDollars: step1.profit })
+const l7 = planStepLot({ targetDollars: step7.profit })
+const l8 = planStepLot({ targetDollars: step8.profit })
+const l13 = planStepLot({ targetDollars: step13.profit })
+check('auto planStepLot scales with balance: 102.80->0.01, 182.12->0.01, 200.33->0.02, 322.63->0.03',
+    l1 === 0.01 && l7 === 0.01 && l8 === 0.02 && l13 === 0.03 &&
+    approx(dollarsToPips(step8.profit, 'XAUUSD', l8), 1001.66, 0.5))
+
+check('auto planStepLot clamps small targets to minimum 0.01 lot and returns null for invalid targets',
+    planStepLot({ targetDollars: 4.5 }) === 0.01 &&
+    planStepLot({ targetDollars: 0 }) === null &&
+    planStepLot({ targetDollars: -10 }) === null)
+
+// Custom lotSize (e.g. 0.05 at start=100, 10% -> baseTarget=$10) scales proportionally as target grows
+check('custom lotSize scales proportionally from Trade #1 base target',
+    planStepLot({ targetDollars: 10, lotSize: 0.05, baseTargetDollars: 10 }) === 0.05 &&
+    planStepLot({ targetDollars: 12.1, lotSize: 0.05, baseTargetDollars: 10 }) === 0.06 &&
+    planStepLot({ targetDollars: 20, lotSize: 0.05, baseTargetDollars: 10 }) === 0.10)
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILED'}`)
 process.exit(failures === 0 ? 0 : 1)

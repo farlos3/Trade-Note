@@ -352,6 +352,31 @@ export function floorLot(lot) {
 }
 
 /**
+ * Default target profit ($) per 1.00 lot when a plan leaves Lot size blank
+ * ($10 per 0.01 lot = 1,000 pips on XAUUSD, 100 pips on EURUSD).
+ */
+export const AUTO_LOT_DOLLARS_PER_LOT = 1000
+
+/**
+ * Lot size for a single plan step, scaling with the step's target profit (and
+ * therefore with the current/opening balance):
+ * - When `lotSize` is blank: 0.01 lot per $10 of target profit ($1,000/lot),
+ *   floored to LOT_STEP and clamped >= LOT_STEP.
+ * - When `lotSize > 0` is set: uses `lotSize` on Trade #1 (`baseTargetDollars`)
+ *   and scales proportionally as `targetDollars` grows or shrinks.
+ */
+export function planStepLot({ targetDollars, lotSize = null, baseTargetDollars = null } = {}) {
+    const target = Number(targetDollars)
+    if (!(target > 0)) return null
+    const baseLot = Number(lotSize)
+    const raw = baseLot > 0
+        ? (Number(baseTargetDollars) > 0 ? baseLot * (target / Number(baseTargetDollars)) : baseLot)
+        : target / AUTO_LOT_DOLLARS_PER_LOT
+    const floored = Math.max(LOT_STEP, floorLot(raw))
+    return Number(floored.toFixed(2))
+}
+
+/**
  * The lot each projected day calls for, at a fixed pip distance: that day's
  * profit target / (pips x $ per pip per lot), floored to the 0.01 step. This
  * is what ties the projection to position sizing -- 10% of a balance that has

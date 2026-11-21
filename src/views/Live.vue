@@ -9,7 +9,7 @@
  */
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { usePlanTracker } from '../utils/usePlanTracker'
-import { numOrNull, pipSizeFor, lotForDollars, floorLot, pipValuePerLot, LOT_STEP, fmt as fmtPlan } from '../utils/planMath'
+import { numOrNull, pipSizeFor, lotForDollars, floorLot, pipValuePerLot, planStepLot, LOT_STEP, fmt as fmtPlan } from '../utils/planMath'
 import { useTwoDecCurrencyFormat } from '../utils/utils'
 import { usePipSize, useDefaultContractSize } from '../utils/addOrder'
 import { useAuthHeaders } from '../utils/apiAuth'
@@ -143,7 +143,7 @@ const risk = computed(() => {
 /* ---- Trading Plan link: what the NEXT trade should make, and the lot/TP for it ----
    Same tracker as the Trading Plan page, so both show the same "next trade" target.
    Lot and TP are filled from the plan until the user types in them; "Use plan" re-applies. */
-const { plan: tradingPlan, tracker: planTracker } = usePlanTracker()
+const { plan: tradingPlan, projection: planProjection, tracker: planTracker } = usePlanTracker()
 const planTouched = ref({ lot: false, tp: false, sl: false })
 const planTarget = computed(() => {
     const nt = planTracker.value.nextTrade
@@ -154,9 +154,15 @@ const planTarget = computed(() => {
     // Pip distance: the TP the user typed if any, else the plan's own pip distance.
     const tpNum = Number(form.value.tp)
     const typedPips = planTouched.value.tp && tpNum > 0 && entry.value ? Math.abs(tpNum - entry.value) / pipSize : null
-    // Nothing typed: size at the plan's Lot size (else the broker minimum) and use the distance
-    // that makes that lot earn the target -- so TP/SL always fill in, RR 1:1.
-    const planLot = numOrNull(tradingPlan.value.lotSize) > 0 ? numOrNull(tradingPlan.value.lotSize) : LOT_STEP
+    // Nothing typed: size the lot dynamically from the plan target (matching Plan.vue)
+    // and compute the pip distance that makes that lot earn the target -- RR 1:1.
+    const customLot = numOrNull(tradingPlan.value.lotSize)
+    const baseTargetDollars = planProjection.value?.trades?.[0]?.profit ?? null
+    const planLot = planStepLot({
+        targetDollars: nt.targetDollars,
+        lotSize: customLot > 0 ? customLot : null,
+        baseTargetDollars,
+    }) || LOT_STEP
     const autoPips = pipValuePerLot(sym) > 0 ? nt.targetDollars / (planLot * pipValuePerLot(sym)) : null
     const pips = typedPips || autoPips
     const exact = pips ? lotForDollars(nt.targetDollars, pips, sym) : null

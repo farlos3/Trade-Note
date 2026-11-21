@@ -9,8 +9,8 @@ import { activeAccount } from '../utils/mt5Accounts'
 import { usePlanTracker } from '../utils/usePlanTracker'
 import {
     numOrNull, requiredPctPerTrade, requiredAmountPerTrade,
-    tradesToGoal, dollarsToPips, pipsRealismVerdict, pipValuePerLot,
-    tierRateResolver, LOT_STEP, fmt, fmtCompact, pnlClass, toneClass,
+    tradesToGoal, dollarsToPips, pipsRealismVerdict,
+    tierRateResolver, planStepLot, fmt, fmtCompact, pnlClass, toneClass,
 } from '../utils/planMath'
 
 /* ---- Top-level sub-tabs inside Trading Plan ---- */
@@ -142,8 +142,6 @@ function applyGoalSeekToTarget() {
 /* ---- Pip distance & lot sizing ---- */
 
 const lotSize = computed(() => numOrNull(activePlan.value.lotSize))
-// The lot every trade is sized at: the plan's Lot size, else the broker minimum.
-const tradeLot = computed(() => (lotSize.value > 0 ? lotSize.value : LOT_STEP))
 
 const trade1TargetDollars = computed(() => {
     if (isAmountMode.value) return tradeAmount.value > 0 ? tradeAmount.value : null
@@ -160,6 +158,16 @@ const nextTradeBasis = computed(() => {
     if (!(bal > 0) || !(tradePct.value > 0)) return ''
     return `${fmt(tradePct.value, 2)}% of ${fmt(bal, 0)}`
 })
+const nextTradeLot = computed(() => planStepLot({
+    targetDollars: nextTradeDollars.value,
+    lotSize: lotSize.value > 0 ? lotSize.value : null,
+    baseTargetDollars: trade1TargetDollars.value,
+}))
+const nextTradePips = computed(() => (
+    nextTradeLot.value && nextTradeDollars.value > 0
+        ? dollarsToPips(nextTradeDollars.value, activePlan.value.symbol, nextTradeLot.value)
+        : null
+))
 
 const trade1PipsNeeded = computed(() => {
     if (!projection.value || !(lotSize.value > 0)) return null
@@ -182,12 +190,23 @@ const rows = computed(() => {
     if (!liveSteps.length) return []
     const nextN = tracker.value.nextTrade?.n
     const goalHitN = tracker.value.liveGoalStep
+    const sym = activePlan.value.symbol
+    const customLot = lotSize.value > 0 ? lotSize.value : null
+    const baseTarget = trade1TargetDollars.value
 
-    return liveSteps.map((r) => ({
-        ...r,
-        isNext: r.n === nextN,
-        isGoalHit: goal.value > 0 && r.n === goalHitN,
-    }))
+    return liveSteps.map((r) => {
+        const lot = r.profit > 0
+            ? planStepLot({ targetDollars: r.profit, lotSize: customLot, baseTargetDollars: baseTarget })
+            : null
+        const tpSlPips = lot && r.profit > 0 ? dollarsToPips(r.profit, sym, lot) : null
+        return {
+            ...r,
+            lot,
+            tpSlPips,
+            isNext: r.n === nextN,
+            isGoalHit: goal.value > 0 && r.n === goalHitN,
+        }
+    })
 })
 
 const progressBarPct = computed(() => {
@@ -603,9 +622,11 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
                 <p class="txt-small text-muted mt-3 mb-0">
                     Next trade #{{ tracker.nextTrade.n }}
                     <strong v-if="nextTradeDollars > 0">+{{ fmt(nextTradeDollars) }}</strong>
-                    <span v-if="nextTradeBasis"> ({{ nextTradeBasis }})</span> —
+                    <span v-if="nextTradeBasis"> ({{ nextTradeBasis }})</span>
+                    <template v-if="nextTradeLot != null"> · <strong>{{ fmt(nextTradeLot, 2) }} lot</strong></template>
+                    <template v-if="nextTradePips != null"> · {{ fmt(nextTradePips, 0) }} pips</template> —
                     Lot, TP and SL (RR 1:1) are worked out from this target and filled in on
-                    <a href="/live">Live → Place Order</a>. Set <strong>Lot size</strong> above to use a bigger lot.
+                    <a href="/live">Live → Place Order</a>. Set <strong>Lot size</strong> above to override the starting lot.
                 </p>
 
                 <template v-if="projection">
@@ -730,9 +751,9 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
                                     <td class="text-end" v-bind:class="r.profit != null ? pnlClass(r.profit) : ''">
                                         {{ r.profit != null ? '+' + fmt(r.profit) : '—' }}
                                     </td>
-                                    <td class="text-end lotCell">{{ fmt(tradeLot, 2) }}</td>
+                                    <td class="text-end lotCell">{{ r.lot != null ? fmt(r.lot, 2) : '—' }}</td>
                                     <td class="text-end">
-                                        {{ r.profit > 0 ? fmt(dollarsToPips(r.profit, activePlan.symbol, tradeLot), 0) : '—' }}
+                                        {{ r.tpSlPips != null ? fmt(r.tpSlPips, 0) : '—' }}
                                     </td>
                                     <td class="text-end fw-bold">{{ r.targetClosing != null ? fmt(r.targetClosing) : '—' }}</td>
                                     <td>
@@ -808,6 +829,7 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
                     </div>
 
                     <p class="txt-small text-muted mt-2 mb-0">
+                        Lot scales with target profit (0.01 lot per $10 target when Lot size is blank, or scaled from your starting Lot size).
                         TP / SL pips = the distance that makes that trade's profit at the lot shown (SL the same distance, RR 1:1).
                     </p>
                 </template>
