@@ -619,19 +619,19 @@ watch([projection, tracker, goal, activeTab], async ([p, , , tab]) => {
                 <div class="pipsRow mt-3">
                     <div class="inlineInput">
                         <label class="planLabel mb-0">Pips per trade (TP distance)</label>
-                        <input type="number" min="0" step="1" placeholder="optional, e.g. 200"
+                        <input type="number" min="0" step="1" placeholder="auto: min lot"
                             class="form-control form-control-sm" v-model="activePlan.targetPips" />
                     </div>
                     <div class="inlineInput">
                         <label class="planLabel mb-0">SL pips</label>
-                        <input type="number" min="0" step="1" placeholder="optional, e.g. 100"
+                        <input type="number" min="0" step="1" placeholder="auto: = TP (RR 1:1)"
                             class="form-control form-control-sm" v-model="activePlan.slPips" />
                     </div>
                     <span class="txt-small text-muted">
                         Next trade #{{ tracker.nextTrade.n }}
                         <strong v-if="nextTradeDollars > 0">+{{ fmt(nextTradeDollars) }}</strong>
                         <span v-if="nextTradeBasis"> ({{ nextTradeBasis }})</span> —
-                        its lot and TP are filled in on <a href="/live">Live → Place Order</a>.
+                        its lot, TP and SL (RR 1:1) are filled in on <a href="/live">Live → Place Order</a>; the pip fields above only override the defaults.
                     </span>
                 </div>
 

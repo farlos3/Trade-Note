@@ -9,7 +9,7 @@
  */
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { usePlanTracker } from '../utils/usePlanTracker'
-import { numOrNull, pipSizeFor, lotForDollars, floorLot, LOT_STEP, fmt as fmtPlan } from '../utils/planMath'
+import { numOrNull, pipSizeFor, lotForDollars, floorLot, pipValuePerLot, LOT_STEP, fmt as fmtPlan } from '../utils/planMath'
 import { useTwoDecCurrencyFormat } from '../utils/utils'
 import { usePipSize, useDefaultContractSize } from '../utils/addOrder'
 import { useAuthHeaders } from '../utils/apiAuth'
@@ -154,13 +154,18 @@ const planTarget = computed(() => {
     // Pip distance: the TP the user typed if any, else the plan's own pip distance.
     const tpNum = Number(form.value.tp)
     const typedPips = planTouched.value.tp && tpNum > 0 && entry.value ? Math.abs(tpNum - entry.value) / pipSize : null
-    const pips = typedPips || (numOrNull(tradingPlan.value.targetPips) > 0 ? numOrNull(tradingPlan.value.targetPips) : null)
+    // Default (nothing typed, no pips in the plan): the minimum lot, with the distance that makes
+    // it earn the target -- so TP/SL always fill in. Pips set in the plan override this.
+    const planPips = numOrNull(tradingPlan.value.targetPips) > 0 ? numOrNull(tradingPlan.value.targetPips) : null
+    const minLotPips = pipValuePerLot(sym) > 0 ? nt.targetDollars / (LOT_STEP * pipValuePerLot(sym)) : null
+    const pips = typedPips || planPips || minLotPips
     const exact = pips ? lotForDollars(nt.targetDollars, pips, sym) : null
     const lot = exact != null ? floorLot(exact) : null
     // TP price from the plan distance, at the symbol's precision (pip size / 10).
     const digits = Math.max(0, Math.ceil(-Math.log10(pipSize)) + 1)
     const tp = pips && !typedPips && entry.value ? Number((entry.value + dir * pips * pipSize).toFixed(digits)) : null
-    const slPips = numOrNull(tradingPlan.value.slPips) > 0 ? numOrNull(tradingPlan.value.slPips) : null
+    // RR 1:1 unless the plan sets its own SL distance.
+    const slPips = numOrNull(tradingPlan.value.slPips) > 0 ? numOrNull(tradingPlan.value.slPips) : pips
     const sl = slPips && entry.value ? Number((entry.value - dir * slPips * pipSize).toFixed(digits)) : null
     return { n: nt.n, dollars: nt.targetDollars, base: nt.baseBalance, pips, lot, belowMin: lot != null && !(lot >= LOT_STEP), tp, slPips, sl }
 })
@@ -524,10 +529,8 @@ onUnmounted(() => {
                                 <span v-else-if="planTarget.belowMin" class="text-warning">
                                     {{ fmtPlan(planTarget.pips, 0) }} pips needs less than 0.01 lot; use a shorter TP.
                                 </span>
-                                <template v-else>Type a TP to size the lot, or set "Pips per trade" in
-                                    <a href="/plan">Trading Plan</a> to fill it.</template>
-                                <span v-if="planTarget.sl != null"> · SL {{ planTarget.sl }} ({{ fmtPlan(planTarget.slPips, 0) }} pips)</span>
-                                <span v-else> · set "SL pips" in <a href="/plan">Trading Plan</a> to fill SL</span>
+                                <template v-else>Waiting for a price to place TP/SL.</template>
+                                <span v-if="planTarget.sl != null"> · SL {{ planTarget.sl }} ({{ fmtPlan(planTarget.slPips, 0) }} pips{{ planTarget.slPips === planTarget.pips ? ', RR 1:1' : '' }})</span>
                             </div>
                         </template>
                         <template v-else-if="planTracker.goalReached">
