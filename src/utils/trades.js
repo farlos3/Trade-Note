@@ -370,12 +370,8 @@ export async function useGetTrades(param) {
             : JSON.parse(JSON.stringify(await query.find()))
         console.timeEnd("  --> Duration getting trades");
         //console.log("results "+JSON.stringify(results))
-        if (results.length > 0) { //here results is an array so we use lenght. Sometimees results is not array then we use if results simply
-            trades = []
-            trades = results
-            imports.length = 0
-            imports.value = JSON.parse(JSON.stringify(results))
-        }
+        trades = results
+        imports.value = JSON.parse(JSON.stringify(results))
         resolve() // I'm adding trades to capture it in Imports... but normally I should be using global variable. But here in trades.js i'm not using the global. Don't remember why.
     })
 }

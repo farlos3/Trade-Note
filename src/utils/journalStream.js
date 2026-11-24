@@ -16,6 +16,7 @@
  * the stream cannot stay up, so a page is never left silently stale.
  */
 import { useAuthHeaders, useAuthedUrl } from './apiAuth.js'
+import { useClearFingerprintCache } from './queryCache.js'
 const POLL_MS = 15000
 
 let source = null
@@ -37,6 +38,7 @@ function notify(version) {
     }
     if (version === lastVersion) return
     lastVersion = version
+    useClearFingerprintCache()
     for (const fn of subscribers) {
         try { fn(version) } catch (e) { console.error('journal subscriber failed', e) }
     }

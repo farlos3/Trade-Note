@@ -1044,6 +1044,7 @@ export async function useRefreshDailyData() {
         await useGetSelectedRange()
         await Promise.all([useGetExcursions(), useGetSatisfactions(), useGetTags(), useGetNotes()])
         await useGetFilteredTrades()
+        await useLoadCalendar()
     } catch (error) {
         console.error("Daily background refresh failed:", error)
     }

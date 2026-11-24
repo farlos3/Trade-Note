@@ -142,22 +142,21 @@ async function monthLastNext(param) {
                 </div>
             </template>
         </div>
-        <div v-else class="row">
-            <div class="col" v-for="(day, index) in days" :key="day">
-                <div class="calWeekday">{{ day }}</div>
-                <div v-for="(line, lineIdx) in calendarData" :key="lineIdx">
-                    <div class="row">
-                        <div v-show="line[index] != 0"
-                            v-bind:class="[{ 'greenTradeDiv': selectedPlSatisfaction == 'pl' ? line[index].pAndL[amountCase + 'Proceeds'] >= 0 : line[index].satisfaction == true, 'redTradeDiv': selectedPlSatisfaction == 'pl' ? line[index].pAndL[amountCase + 'Proceeds'] < 0 : line[index].satisfaction == false, 'calDivDay': pageId == 'daily', 'calDivDash': pageId == 'calendar' }, 'col', 'calCellPos']">
-                            <!-- Same whole-day note flag as the History day cards -- a
-                                 note set on this date shows here too. -->
-                            <i v-if="line[index].dateUnix && notes.some(n => n.tradeId === 'day' && n.dateUnix === line[index].dateUnix && n.note && n.note.trim())"
-                                class="uil uil-bell calNoteBell" title="Day note"></i>
-                            <p class="mb-1 dayNumber" v-show="line[index].day != 0">{{ line[index].day }}</p>
-                        </div>
+        <div v-else class="calMiniGrid">
+            <div class="calWeekday" v-for="day in days" :key="day">{{ day }}</div>
+            <template v-for="w in calendarWeeks" :key="w.index">
+                <template v-for="(cell, dIdx) in w.cells" :key="`${w.index}-${dIdx}`">
+                    <div v-if="cell && cell.day > 0"
+                        v-bind:class="[{ 'greenTradeDiv': cell.pAndL[amountCase + 'Proceeds'] >= 0, 'redTradeDiv': cell.pAndL[amountCase + 'Proceeds'] < 0 }, 'calDivDay', 'calCellPos']">
+                        <!-- Same whole-day note flag as the History day cards -- a
+                             note set on this date shows here too. -->
+                        <i v-if="cell.dateUnix && notes.some(n => n.tradeId === 'day' && n.dateUnix === cell.dateUnix && n.note && n.note.trim())"
+                            class="uil uil-bell calNoteBell" title="Day note"></i>
+                        <p class="dayNumber">{{ cell.day }}</p>
                     </div>
-                </div>
-            </div>
+                    <div v-else class="calDivDaySpacer" aria-hidden="true"></div>
+                </template>
+            </template>
         </div>
     </div>
 
@@ -253,6 +252,18 @@ async function monthLastNext(param) {
 .calNavBtn:hover {
     background-color: var(--surface-hover);
     border-color: var(--border-strong);
+}
+
+/* History-page compact 7-column mini-calendar grid (Su..Sa) */
+.calMiniGrid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 5px;
+    align-items: center;
+}
+
+.calDivDaySpacer {
+    height: 32px;
 }
 
 /* Calendar-page 8-column grid (Su..Sa + Weekly summary) */
