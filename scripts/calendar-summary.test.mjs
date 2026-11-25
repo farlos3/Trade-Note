@@ -3,7 +3,7 @@
  * Unit tests for src/utils/calendarSummary.js — pure Node, no DB or browser.
  * Run: node scripts/calendar-summary.test.mjs
  */
-import { buildCalendarWeeks, isSameYearMonth, summarizeMonth, summarizeDay, monthGridFromDaily } from '../src/utils/calendarSummary.js'
+import { buildCalendarWeeks, isSameYearMonth, summarizeMonth, summarizeDay } from '../src/utils/calendarSummary.js'
 
 let failures = 0
 function check(name, cond, detail = '') {
@@ -65,13 +65,6 @@ check('summarizeDay drops open positions and sorts by close time with a running 
     sd.rows.length === 3 && sd.rows[0].pl === 10 && sd.rows[1].cumulative === 7 && sd.total === 7)
 check('summarizeDay counts wins/losses (breakeven is neither)', sd.wins === 1 && sd.losses === 1 && sd.winRatePct === 50)
 
-// monthGridFromDaily: November 2026 starts on a Sunday and has 30 days
-const g = monthGridFromDaily([{ date: '2026-11-02', net: 93, trades: 12, wins: 8, losses: 4 }, { date: '2026-10-31', net: 5, trades: 1 }], 2026, 10)
-const gw = buildCalendarWeeks(g, 'net')
-check('monthGridFromDaily lays the month out Sunday-first in rows of 7',
-    g[0][0].day === 1 && Object.keys(g).length === 5 && g[4].filter((c) => c.day > 0).length === 2)
-check('monthGridFromDaily keeps only this month and feeds summarizeMonth',
-    (() => { const m = summarizeMonth(gw, 'net'); return m.trades === 12 && m.total === 93 && m.wins === 8 && m.best.day === 2 })())
 
 if (failures > 0) {
     console.error(`\n${failures} check(s) failed`)

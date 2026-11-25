@@ -100,32 +100,3 @@ export function summarizeDay(trades, amountCase = 'net') {
     }
 }
 
-/**
- * A month grid built from the Analysis API's `daily` rows ({ date: 'YYYY-MM-DD',
- * net, trades, wins, losses }), in the same calendarData shape the Calendar page
- * uses (rows of 7 cells, Sunday first, day 0 = padding), so buildCalendarWeeks
- * and summarizeMonth work on it unchanged. month is 0-based.
- */
-export function monthGridFromDaily(daily, year, month) {
-    const byDay = {}
-    const prefix = `${year}-${String(month + 1).padStart(2, '0')}-`
-    for (const d of daily || []) {
-        if (d && typeof d.date === 'string' && d.date.startsWith(prefix)) byDay[Number(d.date.slice(8, 10))] = d
-    }
-    const firstDow = new Date(Date.UTC(year, month, 1)).getUTCDay()
-    const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate()
-    const cells = []
-    for (let i = 0; i < firstDow; i++) cells.push({ day: 0, pAndL: [] })
-    for (let day = 1; day <= daysInMonth; day++) {
-        const d = byDay[day]
-        cells.push({
-            day,
-            date: `${prefix}${String(day).padStart(2, '0')}`,
-            pAndL: d ? { netProceeds: d.net, trades: d.trades, netWinsCount: d.wins ?? null, netLossCount: d.losses ?? null } : [],
-        })
-    }
-    while (cells.length % 7) cells.push({ day: 0, pAndL: [] })
-    const grid = {}
-    for (let r = 0; r * 7 < cells.length; r++) grid[r] = cells.slice(r * 7, r * 7 + 7)
-    return grid
-}
