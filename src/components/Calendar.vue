@@ -166,10 +166,10 @@ async function monthLastNext(param) {
                             <p class="calAmount mb-1" v-show="cell.pAndL[amountCase + 'Proceeds'] !== undefined">
                                 {{ (cell.pAndL[amountCase + 'Proceeds'] >= 0 ? '+' : '') + useTwoDecCurrencyFormat(cell.pAndL[amountCase + 'Proceeds']) }}
                             </p>
-                            <p class="calTrades mb-0" v-show="cell.pAndL.trades">{{ cell.pAndL.trades }} trades</p>
+                            <p class="calTrades mb-0" v-show="cell.pAndL.trades">{{ cell.pAndL.trades }} {{ cell.pAndL.trades === 1 ? 'trade' : 'trades' }}</p>
                             <p class="calWl mb-0" v-if="cellPl(cell) && cell.pAndL.trades">
-                                <span class="greenTrade">{{ cell.pAndL[amountCase + 'WinsCount'] || 0 }}W</span> /
-                                <span class="redTrade">{{ cell.pAndL[amountCase + 'LossCount'] || 0 }}L</span>
+                                <span class="calWlPill calWlWin">{{ cell.pAndL[amountCase + 'WinsCount'] || 0 }}W</span>
+                                <span class="calWlPill calWlLoss">{{ cell.pAndL[amountCase + 'LossCount'] || 0 }}L</span>
                             </p>
                         </div>
                     </div>
@@ -333,7 +333,42 @@ async function monthLastNext(param) {
 .calClickable:hover { filter: brightness(1.2); }
 .calClickable:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-.calWl { font-size: 0.72rem; font-weight: 600; }
+.calWl {
+    display: flex;
+    justify-content: center;
+    gap: 0.25rem;
+    margin-top: 0.3rem;
+}
+
+.calWlPill {
+    font-size: 0.68rem;
+    font-weight: 700;
+    line-height: 1;
+    padding: 0.2rem 0.4rem;
+    border-radius: 999px;
+}
+
+.calWlWin { color: #00CA73; background: rgba(0, 202, 115, 0.14); }
+.calWlLoss { color: #F6465D; background: rgba(246, 70, 93, 0.14); }
+
+/* Full calendar: tinted day cells like the weekly column, colour carried by the
+   amount -- the global solid green/red fill drowned the green/red W/L text. */
+.calMonthGrid .greenTradeDiv {
+    background-color: rgba(0, 202, 115, 0.1);
+    border-color: rgba(0, 202, 115, 0.3);
+}
+
+.calMonthGrid .redTradeDiv {
+    background-color: rgba(246, 70, 93, 0.1);
+    border-color: rgba(246, 70, 93, 0.3);
+}
+
+.calMonthGrid .greenTradeDiv .calAmount { color: #00CA73; }
+.calMonthGrid .redTradeDiv .calAmount { color: #F6465D; }
+.calMonthGrid .greenTradeDiv .calTrades,
+.calMonthGrid .redTradeDiv .calTrades { color: var(--white-60); font-weight: 500; font-size: 0.75rem; }
+.calMonthGrid .greenTradeDiv .dayNumber,
+.calMonthGrid .redTradeDiv .dayNumber { color: var(--white-60); }
 
 /* History-page compact 7-column mini-calendar grid (Su..Sa) */
 .calMiniGrid {
