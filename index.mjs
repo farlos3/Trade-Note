@@ -371,6 +371,11 @@ const setupApiRoutes = (app) => {
             : AI_PROVIDER === 'claude-cli' ? ''
             : 'claude-opus-5')
 
+    // Gemini only: models tried in order when one is overloaded. ANALYSIS_FALLBACK_MODELS
+    // (comma-separated) replaces the default fallback.
+    const GEMINI_MODELS = [...new Set([ANALYSIS_MODEL, ...(process.env.ANALYSIS_FALLBACK_MODELS || 'gemini-flash-lite-latest')
+        .split(',').map((m) => m.trim()).filter(Boolean)])]
+
     if (AI_PROVIDER) {
         console.log(`\nAI ANALYSIS enabled -> ${AI_PROVIDER} (${ANALYSIS_MODEL || 'bridge default'})` + (AI_PROVIDER === 'claude-cli' ? ` via ${bridgeUrl}` : ''))
     } else {
@@ -420,25 +425,39 @@ const setupApiRoutes = (app) => {
         }
 
         // Gemini: the system prompt is its own top-level field, not a message.
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(ANALYSIS_MODEL)}:generateContent`
-        const { data } = await axios.post(url, {
-            systemInstruction: { parts: [{ text: system }] },
-            contents: [{ role: 'user', parts: [{ text: userText }] }],
-            // Room for the model's thinking tokens, which count against this limit.
-            generationConfig: { maxOutputTokens: 16384, temperature: 0.4 },
-        }, {
-            headers: { 'x-goog-api-key': geminiKey, 'Content-Type': 'application/json' },
-            timeout: 120000,
-        })
-        const cand = (data.candidates || [])[0]
-        // SAFETY / RECITATION means the model declined; surface it the same way a
-        // Claude refusal is surfaced instead of returning a confusing empty string.
-        if (cand && cand.finishReason && !['STOP', 'MAX_TOKENS'].includes(cand.finishReason)) {
-            return { summary: null, refused: true, model: ANALYSIS_MODEL }
+        // "This model is currently experiencing high demand" is a 503 (429 when rate
+        // limited) on that one model; the next model in GEMINI_MODELS usually still
+        // answers, so try them in order instead of failing the analysis outright.
+        let lastErr
+        for (const model of GEMINI_MODELS) {
+            try {
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`
+                const { data } = await axios.post(url, {
+                    systemInstruction: { parts: [{ text: system }] },
+                    contents: [{ role: 'user', parts: [{ text: userText }] }],
+                    // Room for the model's thinking tokens, which count against this limit.
+                    generationConfig: { maxOutputTokens: 16384, temperature: 0.4 },
+                }, {
+                    headers: { 'x-goog-api-key': geminiKey, 'Content-Type': 'application/json' },
+                    timeout: 120000,
+                })
+                const cand = (data.candidates || [])[0]
+                // SAFETY / RECITATION means the model declined; surface it the same way a
+                // Claude refusal is surfaced instead of returning a confusing empty string.
+                if (cand && cand.finishReason && !['STOP', 'MAX_TOKENS'].includes(cand.finishReason)) {
+                    return { summary: null, refused: true, model }
+                }
+                const summary = ((cand && cand.content && cand.content.parts) || [])
+                    .map(p => p.text).filter(Boolean).join('\n').trim()
+                return { summary, model }
+            } catch (e) {
+                const status = e?.response?.status
+                if (status !== 503 && status !== 429) throw e
+                console.warn(` -> Gemini ${model} busy (${status}); trying the next model`)
+                lastErr = e
+            }
         }
-        const summary = ((cand && cand.content && cand.content.parts) || [])
-            .map(p => p.text).filter(Boolean).join('\n').trim()
-        return { summary, model: ANALYSIS_MODEL }
+        throw lastErr
     }
 
     /**
