@@ -3,7 +3,7 @@
  * Unit tests for src/utils/calendarSummary.js — pure Node, no DB or browser.
  * Run: node scripts/calendar-summary.test.mjs
  */
-import { buildCalendarWeeks, isSameYearMonth } from '../src/utils/calendarSummary.js'
+import { buildCalendarWeeks, isSameYearMonth, summarizeMonth, summarizeDay, monthGridFromDaily } from '../src/utils/calendarSummary.js'
 
 let failures = 0
 function check(name, cond, detail = '') {
@@ -42,6 +42,36 @@ check('partial W4 rangeLabel is 29–30 and breakeven has=true', weeksNet[3].wee
 
 const weeksGross = buildCalendarWeeks(mockCalendar, 'gross')
 check('W1 gross total is 85', weeksGross[0].total === 85)
+
+// summarizeMonth
+const mCell = (day, net, trades, w, l) => ({ day, dateUnix: day * 86400, pAndL: { netProceeds: net, trades, netWinsCount: w, netLossCount: l } })
+const ms = summarizeMonth([{ cells: [{ day: 0, pAndL: [] }, mCell(2, 93, 12, 8, 4), mCell(3, -0.5, 6, 2, 4), { day: 4, pAndL: [] }] },
+    { cells: [mCell(9, 14, 29, 16, 13)] }])
+check('summarizeMonth totals P&L, trades and trade wins/losses over traded days only',
+    Math.abs(ms.total - 106.5) < 1e-9 && ms.trades === 47 && ms.wins === 26 && ms.losses === 21 && ms.tradingDays === 3)
+check('summarizeMonth counts green days and picks best/worst day',
+    ms.greenDays === 2 && ms.best.day === 2 && ms.worst.day === 3 && Math.abs(ms.winRatePct - 26 / 47 * 100) < 1e-9)
+check('summarizeMonth on an empty month has no best/worst and no win rate',
+    (() => { const e = summarizeMonth([]); return e.best === null && e.worst === null && e.winRatePct === null })())
+
+// summarizeDay
+const sd = summarizeDay([
+    { exitTime: 300, entryTime: 200, netProceeds: -3 },
+    { exitTime: 100, entryTime: 50, netProceeds: 10 },
+    { exitTime: 400, entryTime: 390, netProceeds: 999, openPosition: true },
+    { exitTime: 500, entryTime: 450, netProceeds: 0 },
+])
+check('summarizeDay drops open positions and sorts by close time with a running total',
+    sd.rows.length === 3 && sd.rows[0].pl === 10 && sd.rows[1].cumulative === 7 && sd.total === 7)
+check('summarizeDay counts wins/losses (breakeven is neither)', sd.wins === 1 && sd.losses === 1 && sd.winRatePct === 50)
+
+// monthGridFromDaily: November 2026 starts on a Sunday and has 30 days
+const g = monthGridFromDaily([{ date: '2026-11-02', net: 93, trades: 12, wins: 8, losses: 4 }, { date: '2026-10-31', net: 5, trades: 1 }], 2026, 10)
+const gw = buildCalendarWeeks(g, 'net')
+check('monthGridFromDaily lays the month out Sunday-first in rows of 7',
+    g[0][0].day === 1 && Object.keys(g).length === 5 && g[4].filter((c) => c.day > 0).length === 2)
+check('monthGridFromDaily keeps only this month and feeds summarizeMonth',
+    (() => { const m = summarizeMonth(gw, 'net'); return m.trades === 12 && m.total === 93 && m.wins === 8 && m.best.day === 2 })())
 
 if (failures > 0) {
     console.error(`\n${failures} check(s) failed`)

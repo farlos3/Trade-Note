@@ -1,8 +1,9 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import CalendarDayModal from './CalendarDayModal.vue'
 import { pageId, selectedMonth, selectedPlSatisfaction, amountCase, calendarData, miniCalendarsData, timeZoneTrade, spinnerLoadingPage, filteredTrades, notes } from '../stores/globals';
 import { useThousandCurrencyFormat, useTwoDecCurrencyFormat, useMountCalendar, useMountDaily } from '../utils/utils';
-import { buildCalendarWeeks, isSameYearMonth } from '../utils/calendarSummary';
+import { buildCalendarWeeks, isSameYearMonth, summarizeMonth } from '../utils/calendarSummary';
 import dayjs from 'dayjs'
 import utc from 'dayjs/plugin/utc.js'
 dayjs.extend(utc)
@@ -43,6 +44,17 @@ const isViewingLatestMonth = computed(() =>
 )
 
 const calendarWeeks = computed(() => buildCalendarWeeks(calendarData, amountCase.value))
+const monthSummary = computed(() => summarizeMonth(calendarWeeks.value, amountCase.value))
+const shortDate = (unix) => (unix ? dayjs.unix(unix).tz(timeZoneTrade.value).format('D MMM') : '')
+const signedAmount = (n) => (n >= 0 ? '+' : '') + useTwoDecCurrencyFormat(n)
+const cellPl = (cell) => (cell.pAndL && !Array.isArray(cell.pAndL) ? cell.pAndL : null)
+
+// Clicking a traded day opens its detail (CalendarDayModal) from that day's document.
+const openDay = ref(null)
+function openDayFor(cell) {
+    if (!cellPl(cell) || !(Number(cell.pAndL.trades) > 0)) return
+    openDay.value = filteredTrades.find((d) => d.dateUnix === cell.dateUnix) || null
+}
 
 // Year-at-a-glance summary. On the Calendar page filteredTrades already spans
 // the full calendar year (see useGetSelectedRange), independent of which month
@@ -108,13 +120,43 @@ async function monthLastNext(param) {
         </div>
     </div>
     <div v-bind:class="[pageId === 'calendar' ? 'mb-4' : '', 'col-12']">
+        <div v-if="pageId == 'calendar'" class="calMonthStats">
+            <div>
+                <span class="calStatLabel">Month P&amp;L</span>
+                <strong :class="monthSummary.total >= 0 ? 'greenTrade' : 'redTrade'">{{ signedAmount(monthSummary.total) }}</strong>
+                <span class="calStatSub">{{ monthSummary.trades }} trades</span>
+            </div>
+            <div>
+                <span class="calStatLabel">Green days</span>
+                <strong>{{ monthSummary.greenDays }} <span class="calStatSub">/ {{ monthSummary.tradingDays }} days</span></strong>
+                <span class="calStatSub" v-if="monthSummary.tradingDays">{{ Math.round(monthSummary.greenDays / monthSummary.tradingDays * 100) }}% of traded days</span>
+            </div>
+            <div>
+                <span class="calStatLabel">Win rate</span>
+                <strong>{{ monthSummary.winRatePct == null ? '—' : Math.round(monthSummary.winRatePct) + '%' }}</strong>
+                <span class="calStatSub"><span class="greenTrade">{{ monthSummary.wins }}W</span> / <span class="redTrade">{{ monthSummary.losses }}L</span></span>
+            </div>
+            <div>
+                <span class="calStatLabel">Best day</span>
+                <strong class="greenTrade">{{ monthSummary.best ? signedAmount(monthSummary.best.total) : '—' }}</strong>
+                <span class="calStatSub">{{ monthSummary.best ? shortDate(monthSummary.best.dateUnix) : '' }}</span>
+            </div>
+            <div>
+                <span class="calStatLabel">Worst day</span>
+                <strong class="redTrade">{{ monthSummary.worst ? signedAmount(monthSummary.worst.total) : '—' }}</strong>
+                <span class="calStatSub">{{ monthSummary.worst ? shortDate(monthSummary.worst.dateUnix) : '' }}</span>
+            </div>
+        </div>
         <div v-if="pageId == 'calendar'" class="calMonthGrid">
             <div class="calWeekday" v-for="day in days" :key="day">{{ day }}</div>
             <div class="calWeekday calWeekHeading">Weekly</div>
             <template v-for="w in calendarWeeks" :key="w.index">
                 <template v-for="(cell, dIdx) in w.cells" :key="`${w.index}-${dIdx}`">
                     <div v-if="cell && cell.day > 0"
-                        v-bind:class="[{ 'greenTradeDiv': selectedPlSatisfaction == 'pl' ? cell.pAndL[amountCase + 'Proceeds'] >= 0 : cell.satisfaction == true, 'redTradeDiv': selectedPlSatisfaction == 'pl' ? cell.pAndL[amountCase + 'Proceeds'] < 0 : cell.satisfaction == false }, 'calDivDash', 'calCellPos']">
+                        v-bind:class="[{ 'greenTradeDiv': selectedPlSatisfaction == 'pl' ? cell.pAndL[amountCase + 'Proceeds'] >= 0 : cell.satisfaction == true, 'redTradeDiv': selectedPlSatisfaction == 'pl' ? cell.pAndL[amountCase + 'Proceeds'] < 0 : cell.satisfaction == false, 'calClickable': cellPl(cell) && cell.pAndL.trades > 0 }, 'calDivDash', 'calCellPos']"
+                        :role="cellPl(cell) && cell.pAndL.trades > 0 ? 'button' : null"
+                        :tabindex="cellPl(cell) && cell.pAndL.trades > 0 ? 0 : null"
+                        v-on:click="openDayFor(cell)" v-on:keydown.enter="openDayFor(cell)">
                         <!-- Same whole-day note flag as the History day cards -- a
                              note set on this date shows here too. -->
                         <i v-if="cell.dateUnix && notes.some(n => n.tradeId === 'day' && n.dateUnix === cell.dateUnix && n.note && n.note.trim())"
@@ -125,6 +167,10 @@ async function monthLastNext(param) {
                                 {{ (cell.pAndL[amountCase + 'Proceeds'] >= 0 ? '+' : '') + useTwoDecCurrencyFormat(cell.pAndL[amountCase + 'Proceeds']) }}
                             </p>
                             <p class="calTrades mb-0" v-show="cell.pAndL.trades">{{ cell.pAndL.trades }} trades</p>
+                            <p class="calWl mb-0" v-if="cellPl(cell) && cell.pAndL.trades">
+                                <span class="greenTrade">{{ cell.pAndL[amountCase + 'WinsCount'] || 0 }}W</span> /
+                                <span class="redTrade">{{ cell.pAndL[amountCase + 'LossCount'] || 0 }}L</span>
+                            </p>
                         </div>
                     </div>
                     <div v-else class="calDivDash calDayEmpty"></div>
@@ -159,6 +205,8 @@ async function monthLastNext(param) {
             </template>
         </div>
     </div>
+
+    <CalendarDayModal v-if="openDay" :day-doc="openDay" v-on:close="openDay = null" />
 
     <!-- YEAR-AT-A-GLANCE SUMMARY -->
     <div v-if="pageId == 'calendar'" class="col-12 mt-2 mb-4">
@@ -253,6 +301,39 @@ async function monthLastNext(param) {
     background-color: var(--surface-hover);
     border-color: var(--border-strong);
 }
+
+/* Month header stats (Calendar page) */
+.calMonthStats {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    margin-bottom: 0.9rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    text-align: left;
+}
+
+.calMonthStats > div {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    padding: 0.6rem 0.85rem;
+}
+
+.calMonthStats > div + div { border-left: 1px solid var(--border-subtle); }
+.calMonthStats strong { font-size: 1.2rem; font-weight: 800; }
+.calStatLabel { font-size: 0.72rem; color: var(--white-60); }
+.calStatSub { font-size: 0.72rem; color: var(--white-60); font-weight: 400; }
+
+@media (max-width: 768px) {
+    .calMonthStats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .calMonthStats > div { border-left: 0 !important; border-top: 1px solid var(--border-subtle); }
+}
+
+.calClickable { cursor: pointer; transition: filter 0.15s ease, transform 0.15s ease; }
+.calClickable:hover { filter: brightness(1.2); }
+.calClickable:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.calWl { font-size: 0.72rem; font-weight: 600; }
 
 /* History-page compact 7-column mini-calendar grid (Su..Sa) */
 .calMiniGrid {

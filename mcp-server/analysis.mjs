@@ -195,9 +195,11 @@ function sequenceStats(trades, tz) {
 export function computeDailyBreakdown(trades, tz = 'UTC') {
   const byDay = {}
   for (const t of trades) {
-    const g = (byDay[t.dateUnix] ??= { net: 0, trades: 0 })
+    const g = (byDay[t.dateUnix] ??= { net: 0, trades: 0, wins: 0, losses: 0 })
     g.net += t.pnl
     g.trades++
+    if (t.pnl > 0) g.wins++
+    else if (t.pnl < 0) g.losses++
   }
   return Object.entries(byDay)
     .map(([dateUnix, g]) => ({
@@ -206,6 +208,8 @@ export function computeDailyBreakdown(trades, tz = 'UTC') {
       date: dayInTz(Number(dateUnix), tz),
       net: round(g.net),
       trades: g.trades,
+      wins: g.wins,
+      losses: g.losses,
     }))
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
 }

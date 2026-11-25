@@ -100,6 +100,7 @@ check('daily: three rows for three days', daily2.length === 3)
 check('daily: sorted oldest first', daily2[0].date === '2026-02-02' && daily2[2].date === '2026-02-04')
 check('daily: trades per day 5/1/1', daily2.map(d => d.trades).join(',') === '5,1,1')
 check('daily: net per day 25/5/5', daily2.map(d => d.net).join(',') === '25,5,5')
+check('daily: wins + losses never exceed trades', daily2.every(d => d.wins + d.losses <= d.trades))
 check('daily: empty input -> []', computeDailyBreakdown([]).length === 0)
 
 // --- Empty input is safe ---

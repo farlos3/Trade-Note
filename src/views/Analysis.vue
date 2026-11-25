@@ -1,4 +1,5 @@
 <script setup>
+import AnalysisCalendar from '../components/AnalysisCalendar.vue'
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
 import dayjs from 'dayjs'
@@ -624,6 +625,8 @@ const narrative = computed(() => {
                     </div>
                 </div>
             </div>
+
+            <AnalysisCalendar v-if="data.daily && data.daily.length" :daily="data.daily" />
 
             <h6 class="sectionTitle">Behavioral flags</h6>
             <div v-if="data.stats.trades === 0" class="text-muted mb-3">No trades in this period.</div>

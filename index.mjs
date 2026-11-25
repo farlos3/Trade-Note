@@ -679,7 +679,9 @@ const setupApiRoutes = (app) => {
                 entryReviews = shapeEntryReviews(await fetchEntryReviews({ fromUnix, toUnix, userId: req.tradenoteUserId }), tz)
             } catch (e) { /* optional, same */ }
 
-            const payload = { range: { from: req.query.from || null, to: req.query.to || null }, timezone: tz, stats, patterns, derived: deriveMetrics(stats, patterns), notes, weeklyReviews, diaries, entryReviews }
+            const payload = { range: { from: req.query.from || null, to: req.query.to || null }, timezone: tz, stats, patterns, derived: deriveMetrics(stats, patterns), daily: computeDailyBreakdown(trades, tz), notes, weeklyReviews, diaries, entryReviews }
+            // daily = the same per-day rows the Analysis page's trading calendar shows, so the
+            // model can point at specific good/bad days the trader can see on that calendar.
             // The instructions live in mcp-server/skills/behavior-coach.mjs, where they
             // can be tested and where the output language is a parameter. Plain text,
             // not Markdown, is still the contract: the card has no Markdown parser.
